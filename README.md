@@ -59,7 +59,8 @@ $env:DASHSCOPE_API_KEY="sk-你的密钥"
 export DASHSCOPE_API_KEY="sk-你的密钥"
 
 ```
-
+key1:$env:DASHSCOPE_API_KEY = "sk-4781e75e12814b1b91fa54bde9781a86"
+key2:$env:DASHSCOPE_API_KEY = "sk-ac0fa0cdca664f9e9b1b06b3a9834d11"
 *方式 B (修改代码)*:
 打开 `ppt2md.py`，修改顶部配置区：
 
