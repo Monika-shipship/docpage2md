@@ -1,0 +1,13 @@
+# Image files
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.webp
+*.gif
+*.tiff
+*.ico
+
+# Output and Input directories (inferred from project structure)
+# ppt_images/
+# markdown_output/
