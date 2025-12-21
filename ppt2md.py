@@ -34,7 +34,7 @@ OUTPUT_FOLDER = "./markdown_output"
 LOG_FOLDER = "./log"
 
 # 并发控制
-MAX_WORKERS = 3  
+MAX_WORKERS = 15  
 THINKING_BUDGET = 2048 
 
 # === 命令行参数解析 ===
