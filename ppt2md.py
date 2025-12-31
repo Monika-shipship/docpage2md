@@ -41,14 +41,14 @@ OUTPUT_FOLDER = "./markdown_output"
 LOG_FOLDER = "./log"
 
 # 全局并发控制 (同时处理多少个 PPT 文件夹)
-MAX_PPT_WORKERS = 5
+MAX_PPT_WORKERS = 1
 
 # 【关键参数 1】Step 1 视觉提取并发数 (建议 5-15)
-VISION_BATCH_WORKERS = 20  
+VISION_BATCH_WORKERS = 60  
 
 # 【关键参数 2】Step 2 逻辑重组并发数 (解耦后可火力全开，建议 10-20)
 #  警告：设置过高可能会触发 API Rate Limit (429 Too Many Requests)
-BRAIN_BATCH_WORKERS = 50 
+BRAIN_BATCH_WORKERS = 60 
 
 # 思考预算 (Token)
 THINKING_BUDGET_VISION = 2048 
