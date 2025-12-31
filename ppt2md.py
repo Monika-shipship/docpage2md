@@ -10,6 +10,7 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from multiprocessing import Manager
 import queue
+import math
 
 # === 依赖库检查 ===
 try:
@@ -21,8 +22,15 @@ try:
     from rich.panel import Panel
     from rich.console import Console
     from rich.markdown import Markdown
+    from rich.table import Table
 except ImportError:
     print("❌ 缺少依赖库 [rich]。请运行: pip install rich")
+    exit(1)
+
+try:
+    from PIL import Image
+except ImportError:
+    print("❌ 缺少依赖库 [Pillow]。请运行: pip install Pillow")
     exit(1)
 
 import dashscope
@@ -213,6 +221,133 @@ def merge_markdowns(ppt_output_dir, ppt_name):
             with open(md_file, 'r', encoding='utf-8') as infile:
                 outfile.write(infile.read())
                 outfile.write("\n\n---\n\n")
+
+# ================= 成本预估模块 =================
+
+def calculate_image_tokens(image_path):
+    """
+    根据 Qwen3-VL 官方规则计算图像 Token
+    Token = (H_bar * W_bar) / (32 * 32) + 2
+    """
+    try:
+        with Image.open(image_path) as img:
+            height = img.height
+            width = img.width
+            
+            # 1. 调整为 32 的倍数
+            h_bar = round(height / 32) * 32
+            w_bar = round(width / 32) * 32
+            
+            # 2. 限制像素范围 (Qwen3-VL 默认 max_pixels 限制逻辑简化版)
+            # 假设非高分辨率模式，通常限制在一定范围内，这里简化处理
+            # 官方文档：Token = h_bar * w_bar / token_pixels + 2
+            # Qwen3-VL token_pixels = 32*32 = 1024
+            
+            tokens = int((h_bar * w_bar) / 1024) + 2
+            return tokens
+    except Exception:
+        return 2000 # 默认兜底值
+
+def estimate_price(model_type, input_tokens, output_tokens):
+    """
+    根据阶梯计费估算价格 (单位: 元)
+    注意：这里是按单次请求估算，然后累加，符合阶梯计费逻辑
+    """
+    cost = 0.0
+    
+    if model_type == "qwen3-vl-plus":
+        # 输入阶梯
+        if input_tokens <= 32000: cost += (input_tokens / 1000) * 0.001
+        elif input_tokens <= 128000: cost += (input_tokens / 1000) * 0.0015
+        else: cost += (input_tokens / 1000) * 0.003
+        
+        # 输出阶梯
+        if output_tokens <= 32000: cost += (output_tokens / 1000) * 0.01
+        elif output_tokens <= 128000: cost += (output_tokens / 1000) * 0.015
+        else: cost += (output_tokens / 1000) * 0.03
+        
+    elif model_type == "qwen-plus":
+        # 输入阶梯
+        if input_tokens <= 128000: cost += (input_tokens / 1000) * 0.0008
+        elif input_tokens <= 256000: cost += (input_tokens / 1000) * 0.0024
+        else: cost += (input_tokens / 1000) * 0.0048
+        
+        # 输出阶梯 (非思考模式 0.002, 思考模式 0.008)
+        # 这里假设非思考模式为主，或者混合
+        cost += (output_tokens / 1000) * 0.002
+
+    return cost
+
+def show_cost_estimation(console, tasks_config):
+    """
+    展示成本预估表格
+    """
+    table = Table(title="💰 任务成本预估 (仅供参考)", show_header=True, header_style="bold magenta")
+    table.add_column("PPT 任务", style="cyan")
+    table.add_column("页数", justify="right")
+    table.add_column("预估 Token (M)", justify="right")
+    table.add_column("预估费用 (元)", justify="right", style="green")
+    
+    total_cost = 0.0
+    total_tokens = 0
+    
+    with console.status("[bold green]正在计算成本预估...[/]"):
+        for ppt_name, config in tasks_config.items():
+            images = config["images"]
+            start = config["range_start"]
+            end = config["range_end"]
+            target_images = images[start:end]
+            
+            ppt_cost = 0.0
+            ppt_tokens = 0
+            
+            # 采样计算：如果图片太多，只算前 5 张平均值
+            sample_size = 5
+            sample_images = target_images[:sample_size]
+            avg_img_tokens = 0
+            
+            if sample_images:
+                sum_tokens = sum(calculate_image_tokens(img) for img in sample_images)
+                avg_img_tokens = int(sum_tokens / len(sample_images))
+            else:
+                avg_img_tokens = 2000
+            
+            num_slides = len(target_images)
+            
+            # === Stage 1: Vision ===
+            # Input: Image + Prompt (~300)
+            s1_input = avg_img_tokens + 300
+            # Output: Raw JSON (~500)
+            s1_output = 500
+            
+            s1_cost = estimate_price("qwen3-vl-plus", s1_input, s1_output) * num_slides
+            s1_tokens = (s1_input + s1_output) * num_slides
+            
+            # === Stage 2: Brain ===
+            # Input: 5 pages context (5 * 500) + Prompt (~1000) = 3500
+            s2_input = 3500
+            # Output: Markdown (~800)
+            s2_output = 800
+            
+            s2_cost = estimate_price("qwen-plus", s2_input, s2_output) * num_slides
+            s2_tokens = (s2_input + s2_output) * num_slides
+            
+            ppt_cost = s1_cost + s2_cost
+            ppt_tokens = s1_tokens + s2_tokens
+            
+            total_cost += ppt_cost
+            total_tokens += ppt_tokens
+            
+            table.add_row(
+                ppt_name, 
+                str(num_slides), 
+                f"{ppt_tokens/1000000:.2f} M", 
+                f"¥ {ppt_cost:.2f}"
+            )
+            
+    table.add_row("总计", "", f"{total_tokens/1000000:.2f} M", f"¥ {total_cost:.2f}", style="bold red")
+    console.print(table)
+    console.print("[dim]注：预估基于 Qwen3-VL-Plus (Vision) 和 Qwen-Plus (Brain) 的公开价格。实际计费以阿里云账单为准。[/]\n")
 
 # ================= 交互与状态管理 =================
 
@@ -578,6 +713,12 @@ def main():
 
     tasks_config = interactive_setup(console, final_key)
     if not tasks_config: return
+
+    # === 插入成本预估 ===
+    show_cost_estimation(console, tasks_config)
+    if input("👉 确认开始任务吗？(y/n) [默认为 y]: ").strip().lower() == 'n':
+        print("已取消。")
+        return
 
     m = Manager()
     msg_queue = m.Queue()
