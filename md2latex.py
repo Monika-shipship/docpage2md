@@ -33,13 +33,90 @@ except ImportError:
 
 # ================= 配置区域 =================
 
-DEFAULT_MODEL = "qwen3-max-preview"
 DEFAULT_INPUT = "./markdown_output"
 DEFAULT_OUTPUT = "./latex_output"
 
-# 计费配置 (参考规格说明书)
-PRICE_INPUT_PER_1K = 0.015  # 元
-PRICE_OUTPUT_PER_1K = 0.06  # 元
+# 模型注册表 (单位: 元/1k tokens)
+MODEL_REGISTRY = {
+    # === Qwen3-Max 系列 ===
+    "1": { 
+        "id": "qwen3-max", 
+        "name": "Qwen3-Max (Stability)", 
+        "desc": "稳定版，Batch半价，支持Agent", 
+        "price_in": 0.0032, 
+        "price_out": 0.0128 
+    },
+    "1b": { 
+        "id": "qwen3-max-2025-09-23", 
+        "name": "Qwen3-Max (09-23)", 
+        "desc": "快照版", 
+        "price_in": 0.006, 
+        "price_out": 0.024 
+    },
+    "1c": { 
+        "id": "qwen3-max-preview", 
+        "name": "Qwen3-Max (Preview)", 
+        "desc": "具备深度思考能力", 
+        "price_in": 0.006, 
+        "price_out": 0.024 
+    },
+
+    # === Qwen-Plus 系列 ===
+    "2": { 
+        "id": "qwen-plus", 
+        "name": "Qwen-Plus (Stability)", 
+        "desc": "能力同 07-28", 
+        "price_in": 0.0008, 
+        "price_out": 0.002 
+    },
+    "2a": { 
+        "id": "qwen-plus-latest", 
+        "name": "Qwen-Plus (Latest)", 
+        "desc": "能力同 12-01", 
+        "price_in": 0.0008, 
+        "price_out": 0.002 
+    },
+    "2b": { 
+        "id": "qwen-plus-2025-12-01", 
+        "name": "Qwen-Plus (12-01)", 
+        "desc": "12月快照", 
+        "price_in": 0.0008, 
+        "price_out": 0.002 
+    },
+    "2c": { 
+        "id": "qwen-plus-2025-09-11", 
+        "name": "Qwen-Plus (09-11)", 
+        "desc": "9月快照", 
+        "price_in": 0.0008, 
+        "price_out": 0.002 
+    },
+    "2d": { 
+        "id": "qwen-plus-2025-07-28", 
+        "name": "Qwen-Plus (07-28)", 
+        "desc": "7月快照", 
+        "price_in": 0.0008, 
+        "price_out": 0.002 
+    },
+
+    # === DeepSeek 系列 (DashScope) ===
+    "3": { 
+        "id": "deepseek-v3.2", 
+        "name": "DeepSeek-V3.2", 
+        "desc": "685B 满血版", 
+        "price_in": 0.002, 
+        "price_out": 0.003 
+    },
+    "3a": { 
+        "id": "deepseek-v3.2-exp", 
+        "name": "DeepSeek-V3.2 Exp", 
+        "desc": "实验版", 
+        "price_in": 0.002, 
+        "price_out": 0.003 
+    },
+}
+
+DEFAULT_MODEL_KEY = "1" # 默认选 Qwen3-Max
+
 INPUT_INFLATION_RATE = 1.2  # 输入膨胀系数 (Context + System Prompt)
 OUTPUT_RATIO = 0.8          # 输出/输入 长度比例预估
 
@@ -56,7 +133,7 @@ MAX_CHUNK_WORKERS = 60      # 局部：每个章节内部开启多少并发 (全
 
 SYSTEM_PROMPT_TEMPLATE = r"""
 你是一个专业的学术排版专家。你的任务是将结构化的 Markdown 课堂笔记重写为高质量、符合严格学术排版规范的 LaTeX 文档。
-对于原文，你可以稍微地增加一些叙述性文字，来让文章更通顺，但是不要改变原意
+对于原文，你只能非常少量地增加一些叙述性文字，来让文章更通顺，但是不要改变原意，完全无关的叙述性文字可以不写，宁缺毋滥
 现在你正在处理一个长文档的第 {index} 部分（共 {total} 部分）。
 
 【上下文指令】
@@ -69,10 +146,13 @@ SYSTEM_PROMPT_TEMPLATE = r"""
 1. 尽量推测文章的原意，不要乱修改。
 2. 如果有重大的错误，请你在注释中写出错误
 3. 尽量按照文章的原意来，不要乱修改！
+4. 勘察错误只能放在注释里，不能放在正文中
+正文中绝对不能出现勘察错误几个字
 
 【LaTeX 格式核心规范 - 必须严格遵守】
 
 ### A. 数学公式
+行内公式：使用 `$..$` ，比如 `$123$` ，不能使用`\(`
 1. **唯一行间公式环境**：
    - **绝对禁止**使用 `\[ ... \]` 或 `$$ ... $$`。
    - **必须**使用 `\begin{equation} ... \end{equation}`。
@@ -125,7 +205,7 @@ SYSTEM_PROMPT_TEMPLATE = r"""
    % AI绘图提示词: (此处详细描述图像中是什么东西，具体是什么东西，给出ai的提示词，提示另一个ai用tikz格式来画图)
    \begin{figure}[H]
        \centering
-       % TODO: 请在此处插入 TikZ 代码
+       % TODO: 请在此处插入 TikZ 代码（不是等后来者插入，你现在就写一个）
        % \begin{tikzpicture} ... \end{tikzpicture}
        \caption{图片标题}
        \label{fig:label-name}
@@ -146,9 +226,15 @@ SYSTEM_PROMPT_TEMPLATE = r"""
    - Markdown `##` (二级标题) -> LaTeX `\subsection{...}`
    - Markdown `###` (三级标题) -> LaTeX `\subsubsection{...}`
 2. **隐式结构补全 (自动总结)**：
-   - 绝大多数情况下，原 MD 缺少标题。你**必须**根据内容语义，每隔一段逻辑完整的推导或叙述，就**主动插入** `\section{...}`、`\subsection{...}` 或 `\subsubsection{...}`。
-   - 标题文字由你总结，要求简练、学术（例如：“$T_{\mu\nu}$ 的物理意义”、“场方程的变分推导”）。
-   - **禁止**生成长篇大论而没有任何 `\subsection` 的正文。
+   - 绝大多数情况下，原 MD 缺少标题。你**必须**根据【本章全局目录】和内容语义，主动构建文档层级。
+   - **分层策略 (Sectioning Strategy - 极其重要)**：
+     - **多用 \\section**：参考【本章全局目录】，如果当前 Slides (e.g. Slide 10-15) 进入了一个新的主要讨论对象（例如从“定义”转到“性质”，或从“理论”转到“例题”），**必须**开启新的 `\section{...}`。
+     - **避免过度嵌套**：不要把整章几十页内容都放在同一个 `\section` 下。通常每 5-10 页 PPT 就应该对应一个 `\section`。
+     - **层级逻辑**：
+       - `\section{...}`: 主要话题 (e.g. "协变导数的定义")
+       - `\subsection{...}`: 子话题 (e.g. "标量场的协变导数")
+       - `\subsubsection{...}`: 具体细节/推导步骤
+     - **禁止**生成长篇大论而没有任何 `\subsection` 的正文。
    - **不要**生成 `\chapter{...}`（当前文件本身即为一个 Chapter）。
 3. **上下文连贯性**：
    - 利用【上文 Markdown】判断当前是否已经处于某个 Section/Subsection 中。
@@ -163,8 +249,9 @@ SYSTEM_PROMPT_TEMPLATE = r"""
 
 class CostEstimator:
     """负责扫描目录，交互选择，计算Token，展示价格"""
-    def __init__(self, root_dir: str):
+    def __init__(self, root_dir: str, model_config: dict):
         self.root_dir = Path(root_dir)
+        self.model_config = model_config
         self.console = Console()
         self.all_tasks = {}
 
@@ -317,8 +404,12 @@ class CostEstimator:
         total_tokens_est = total_chars / 1.5
         input_tokens_billed = total_tokens_est * INPUT_INFLATION_RATE
         output_tokens_billed = input_tokens_billed * OUTPUT_RATIO
-        est_cost = (input_tokens_billed / 1000 * PRICE_INPUT_PER_1K) + \
-                   (output_tokens_billed / 1000 * PRICE_OUTPUT_PER_1K)
+        
+        p_in = self.model_config['price_in']
+        p_out = self.model_config['price_out']
+        
+        est_cost = (input_tokens_billed / 1000 * p_in) + \
+                   (output_tokens_billed / 1000 * p_out)
 
         self._show_table(tasks, total_chars, total_tokens_est, est_cost)
         return True
@@ -349,7 +440,13 @@ class CostEstimator:
 
         table.add_row("TOTAL", "", f"{chars:,}", f"¥ {cost:.2f}", style="bold red")
         self.console.print(table)
-        self.console.print(f"[dim]Total Est. Tokens: {tokens/1000:.1f}k | Model: {DEFAULT_MODEL}[/]")
+        
+        m_name = self.model_config['name']
+        p_in_million = self.model_config['price_in'] * 1000
+        p_out_million = self.model_config['price_out'] * 1000
+        
+        self.console.print(f"[dim]Total Est. Tokens: {tokens/1000:.1f}k[/]")
+        self.console.print(f"[bold purple]Model: {m_name}[/] [dim](In: ¥{p_in_million:.1f}/1M | Out: ¥{p_out_million:.1f}/1M)[/]")
 
 
 class ContextManager:
@@ -400,12 +497,44 @@ class ContextManager:
             
         return full_text, slide_map
 
+    def generate_chapter_toc(self, slide_map: List[dict]) -> str:
+        """生成全章 Slide 结构目录"""
+        toc = "【本章全局目录 (Global Chapter Outline)】\n"
+        last_kw = ""
+        
+        # 为了节省 token，我们将目录简化。只记录有显著关键词变化的 slide
+        for s in slide_map:
+            s_num = s['num']
+            keywords = s['info'].get('keywords', [])
+            summary = s['info'].get('summary', 'No Summary')
+            kw_str = ", ".join(keywords[:2]) if keywords else ""
+            
+            # 记录条件: 
+            # 1. 第一页
+            # 2. 关键词与上一条不同 (Topic Shift)
+            # 3. 每隔 10 页强制记录一次 (Keep Track)
+            should_record = False
+            if s_num == 1: should_record = True
+            elif kw_str and kw_str != last_kw: should_record = True
+            elif s_num % 10 == 0: should_record = True
+            
+            if should_record:
+                # 截断 summary
+                summ_short = summary[:30].replace('\n', ' ')
+                toc += f"- Slide {s_num}: [{kw_str}] {summ_short}...\n"
+                last_kw = kw_str
+                
+        return toc
+
     def create_smart_chunks(self, full_text: str, slide_map: List[dict]) -> List[dict]:
         """智能切分并构建带结构感知的任务"""
         chunks = self._smart_split(full_text)
         tasks = []
         total = len(chunks)
         
+        # 生成全局目录
+        global_toc = self.generate_chapter_toc(slide_map)
+
         # 辅助函数：根据字符位置找 Slide 信息
         def get_overlapping_slides(chunk_start, chunk_end):
             overlaps = []
@@ -449,7 +578,8 @@ class ContextManager:
                 "current": chunk,
                 "prev": prev_ctx,
                 "next": next_ctx,
-                "structure_hint": structure_hint
+                "structure_hint": structure_hint,
+                "chapter_toc": global_toc
             })
             current_char_ptr += chunk_len
             
@@ -547,7 +677,7 @@ class ContextManager:
 
 class LatexGenerator:
     """负责与DashScope API交互"""
-    def __init__(self, model_name=DEFAULT_MODEL, api_key=None):
+    def __init__(self, model_name, api_key=None):
         self.model = model_name
         self.api_key = api_key
         if not self.api_key:
@@ -584,12 +714,61 @@ class LatexGenerator:
 # ================= 主控制器 =================
 
 class WorkflowController:
-    def __init__(self, input_dir, output_dir, model_name):
+    def __init__(self, input_dir, output_dir, model_arg=None):
         self.input_dir = input_dir
         self.output_dir = output_dir
-        self.model_name = model_name
         self.console = Console()
+        
+        # 选择模型
+        self.selected_model_config = self._select_model(model_arg)
+        self.model_name = self.selected_model_config['id']
+        
         self._setup_logger()
+
+    def _select_model(self, model_arg):
+        """交互式或参数式选择模型"""
+        # 如果命令行指定了有效的ID，直接使用
+        if model_arg:
+            # 尝试通过ID反查
+            for key, cfg in MODEL_REGISTRY.items():
+                if cfg['id'] == model_arg:
+                    return cfg
+            # 或者是Key
+            if model_arg in MODEL_REGISTRY:
+                return MODEL_REGISTRY[model_arg]
+        
+        # 否则进入交互选择
+        self.console.print(Panel("🤖 请选择推理模型 (Model Selection)", style="bold purple"))
+        
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Key", style="cyan", justify="center")
+        table.add_column("Model ID", style="green")
+        table.add_column("Description")
+        table.add_column("Price (In/Out per 1M)", justify="right")
+        
+        for key, cfg in MODEL_REGISTRY.items():
+            p_in = cfg['price_in'] * 1000
+            p_out = cfg['price_out'] * 1000
+            table.add_row(
+                f"[{key}]", 
+                cfg['id'], 
+                cfg['desc'], 
+                f"¥{p_in:.1f} / ¥{p_out:.1f}"
+            )
+            
+        self.console.print(table)
+        
+        choice = input(f"\n👉 请输入序号 (默认 {DEFAULT_MODEL_KEY}): ").strip()
+        if not choice:
+            choice = DEFAULT_MODEL_KEY
+            
+        if choice in MODEL_REGISTRY:
+            cfg = MODEL_REGISTRY[choice]
+            self.console.print(f"✅ 已选择: [bold green]{cfg['name']}[/]\n")
+            return cfg
+        else:
+            self.console.print(f"[red]❌ 无效选择，使用默认: {MODEL_REGISTRY[DEFAULT_MODEL_KEY]['name']}[/]\n")
+            return MODEL_REGISTRY[DEFAULT_MODEL_KEY]
 
     def _setup_logger(self):
         log_path = Path("./log/md2latex")
@@ -614,7 +793,7 @@ class WorkflowController:
         self.console.print(f"Global Workers: {MAX_CHAPTER_WORKERS} | Inner Workers: {MAX_CHUNK_WORKERS}")
         
         # 1. 扫描与交互选择
-        estimator = CostEstimator(self.input_dir)
+        estimator = CostEstimator(self.input_dir, self.selected_model_config)
         estimator.scan()
         tasks = estimator.interactive_select()
         
@@ -794,11 +973,13 @@ class WorkflowController:
 
     def process_single_chunk(self, item):
         """原子任务：将单个 Chunk 转 LaTeX，带重试"""
-        gen = LatexGenerator(model_name=self.model_name)
-        
-        # 修正：传入 index 和 total 动态构建 Prompt
         total = item.get('total', '?')
         index = item.get('index', 0) + 1
+        
+        # [Debug] 记录线程启动时间，证明并发正在发生
+        self.logger.info(f"[Thread-Start] Chunk {index}/{total} 正在开始处理...")
+
+        gen = LatexGenerator(model_name=self.model_name)
         
         prompt = self._build_prompt(
             item['current'], 
@@ -806,7 +987,8 @@ class WorkflowController:
             item['next'], 
             index, 
             total,
-            item.get('structure_hint', '') # 传入 structure_hint
+            item.get('structure_hint', ''), # 传入 structure_hint
+            item.get('chapter_toc', '')
         )
         
         max_retries = 3
@@ -829,7 +1011,7 @@ class WorkflowController:
         
         raise Exception(f"Failed after {max_retries} retries: {last_error}")
 
-    def _build_prompt(self, chunk, prev_md, next_md, index=None, total=None, structure_hint=""):
+    def _build_prompt(self, chunk, prev_md, next_md, index=None, total=None, structure_hint="", chapter_toc=""):
         # 移除过多的 CTX 标记干扰
         chunk = re.sub(r'<CTX>.*?</CTX>', '', chunk, flags=re.DOTALL)
         if prev_md: prev_md = re.sub(r'<CTX>.*?</CTX>', '', prev_md, flags=re.DOTALL)
@@ -841,6 +1023,10 @@ class WorkflowController:
         
         prompt = SYSTEM_PROMPT_TEMPLATE.replace("{index}", idx_str).replace("{total}", ttl_str)
         
+        # 插入全局目录 (新增)
+        if chapter_toc:
+            prompt += f"\n{chapter_toc}\n"
+
         # 插入结构信息
         if structure_hint:
              prompt += f"\n\n{structure_hint}\n"
@@ -875,7 +1061,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MD2LaTeX Pro")
     parser.add_argument("-i", "--input", default=DEFAULT_INPUT, help="Markdown Input Folder")
     parser.add_argument("-o", "--output", default=DEFAULT_OUTPUT, help="LaTeX Output Folder")
-    parser.add_argument("-m", "--model", default=DEFAULT_MODEL, help="Model Name")
+    parser.add_argument("-m", "--model", default=None, help="Model Key or ID (e.g. 1, qwen-max)")
     
     args = parser.parse_args()
     
