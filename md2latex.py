@@ -2,8 +2,10 @@ import os
 import re
 import json
 import time
+import random
 import logging
 import argparse
+import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Generator, Tuple, Set
@@ -37,6 +39,7 @@ DEFAULT_INPUT = "./markdown_output"
 DEFAULT_OUTPUT = "./latex_output"
 
 # 模型注册表 (单位: 元/1k tokens)
+# RPM (Requests Per Minute) 用于计算平滑发射速率
 MODEL_REGISTRY = {
     # === Qwen3-Max 系列 ===
     "1": { 
@@ -44,21 +47,27 @@ MODEL_REGISTRY = {
         "name": "Qwen3-Max (Stability)", 
         "desc": "稳定版，Batch半价，支持Agent", 
         "price_in": 0.0032, 
-        "price_out": 0.0128 
+        "price_out": 0.0128,
+        "rpm": 600,
+        "tpm": 1000000 
     },
     "1b": { 
         "id": "qwen3-max-2025-09-23", 
         "name": "Qwen3-Max (09-23)", 
         "desc": "快照版", 
         "price_in": 0.006, 
-        "price_out": 0.024 
+        "price_out": 0.024,
+        "rpm": 60,
+        "tpm": 100000
     },
     "1c": { 
         "id": "qwen3-max-preview", 
         "name": "Qwen3-Max (Preview)", 
         "desc": "具备深度思考能力", 
         "price_in": 0.006, 
-        "price_out": 0.024 
+        "price_out": 0.024,
+        "rpm": 600,
+        "tpm": 100000 # 预览版通常较严格，保守估计
     },
 
     # === Qwen-Plus 系列 ===
@@ -67,35 +76,45 @@ MODEL_REGISTRY = {
         "name": "Qwen-Plus (Stability)", 
         "desc": "能力同 07-28", 
         "price_in": 0.0008, 
-        "price_out": 0.002 
+        "price_out": 0.002,
+        "rpm": 15000, 
+        "tpm": 5000000
     },
     "2a": { 
         "id": "qwen-plus-latest", 
         "name": "Qwen-Plus (Latest)", 
         "desc": "能力同 12-01", 
         "price_in": 0.0008, 
-        "price_out": 0.002 
+        "price_out": 0.002,
+        "rpm": 15000,
+        "tpm": 1200000
     },
     "2b": { 
         "id": "qwen-plus-2025-12-01", 
         "name": "Qwen-Plus (12-01)", 
-        "desc": "12月快照", 
+        "desc": "12月快照 (高TPM)", 
         "price_in": 0.0008, 
-        "price_out": 0.002 
+        "price_out": 0.002,
+        "rpm": 60,
+        "tpm": 1000000
     },
     "2c": { 
         "id": "qwen-plus-2025-09-11", 
         "name": "Qwen-Plus (09-11)", 
-        "desc": "9月快照", 
+        "desc": "9月快照 (高TPM)", 
         "price_in": 0.0008, 
-        "price_out": 0.002 
+        "price_out": 0.002,
+        "rpm": 60,
+        "tpm": 1000000
     },
     "2d": { 
         "id": "qwen-plus-2025-07-28", 
         "name": "Qwen-Plus (07-28)", 
-        "desc": "7月快照", 
+        "desc": "7月快照 (高TPM)", 
         "price_in": 0.0008, 
-        "price_out": 0.002 
+        "price_out": 0.002,
+        "rpm": 60,
+        "tpm": 1000000
     },
 
     # === DeepSeek 系列 (DashScope) ===
@@ -104,14 +123,17 @@ MODEL_REGISTRY = {
         "name": "DeepSeek-V3.2", 
         "desc": "685B 满血版", 
         "price_in": 0.002, 
-        "price_out": 0.003 
+        "price_out": 0.003,
+        "rpm": 15000,
+        "tpm": 1200000
     },
     "3a": { 
         "id": "deepseek-v3.2-exp", 
         "name": "DeepSeek-V3.2 Exp", 
         "desc": "实验版", 
         "price_in": 0.002, 
-        "price_out": 0.003 
+        "price_out": 0.003,
+        "rpm": 15000
     },
 }
 
@@ -127,12 +149,12 @@ LOOK_AHEAD_CHARS = 800      # 上下文预览长度
 
 # 并发配置 (参考 ppt2md.py)
 MAX_CHAPTER_WORKERS = 1     # 全局：同时处理多少个章节 (建议 1，避免电脑卡顿)
-MAX_CHUNK_WORKERS = 60      # 局部：每个章节内部开启多少并发 (全并发模式)
+MAX_CHUNK_WORKERS = 60      # 局部：每个章节内部开启多少并发 (全并发模式，配合限流器使用)
 
 # ================= System Prompt =================
 
 SYSTEM_PROMPT_TEMPLATE = r"""
-你是一个专业的学术排版专家。你的任务是将结构化的 Markdown 课堂笔记重写为高质量、符合严格学术排版规范的 LaTeX 文档。
+你是一个专业的学术排版专家。你的任务是将结构化的 Markdown 课堂笔记重写为高质量、符合严格学术排版规范的 LaTeX 文档。并且对于文中出现的推导过程，如果原来的过程是非常详细的，则你必须保留详细的推导过程，不许省略过程，不许偷懒
 对于原文，你只能非常少量地增加一些叙述性文字，来让文章更通顺，但是不要改变原意，完全无关的叙述性文字可以不写，宁缺毋滥
 现在你正在处理一个长文档的第 {index} 部分（共 {total} 部分）。
 
@@ -152,6 +174,7 @@ SYSTEM_PROMPT_TEMPLATE = r"""
 【LaTeX 格式核心规范 - 必须严格遵守】
 
 ### A. 数学公式
+对于文中出现的推导过程，如果原来的过程是非常详细的，则你必须保留详细的推导过程，不许省略过程，不许偷懒
 行内公式：使用 `$..$` ，比如 `$123$` ，不能使用`\(`
 1. **唯一行间公式环境**：
    - **绝对禁止**使用 `\[ ... \]` 或 `$$ ... $$`。
@@ -166,9 +189,11 @@ SYSTEM_PROMPT_TEMPLATE = r"""
        \end{aligned}
      \end{equation}
 3. **公式引用**：
-   - 必须给公式添加标签 `\label{eq:xxx}`。
+   - 不是每个公式都需要标签，当你在上下文中需要引用时，才给被引用的公式添加标签 `\label{eq:xxx}`。
+   - 或者你认为这个公式是比较重要的步骤，结果，结论，可能在后文被引用时，才给公式添加标签 `\label{eq:xxx}`。
    - 引用时**必须**使用 `\eqref{eq:xxx}` 命令。
-
+4. 推导过程，如果原来的过程是非常详细的，则你必须保留详细的推导过程，不许省略过程
+5. 你必须保留详细的你必须保留详细的推导过程！
 ### B. 定理与定义环境 (自定义环境)
 遇到定义、定理、例题等，**必须**优先使用用户自定义环境。格式为 `\begin{env}{标题}{label}`。
 
@@ -247,6 +272,48 @@ SYSTEM_PROMPT_TEMPLATE = r"""
 
 # ================= 工具类 =================
 
+class APIRateLimiter:
+    """全局API速率限制器 - 同时考量 RPM 和 TPM"""
+    def __init__(self, rpm, tpm=None):
+        self.rpm = rpm
+        self.tpm = tpm
+        
+        # 估算每请求 Token (Input ~4k + Output ~2k = 6k conservative)
+        avg_tokens_per_req = 6000 
+        
+        # 计算基于 RPM 的 RPS
+        rps_by_rpm = rpm / 60.0
+        
+        # 计算基于 TPM 的 RPS (如果有 TPM 限制)
+        rps_by_tpm = 999999
+        if tpm:
+            # TPM / 60 = Tokens per second
+            # T/s / AvgTokens = RPS
+            rps_by_tpm = (tpm / 60.0) / avg_tokens_per_req
+            
+        # 取两者较小值作为安全 RPS，并留 10% 余量
+        safe_rps = min(rps_by_rpm, rps_by_tpm) * 0.9
+        
+        self.interval = 1.0 / safe_rps if safe_rps > 0 else 1.0
+        self.last_req_time = 0
+        self.lock = threading.Lock()
+        
+        # Log 初始计算结果
+        print(f"    [RateLimiter] RPM={rpm}, TPM={tpm or 'Inf'}")
+        print(f"    [RateLimiter] Safe RPS={safe_rps:.2f} (Interval={self.interval:.2f}s)")
+        
+    def wait_for_slot(self):
+        """阻塞当前线程直到获得发送许可"""
+        with self.lock:
+            now = time.time()
+            # 如果距离上次请求时间太短，强制睡眠
+            elapsed = now - self.last_req_time
+            if elapsed < self.interval:
+                sleep_time = self.interval - elapsed
+                time.sleep(sleep_time)
+            
+            self.last_req_time = time.time()
+
 class CostEstimator:
     """负责扫描目录，交互选择，计算Token，展示价格"""
     def __init__(self, root_dir: str, model_config: dict):
@@ -261,30 +328,63 @@ class CostEstimator:
             self.console.print(f"[bold red]❌ 输入目录不存在: {self.root_dir}[/]")
             return {}
 
+        # === 交互询问扫描深度 ===
+        self.console.print(Panel("📂 目录扫描设置", style="bold blue"))
+        depth_input = input("👉 请输入扫描深度 (层级数, 默认为 1, 0 表示无限递归): ").strip()
+        max_depth = 1
+        if depth_input.isdigit():
+            max_depth = int(depth_input)
+            if max_depth == 0: max_depth = 99
+
         tasks = {}
-        # 扫描 Chapter 文件夹 (仅第一层)
-        for chapter_dir in self.root_dir.iterdir():
-            if chapter_dir.is_dir():
-                # 排除隐藏文件夹
-                if chapter_dir.name.startswith('.'): continue
-                
-                # 查找 Slide_*.md，且不包含 _FULL.md, _merged.md 等
-                md_files = []
-                for f in chapter_dir.glob("Slide_*.md"):
-                    if "_FULL" in f.name or "merged" in f.name.lower():
+        base_depth = len(self.root_dir.parts)
+        
+        self.console.print(f"[dim]正在扫描目录 (深度: {max_depth})...[/]")
+
+        # 扫描 Chapter 文件夹
+        for root, dirs, files in os.walk(self.root_dir):
+            root_path = Path(root)
+            current_depth = len(root_path.parts) - base_depth
+            
+            # 1. 深度控制：如果到达 max_depth，停止向下遍历 (修剪 dirs)
+            # 例如 max_depth=1: current_depth=0 是 root, current_depth=1 是 chapter. 
+            # 当我们处在 depth=1 时，如果不修剪，下次会进入 depth=2。
+            # 所以在 current_depth >= max_depth 时，不再允许进入子目录。
+            if current_depth >= max_depth:
+                del dirs[:]
+            
+            # 2. 根目录本身通常不视为 Chapter，除非它直接包含 Slide
+            # 但按惯例，我们通常跳过 root 本身，只看子文件夹
+            if current_depth < 1:
+                continue
+
+            # 3. 检查当前目录是否包含 Slide 文件
+            if root_path.name.startswith('.'): continue
+            
+            # 查找 Slide_*.md
+            md_files = []
+            for f_name in files:
+                if f_name.startswith("Slide_") and f_name.endswith(".md"):
+                     if "_FULL" in f_name or "merged" in f_name.lower():
                         continue
-                    md_files.append(f)
+                     md_files.append(root_path / f_name)
+            
+            if not md_files:
+                continue
                 
-                if not md_files:
-                    continue
-                    
-                md_files.sort(key=lambda p: self._extract_slide_num(p.name))
-                
-                # 预计算字符数（快速）
-                tasks[chapter_dir.name] = {
-                    "files": md_files,
-                    "char_count": -1 # 待计算
-                }
+            md_files.sort(key=lambda p: self._extract_slide_num(p.name))
+            
+            # 4. 生成任务 Key (使用相对路径)
+            try:
+                chap_name = str(root_path.relative_to(self.root_dir))
+            except:
+                chap_name = root_path.name
+
+            tasks[chap_name] = {
+                "files": md_files,
+                "char_count": -1 # 待计算
+            }
+            
         self.all_tasks = tasks
         return tasks
 
@@ -699,11 +799,18 @@ class LatexGenerator:
             for chunk in responses:
                 if chunk.status_code == 200:
                     delta = chunk.output.choices[0].message
-                    # 我们主要关心 content，忽略 reasoning (或者记录日志)
-                    if hasattr(delta, 'content') and delta.content:
-                        yield delta.content
-                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                        # 这里可以写日志，暂时忽略
+                    # Safely access content
+                    content = getattr(delta, 'content', None)
+                    if content:
+                        yield content
+                    
+                    # Safely access reasoning_content
+                    # Handle potential KeyError from AttrDict.__getattr__ if attribute missing
+                    try:
+                        reasoning = getattr(delta, 'reasoning_content', None)
+                        if reasoning:
+                            pass # 忽略思考过程
+                    except (AttributeError, KeyError):
                         pass
                 else:
                     raise Exception(f"API Error: {chunk.code} - {chunk.message}")
@@ -723,6 +830,13 @@ class WorkflowController:
         self.selected_model_config = self._select_model(model_arg)
         self.model_name = self.selected_model_config['id']
         
+        # 初始化限流器 (支持 TPM 约束)
+        rpm = self.selected_model_config.get('rpm', 600)
+        tpm = self.selected_model_config.get('tpm', None) # 获取 TPM 配置
+        
+        self.rate_limiter = APIRateLimiter(rpm, tpm)
+        self.console.print(f"[dim]⚡ 限流器已启动: Limit ~ {rpm} RPM / {tpm if tpm else 'Inf'} TPM[/]")
+
         self._setup_logger()
 
     def _select_model(self, model_arg):
@@ -787,10 +901,17 @@ class WorkflowController:
         self.logger.addHandler(file_handler)
 
     def run(self):
+        global MAX_CHUNK_WORKERS
         self.console.print(Panel(f"MD2LaTeX Pro ({self.model_name})", style="bold purple"))
         self.console.print(f"Input: {self.input_dir}")
         self.console.print(f"Output: {self.output_dir}")
-        self.console.print(f"Global Workers: {MAX_CHAPTER_WORKERS} | Inner Workers: {MAX_CHUNK_WORKERS}")
+        
+        # === 允许用户调整并发数 ===
+        self.console.print(f"Default Inner Workers: {MAX_CHUNK_WORKERS}")
+        w_input = input(f"👉 按回车使用默认并发 ({MAX_CHUNK_WORKERS}), 或输入新数值 (建议 5-10): ").strip()
+        if w_input.isdigit() and int(w_input) > 0:
+            MAX_CHUNK_WORKERS = int(w_input)
+            self.console.print(f"🔧 并发数已调整为: [bold green]{MAX_CHUNK_WORKERS}[/]")
         
         # 1. 扫描与交互选择
         estimator = CostEstimator(self.input_dir, self.selected_model_config)
@@ -976,6 +1097,9 @@ class WorkflowController:
         total = item.get('total', '?')
         index = item.get('index', 0) + 1
         
+        # [RateLimit] 申请发射令牌 (阻断过快的请求)
+        self.rate_limiter.wait_for_slot()
+        
         # [Debug] 记录线程启动时间，证明并发正在发生
         self.logger.info(f"[Thread-Start] Chunk {index}/{total} 正在开始处理...")
 
@@ -991,7 +1115,7 @@ class WorkflowController:
             item.get('chapter_toc', '')
         )
         
-        max_retries = 3
+        max_retries = 5
         last_error = None
         
         for attempt in range(max_retries):
@@ -1007,7 +1131,24 @@ class WorkflowController:
                 return full_response
             except Exception as e:
                 last_error = e
-                time.sleep((attempt + 1) * 2)
+                err_str = str(e)
+                
+                # 计算等待时间 (指数退避 + 抖动)
+                base_wait = (attempt + 1) * 2
+                
+                # 针对限流错误大幅增加等待时间
+                if "AllocationQuota" in err_str:
+                    # TPM/Quota 超限通常需要等待较久才能恢复 (例如一分钟窗口重置)
+                    base_wait = 20 + (attempt * 10) # 20s, 30s, 40s...
+                elif "Throttling" in err_str:
+                    base_wait = (attempt + 1) * 5 + 5 # 10s, 15s...
+                else:
+                    base_wait = (attempt + 1) * 2 
+                
+                wait_time = base_wait + random.uniform(1, 5) # 增加 1-5s 随机抖动避免惊群效应
+                
+                self.logger.warning(f"Chunk {index} failed (Attempt {attempt+1}/{max_retries}): {e}. Retry in {wait_time:.1f}s...")
+                time.sleep(wait_time)
         
         raise Exception(f"Failed after {max_retries} retries: {last_error}")
 
