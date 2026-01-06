@@ -205,4 +205,14 @@ A: 请查看 `log/` 文件夹下的日志文件。
 
 ---
 
+## 📚 进阶工具: MD2LaTeX Pro
+
+本项目包含一个配套的高级排版工具 `md2latex.py`，用于将生成的 Markdown 笔记转换为高质量的学术 LaTeX 文档。
+
+*   **功能**: 智能重构文档结构、修正 OCR 错误、生成严格规范的 LaTeX 代码。
+*   **特性**: 支持断点续传、按页码过滤、Metadata 追踪。
+*   **详细文档**: 请参阅 [README_md2latex.md](README_md2latex.md)
+
+---
+
 **Disclaimer**: 本工具基于阿里云 DashScope API 开发，使用过程中会产生 Token 费用。

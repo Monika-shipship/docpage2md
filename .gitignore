@@ -1,4 +1,4 @@
-# Image files
+# Image files (Input)
 *.png
 *.jpg
 *.jpeg
@@ -8,7 +8,25 @@
 *.tiff
 *.ico
 
-# Output and Input directories (inferred from project structure)
-# ppt_images/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.spec
+
+# VS Code
+.vscode/
+
+# Project Data & Outputs
+ppt_images/
 markdown_output/
+latex_output/
+temp_raw_vision/
+
+# Session & Logs
+session_*.json
 log/
+*.log
+
