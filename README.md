@@ -427,29 +427,6 @@ echo $env:DEEPSEEK_API_KEY
 
 如果某页视觉失败，程序会把该页 Raw Data 标为 `[Vision Failed]`，Step 2 仍会继续尝试生成。请优先查看日志和对应 `Slide_XX.md`。
 
-## 公开发布前检查
-
-如果你准备把仓库公开到 GitHub，请先确认不要提交以下内容：
-
-- API Key、`.env`、任何包含密钥的本地配置文件
-- `ppt_images/` 里的原始课件、截图、论文图片
-- `markdown_output/`、`markdown_output_*/` 里的生成笔记
-- `log/`、`log/sessions/`、`.cache/`、`session_*.json`
-- 临时 Raw Data，例如 `Raw_01.json`
-- 私人路径、邮箱、学校/公司内部材料、未授权课件内容
-
-本仓库的 `.gitignore` 已默认忽略这些常见本地文件，但公开前仍建议运行：
-
-```powershell
-git status --short
-git ls-files
-git grep -n -I -E "sk-[A-Za-z0-9_-]{16,}|C:\\Users|D:\\Repos|Administrator|@"
-```
-
-如果这些内容曾经被提交过，只从当前文件里删除还不够，Git 历史里仍然可能保留。公开前应重新创建一个干净仓库，或使用 `git filter-repo` / BFG 清理历史；已经暴露过的 API Key 应在服务商控制台吊销并重新生成。
-
-另外，项目目前没有附带开源许可证。公开 GitHub 仓库前建议根据你的意愿添加 `LICENSE`，例如 MIT、Apache-2.0 或其他许可证。
-
 ## 目录结构
 
 ```text
@@ -478,3 +455,7 @@ ProjectRoot/
 ## 费用声明
 
 本工具会调用阿里云 DashScope、DeepSeek 或你配置的第三方 API。运行会产生 token 费用。任务开始前请认真查看成本预估，实际账单以服务商为准。
+
+## 许可证
+
+本项目使用 MIT License，详见 [LICENSE](LICENSE)。
