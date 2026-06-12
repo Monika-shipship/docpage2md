@@ -11,5 +11,11 @@
 # Output and Input directories (inferred from project structure)
 ppt_images/
 markdown_output/
+markdown_output_*/
 log/
 latex_output/
+session_*.json
+
+# Python cache files
+__pycache__/
+*.py[cod]
