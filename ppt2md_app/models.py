@@ -13,7 +13,7 @@ from .config import AppConfig
 from .env import get_dashscope_api_key, get_deepseek_api_key, get_env_value
 from .prompts import PROMPT_STAGE_1_VISION, PROMPT_STAGE_2_BRAIN
 
-_logger = logging.getLogger("PPT2MD.models")
+_logger = logging.getLogger("DocPage2MD.models")
 
 
 # ==========================================================================

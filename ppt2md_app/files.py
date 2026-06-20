@@ -15,7 +15,7 @@ def setup_logger(config: AppConfig):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = config.log_path / f"log_{config.session_name}_{timestamp}.log"
 
-    logger = logging.getLogger(f"PPT2MD_{config.session_name}")
+    logger = logging.getLogger(f"DocPage2MD_{config.session_name}")
     logger.setLevel(logging.INFO)
     logger.propagate = False
 

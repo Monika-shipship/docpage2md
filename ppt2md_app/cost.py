@@ -143,7 +143,7 @@ def show_cost_estimation(console, tasks_config, config):
     from .model_catalog import load_model_catalog
 
     table = Table(title="💰 任务成本预估 (仅供参考)", show_header=True, header_style="bold magenta")
-    table.add_column("PPT 任务", style="cyan")
+    table.add_column("文档页任务", style="cyan")
     table.add_column("页数", justify="right")
     table.add_column("图片Token均值/范围", justify="right")
     table.add_column("输入Token(M)", justify="right")

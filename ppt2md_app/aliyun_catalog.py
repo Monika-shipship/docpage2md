@@ -319,7 +319,7 @@ def fetch_model_ids_from_docs(
 
 def _fetch_page(url: str, timeout: int = 10) -> Optional[str]:
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "PPT2MD-ModelCatalog/2.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "DocPage2MD-ModelCatalog/2.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
         try:

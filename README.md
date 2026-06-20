@@ -1,8 +1,12 @@
-# PPT2MD-V10
+# DocPage2MD
 
-把一组 PPT 截图、扫描页、论文图片批量转换成结构化 Markdown 笔记。
+把一组文档页图片批量转换成结构化 Markdown 笔记。
 
-它不是读取 `.pptx` 文件，而是读取图片目录，例如：
+`DocPage2MD` 是 `Document Page to Markdown` 的缩写。这里的 `DocPage` 指“文档页图片”，不是网页页面：PDF 每页导出的 PNG/JPG、扫描页、论文页截图、PPT 幻灯片导出的图片、直接截取的教材页图片都属于这一类。项目早期叫 `PPT2MD` / `png2md`，但实际输入大多数是 `.png` 等图片文件；为了兼容 PDF 中有文本层和无文本层两种情况，当前流程统一先按“文档页图片”处理，再转换成 Markdown。
+
+历史兼容说明：旧入口 `ppt2md.py`、旧包名 `ppt2md_app`、默认输入目录 `ppt_images` 暂时保留，避免破坏已有脚本和本地任务目录。新的推荐入口是 `docpage2md.py`。
+
+它不是直接读取 `.pptx` 或 `.pdf` 文件，而是读取图片目录，例如：
 
 ```text
 ppt_images/
@@ -87,7 +91,7 @@ $env:DASHSCOPE_API_KEY="sk-你的阿里云Key"
 
 ### 5. 准备图片
 
-在 `ppt_images` 下新建一个文件夹，文件夹名就是任务名：
+在默认输入目录 `ppt_images` 下新建一个文件夹，文件夹名就是任务名。这个目录名来自早期 `PPT2MD` 阶段，目前仍作为兼容默认值使用：
 
 ```text
 ppt_images/
@@ -112,13 +116,13 @@ ppt_images/
 ### 6. 启动
 
 ```powershell
-python ppt2md.py
+python docpage2md.py
 ```
 
 如果需要指定会话名和输出目录：
 
 ```powershell
-python ppt2md.py -n my_session -o .\markdown_output
+python docpage2md.py -n my_session -o .\markdown_output
 ```
 
 程序会先检查 `ppt_images` 是否存在，再让你选择模型，最后选择要处理的图片文件夹和页码范围。
@@ -131,7 +135,7 @@ python ppt2md.py -n my_session -o .\markdown_output
 2. 选择 Step 1 视觉模型
 3. 选择 Step 2 Brain 模型
 4. 扫描 `ppt_images`
-5. 选择 PPT 图片文件夹
+5. 选择文档页图片任务
 6. 选择页码范围
 7. 显示成本预估
 8. 确认开始
@@ -178,9 +182,9 @@ deepseek:deepseek-v4-flash
 
 具体是：
 
-1. Step 1 对同一个 PPT 的所有目标图片用 `ThreadPoolExecutor` 并发调用视觉模型。
+1. Step 1 对同一个文档页图片任务的所有目标图片用 `ThreadPoolExecutor` 并发调用视觉模型。
 2. 等 Step 1 全部完成或命中缓存后，Step 2 再对所有目标页并发调用 Brain 模型。
-3. 多个 PPT 文件夹之间还可以用进程池并行，但默认 `MAX_PPT_WORKERS = 1`，避免同时处理多个大任务导致 API 限流。
+3. 多个文档页图片任务之间还可以用进程池并行，但默认 `MAX_PPT_WORKERS = 1`，这个历史常量名暂时保留；默认值为 1 是为了避免同时处理多个大任务导致 API 限流。
 
 这样设计是为了让 Step 2 能看到完整的前后页 Raw Data。
 
@@ -273,16 +277,16 @@ kimi-k2.6
 
 ```powershell
 # 查看精选模型
-python ppt2md.py --list-models
+python docpage2md.py --list-models
 
 # 从阿里云文档抓取完整候选目录
-python ppt2md.py --refresh-models
+python docpage2md.py --refresh-models
 
 # 用 API 探针验证模型能力
-python ppt2md.py --verify-models --verify-limit 20
+python docpage2md.py --verify-models --verify-limit 20
 
 # 查看完整缓存目录，仅用于诊断
-python ppt2md.py --list-all-models
+python docpage2md.py --list-all-models
 ```
 
 说明：
@@ -362,7 +366,7 @@ Vision: qwen3.5-flash、qwen3.5-27b 或 qwen3-vl-flash
 Brain: deepseek-v4-flash
 ```
 
-适合清晰教材页、普通 PPT。
+适合清晰教材页、普通课件页。
 
 ### 质量优先
 
@@ -431,6 +435,7 @@ echo $env:DEEPSEEK_API_KEY
 
 ```text
 ProjectRoot/
+├── docpage2md.py
 ├── ppt2md.py
 ├── ppt2md_app/
 │   ├── aliyun_catalog.py

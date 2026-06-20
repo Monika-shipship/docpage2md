@@ -10,7 +10,7 @@ from .config import AppConfig
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="PPT2MD-V10 (Parallel Brain & Stream Fixed)")
+    parser = argparse.ArgumentParser(description="DocPage2MD (document-page images to Markdown)")
     parser.add_argument("-n", "--name", type=str, default="default", help="任务会话名称")
     parser.add_argument("-o", "--output", type=str, default="./markdown_output", help="输出目录路径")
 
@@ -255,6 +255,7 @@ def main(argv=None):
     console.print(
         Panel(
             f"""[bold]V10 终极版 (Parallel Brain / Raw Context)[/]
+    工具: [cyan]DocPage2MD[/]
     会话: [magenta]{config.session_name}[/] | API Key: 已设置
     -------------------------------------------------------
     Step 1 引擎: [cyan]{config.vision_provider}:{config.model_vision}[/] (并发: {config.vision_batch_workers})

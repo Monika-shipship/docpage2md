@@ -70,12 +70,12 @@ def interactive_setup(console, api_key, config: AppConfig):
         if choice != "n":
             return old_session
 
-    console.print("\n[bold green]📂 发现以下 PPT:[/]")
+    console.print("\n[bold green]📂 发现以下文档页图片任务:[/]")
     for i, name in enumerate(ppt_names):
         count = len(all_tasks[name])
         console.print(f"  [[bold cyan]{i + 1}[/]] {name} ([yellow]{count} 页[/])")
 
-    selection = input("\n👉 选择 PPT (如 1,3 | a): ").strip()
+    selection = input("\n👉 选择任务 (如 1,3 | a): ").strip()
     selected_names = []
     if selection.lower() == "a":
         selected_names = ppt_names
