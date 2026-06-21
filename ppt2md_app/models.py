@@ -12,6 +12,7 @@ from dashscope import Generation, MultiModalConversation
 from .config import AppConfig
 from .env import get_dashscope_api_key, get_deepseek_api_key, get_env_value
 from .prompts import PROMPT_STAGE_1_VISION, PROMPT_STAGE_2_BRAIN
+from .validators import first_api_error_prefix, is_api_error_text
 
 _logger = logging.getLogger("DocPage2MD.models")
 
@@ -327,12 +328,9 @@ def run_stage_1_vision(img_path, slide_no, ppt_name, msg_queue, config: AppConfi
             if not full_content:
                 if full_reasoning:
                     return {
-                        "success": True,
+                        "success": False,
                         "slide_no": slide_no,
-                        "raw_text": (
-                            "[Model only returned reasoning]\n\n"
-                            f"Reasoning Trace:\n{full_reasoning[:500]}..."
-                        ),
+                        "error": f"Model only returned reasoning. Trace: {full_reasoning[:200]}...",
                     }
                 return {
                     "success": False,
@@ -371,14 +369,14 @@ def _run_openai_compatible_vision(img_path, slide_no, config: AppConfig):
         base_url=config.vision_base_url,
         stream=True,
     )
-    if content.startswith("OpenAI"):
+    if content.startswith("OpenAI") or is_api_error_text(content):
         return {"success": False, "slide_no": slide_no, "error": content}
     if not content:
         if reasoning:
             return {
-                "success": True,
+                "success": False,
                 "slide_no": slide_no,
-                "raw_text": f"[Model only returned reasoning]\n\nReasoning Trace:\n{reasoning[:500]}...",
+                "error": f"Model only returned reasoning. Trace: {reasoning[:200]}...",
             }
         return {"success": False, "slide_no": slide_no, "error": "Empty response."}
     return {"success": True, "slide_no": slide_no, "raw_text": content}
@@ -406,12 +404,37 @@ def run_stage_2_brain_parallel(slide_no, raw_data_map, config: AppConfig):
     )
 
     if config.brain_provider == "deepseek":
-        return sanitize_stage_2_markdown(_run_deepseek_brain(filled_prompt, config), slide_no)
+        raw_response = _run_deepseek_brain(filled_prompt, config)
+    elif config.brain_provider in ("dashscope_openai", "openai_compatible"):
+        raw_response = _run_openai_compatible_brain(filled_prompt, config)
+    else:
+        raw_response = _run_dashscope_brain(filled_prompt, config)
 
-    if config.brain_provider in ("dashscope_openai", "openai_compatible"):
-        return sanitize_stage_2_markdown(_run_openai_compatible_brain(filled_prompt, config), slide_no)
+    if is_api_error_text(raw_response):
+        return {
+            "success": False,
+            "slide_no": slide_no,
+            "error": raw_response,
+            "error_code": first_api_error_prefix(raw_response) or "api_error_text",
+            "raw_response": raw_response,
+        }
 
-    return sanitize_stage_2_markdown(_run_dashscope_brain(filled_prompt, config), slide_no)
+    final_markdown = sanitize_stage_2_markdown(raw_response, slide_no)
+    if not final_markdown.strip():
+        return {
+            "success": False,
+            "slide_no": slide_no,
+            "error": "Empty Stage 2 markdown after sanitize.",
+            "error_code": "empty_markdown",
+            "raw_response": raw_response,
+        }
+
+    return {
+        "success": True,
+        "slide_no": slide_no,
+        "markdown": final_markdown,
+        "raw_response": raw_response,
+    }
 
 
 def sanitize_stage_2_markdown(markdown: str, slide_no: int) -> str:

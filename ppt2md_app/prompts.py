@@ -1,3 +1,7 @@
+PROMPT_STAGE_1_VERSION = "stage1-vision-2026-06-21"
+PROMPT_STAGE_2_VERSION = "stage2-brain-2026-06-21"
+
+
 PROMPT_STAGE_1_VISION = r"""
 任务：请对这张文档页图片进行详尽的视觉提取。它通常来自 PDF/PPT/扫描件导出的 PNG/JPG 页面图。
 

@@ -4,6 +4,7 @@ from typing import Dict, List
 
 from .config import AppConfig
 from .env import get_deepseek_api_key, get_env_value, set_user_env_value
+from .files import write_json
 from .model_catalog import (
     ROLE_BRAIN,
     ROLE_VISION,
@@ -284,6 +285,8 @@ def _apply_record(config: AppConfig, role: str, rec: ModelRecord):
 
 
 def _apply_registry_item(config: AppConfig, role: str, item: Dict):
+    if not filter_registry_models([item], role):
+        raise ValueError(f"第三方模型 {item.get('model_id')} 不适用于 {role}。")
     if role == ROLE_VISION:
         return replace(
             config,
@@ -700,8 +703,7 @@ def save_model_settings(base_config: AppConfig, selected_config: AppConfig):
         "brain_input_price_per_million": selected_config.brain_input_price_per_million,
         "brain_output_price_per_million": selected_config.brain_output_price_per_million,
     }
-    with base_config.model_settings_path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    write_json(base_config.model_settings_path, data)
 
 
 def apply_model_settings(config: AppConfig, settings: Dict):

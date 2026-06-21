@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 
 from .config import AppConfig
@@ -147,23 +148,45 @@ def extract_context(text):
     return "No context from previous page."
 
 
-def merge_markdowns(ppt_output_dir, ppt_name):
+def merge_markdowns(ppt_output_dir, ppt_name, allowed_slide_numbers=None):
     output_dir = Path(ppt_output_dir)
     final_path = output_dir / f"{ppt_name}_FULL.md"
-    md_files = sorted(output_dir.glob("Slide_*.md"), key=natural_sort_key)
-    if not md_files:
-        return
-
-    with final_path.open("w", encoding="utf-8") as outfile:
-        outfile.write(
+    allowed = set(allowed_slide_numbers) if allowed_slide_numbers is not None else None
+    slide_pattern = re.compile(r"^Slide_(\d+)\.md$")
+    md_files = []
+    for candidate in output_dir.glob("Slide_*.md"):
+        match = slide_pattern.match(candidate.name)
+        if not match:
+            continue
+        slide_no = int(match.group(1))
+        if allowed is not None and slide_no not in allowed:
+            continue
+        meta_path = output_dir / f"Slide_{slide_no:02d}.meta.json"
+        if meta_path.exists():
+            try:
+                meta = read_json(meta_path)
+            except Exception:
+                continue
+            if meta.get("status") != "ok":
+                continue
+        md_files.append(candidate)
+    chunks = [
+        (
             f"# {ppt_name} 汇总笔记\n\n"
             f"> 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             "> 引擎: V10 (Parallel Brain)\n\n"
         )
-        for md_file in md_files:
-            with md_file.open("r", encoding="utf-8") as infile:
-                outfile.write(infile.read())
-                outfile.write("\n\n---\n\n")
+    ]
+    md_files = sorted(md_files, key=natural_sort_key)
+    if not md_files:
+        chunks.append("> 本次运行没有可合并的成功页面。\n")
+        write_text_atomic(final_path, "".join(chunks))
+        return
+    for md_file in md_files:
+        with md_file.open("r", encoding="utf-8") as infile:
+            chunks.append(infile.read())
+            chunks.append("\n\n---\n\n")
+    write_text_atomic(final_path, "".join(chunks))
 
 
 def read_json(path):
@@ -172,5 +195,16 @@ def read_json(path):
 
 
 def write_json(path, data):
-    with Path(path).open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    text = json.dumps(data, indent=2, ensure_ascii=False)
+    write_text_atomic(path, text + "\n")
+
+
+def write_text_atomic(path, text):
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    with tmp_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, target)

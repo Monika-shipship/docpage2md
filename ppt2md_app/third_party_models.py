@@ -1,13 +1,16 @@
 import json
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from .aliyun_catalog import ModelRecord, infer_family
 from .config import AppConfig
+from .files import write_json
 from .model_catalog import ROLE_BRAIN, ROLE_VISION
 
 ROLE_BOTH = "both"
+REGISTRY_SCHEMA_VERSION = 1
 SUPPORTED_PROVIDERS = {
     "dashscope",
     "dashscope_openai",
@@ -18,35 +21,38 @@ SUPPORTED_ROLES = {ROLE_VISION, ROLE_BRAIN, ROLE_BOTH}
 
 
 def load_third_party_models(config: AppConfig) -> List[Dict]:
-    path = config.third_party_models_path
-    if not path.exists():
+    records, error = _read_registry_records(config)
+    if error:
         return []
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return []
-
-    records = data.get("models") if isinstance(data, dict) else data
-    if not isinstance(records, list):
-        return []
-    return [_normalize_registry_item(item) for item in records if isinstance(item, dict)]
+    items = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        normalized = _normalize_registry_item(item, preserve_timestamps=True)
+        if normalized["model_id"]:
+            items.append(normalized)
+    return items
 
 
 def save_third_party_models(config: AppConfig, models: List[Dict]):
     config.log_path.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": 1,
+        "version": REGISTRY_SCHEMA_VERSION,
         "updated_at": _now_iso(),
-        "models": [_normalize_registry_item(item) for item in models],
+        "models": [_normalize_registry_item(item, preserve_timestamps=True) for item in models if item.get("model_id")],
     }
-    with config.third_party_models_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+    write_json(config.third_party_models_path, payload)
 
 
 def upsert_third_party_model(config: AppConfig, item: Dict) -> Dict:
+    _, error = _read_registry_records(config)
+    if error:
+        raise ValueError(f"第三方模型注册表无法读取，已拒绝覆盖: {error}")
+
     models = load_third_party_models(config)
     normalized = _normalize_registry_item(item)
+    if not normalized["model_id"]:
+        raise ValueError("model_id 不能为空。")
     normalized_key = _dedupe_key(normalized)
     for index, existing in enumerate(models):
         if existing["id"] == normalized["id"] or _dedupe_key(existing) == normalized_key:
@@ -118,7 +124,9 @@ def parse_bulk_models_text(raw_text: str, defaults: Optional[Dict] = None) -> Li
                 if isinstance(obj, dict):
                     merged = dict(defaults)
                     merged.update(obj)
-                    items.append(_normalize_registry_item(merged))
+                    normalized = _normalize_registry_item(merged)
+                    if normalized["model_id"]:
+                        items.append(normalized)
             return items
     except Exception:
         pass
@@ -141,7 +149,9 @@ def parse_bulk_models_text(raw_text: str, defaults: Optional[Dict] = None) -> Li
             item["input_price"] = _safe_float(parts[3])
         if len(parts) > 4:
             item["output_price"] = _safe_float(parts[4])
-        items.append(_normalize_registry_item(item))
+        normalized = _normalize_registry_item(item)
+        if normalized["model_id"]:
+            items.append(normalized)
     return items
 
 
@@ -190,26 +200,55 @@ def discover_openai_compatible_models(base_url: str, api_key: str, timeout: int 
     return items
 
 
-def _normalize_registry_item(item: Dict) -> Dict:
+def _read_registry_records(config: AppConfig):
+    path = config.third_party_models_path
+    if not path.exists():
+        return [], None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        return [], str(exc)
+
+    if isinstance(data, list):
+        return data, None
+
+    if not isinstance(data, dict):
+        return [], "registry root must be an object or legacy list"
+
+    version = data.get("version", REGISTRY_SCHEMA_VERSION)
+    if version != REGISTRY_SCHEMA_VERSION:
+        return [], f"unsupported registry schema version {version}"
+
+    records = data.get("models")
+    if not isinstance(records, list):
+        return [], "registry models must be a list"
+    return records, None
+
+
+def _normalize_registry_item(item: Dict, preserve_timestamps: bool = False) -> Dict:
     now = _now_iso()
     roles = _parse_roles(item.get("roles"))
+    provider = (item.get("provider") or "openai_compatible").strip()
+    if provider not in SUPPORTED_PROVIDERS:
+        provider = "openai_compatible"
     return {
         "id": item.get("id") or str(uuid.uuid4()),
         "name": (item.get("name") or item.get("display_name") or item.get("model_id") or "未命名模型").strip(),
-        "provider": (item.get("provider") or "openai_compatible").strip(),
-        "base_url": (item.get("base_url") or "").strip(),
-        "api_key_env": (item.get("api_key_env") or "OPENAI_API_KEY").strip(),
+        "provider": provider,
+        "base_url": _canonical_base_url(item.get("base_url") or ""),
+        "api_key_env": _canonical_api_key_env(item.get("api_key_env") or "OPENAI_API_KEY"),
         "model_id": (item.get("model_id") or "").strip(),
         "roles": roles,
-        "supports_vision": item.get("supports_vision"),
-        "supports_thinking": item.get("supports_thinking"),
+        "supports_vision": _coerce_optional_bool(item.get("supports_vision")),
+        "supports_thinking": _coerce_optional_bool(item.get("supports_thinking")),
         "input_price": _safe_float(item.get("input_price")),
         "output_price": _safe_float(item.get("output_price")),
         "price_source": (item.get("price_source") or "manual").strip(),
         "note": (item.get("note") or "").strip(),
         "verification": item.get("verification") or {},
         "created_at": item.get("created_at") or now,
-        "updated_at": now,
+        "updated_at": item.get("updated_at") if preserve_timestamps and item.get("updated_at") else now,
     }
 
 
@@ -251,18 +290,41 @@ def _safe_float(value):
     if value in (None, ""):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
 
 
 def _dedupe_key(item: Dict):
     return (
         (item.get("provider") or "").strip().lower(),
-        (item.get("base_url") or "").strip().rstrip("/").lower(),
-        (item.get("api_key_env") or "").strip(),
+        _canonical_base_url(item.get("base_url") or "").lower(),
+        _canonical_api_key_env(item.get("api_key_env") or ""),
         (item.get("model_id") or "").strip().lower(),
     )
+
+
+def _canonical_base_url(base_url: str) -> str:
+    return (base_url or "").strip().rstrip("/")
+
+
+def _canonical_api_key_env(env_name: str) -> str:
+    return (env_name or "OPENAI_API_KEY").strip().upper()
+
+
+def _coerce_optional_bool(value):
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "yes", "y", "1"):
+            return True
+        if normalized in ("false", "no", "n", "0"):
+            return False
+    return None
 
 
 def _build_note(item: Dict) -> str:
