@@ -16,7 +16,7 @@ from .config import AppConfig
 from .files import merge_markdowns, read_json, write_json, write_text_atomic
 from .models import run_stage_1_vision, run_stage_2_brain_parallel, set_dashscope_api_key
 from .refiner import refine_slide_markdown
-from .reporting import build_run_report, finalize_run_report, stage_blocked, stage_failed, summarize_blocks
+from .reporting import build_run_report, finalize_run_report, refresh_page_suspects, stage_blocked, stage_failed, summarize_blocks
 from .validators import first_api_error_prefix, is_api_error_text, validate_slide_markdown
 
 
@@ -93,11 +93,15 @@ def process_single_ppt_task(ppt_name, task_config, msg_queue, config: AppConfig)
         for slide_no in ok_slides:
             page_reports[slide_no]["final"]["included_in_full"] = True
 
+        for page in page_reports.values():
+            refresh_page_suspects(page)
         finalize_run_report(report)
         write_json(report_path, report)
         msg_queue.put(("log", f"[{ppt_name}] 全部流程结束，总耗时 {perf_counter() - pipeline_started:.1f}s"))
         return f"{ppt_name} Done"
     except Exception:
+        for page in page_reports.values():
+            refresh_page_suspects(page)
         finalize_run_report(report)
         write_json(report_path, report)
         raise
@@ -129,6 +133,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                 stage_failed(page, "stage1", "image_fingerprint_failed", message)
                 page["stage1"]["cache"] = "miss"
                 page["final"].update({"status": "failed", "reason": "stage1_image_fingerprint_failed"})
+                refresh_page_suspects(page)
                 write_json(
                     temp_dir / f"Raw_{actual_slide_no:02d}.error.json",
                     build_error_sidecar(actual_slide_no, "stage1", "image_fingerprint_failed", message),
@@ -148,6 +153,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                         page["quality"] = summarize_blocks(data.get("blocks") or [])
                         page["provenance"] = data.get("provenance") or page.get("provenance")
                         page["block_refiner"] = data.get("block_refiner") or page.get("block_refiner")
+                        refresh_page_suspects(page)
                         page["stage1"].update(
                             {
                                 "status": "ok",
@@ -187,6 +193,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                         message = raw_text or "Empty Stage 1 raw text."
                         stage_failed(page, "stage1", first_api_error_prefix(message) or "invalid_raw_text", message)
                         page["final"].update({"status": "failed", "reason": "stage1_invalid_raw_text"})
+                        refresh_page_suspects(page)
                         write_json(
                             temp_dir / f"Raw_{slide_no:02d}.error.json",
                             build_error_sidecar(slide_no, "stage1", "invalid_raw_text", message),
@@ -201,6 +208,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                     page["quality"] = summarize_blocks(cache_record.get("blocks") or [])
                     page["provenance"] = cache_record.get("provenance") or page.get("provenance")
                     page["block_refiner"] = cache_record.get("block_refiner") or page.get("block_refiner")
+                    refresh_page_suspects(page)
                     page["stage1"].update(
                         {
                             "status": "ok",
@@ -215,6 +223,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                     stage_failed(page, "stage1", first_api_error_prefix(message) or "stage1_failed", message)
                     page["stage1"]["elapsed_seconds"] = round(perf_counter() - started_at, 3)
                     page["final"].update({"status": "failed", "reason": "stage1_failed"})
+                    refresh_page_suspects(page)
                     write_json(
                         temp_dir / f"Raw_{slide_no:02d}.error.json",
                         build_error_sidecar(slide_no, "stage1", "stage1_failed", message),
@@ -228,6 +237,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                 stage_failed(page, "stage1", "stage1_exception", str(e))
                 page["stage1"]["elapsed_seconds"] = round(perf_counter() - started_at, 3)
                 page["final"].update({"status": "failed", "reason": "stage1_exception"})
+                refresh_page_suspects(page)
                 failed += 1
             finally:
                 msg_queue.put(("advance", task_id, 1))
@@ -279,6 +289,7 @@ def _run_brain_stage(
                 message = "Stage 1 没有可用 Raw Data。"
                 stage_blocked(page, "stage2", "stage1_not_ok", message)
                 page["final"].update({"status": "failed", "reason": "stage1_not_ok"})
+                refresh_page_suspects(page)
                 _write_stage2_failure(ppt_root, actual_slide_no, "stage1_not_ok", message)
                 msg_queue.put(("advance", task_id, 1))
                 failed += 1
@@ -300,6 +311,7 @@ def _run_brain_stage(
                             neighbor_raw=_neighbor_raw_map(raw_data_map, actual_slide_no),
                         )
                         page["validation"] = validation.to_dict()
+                        refresh_page_suspects(page)
                         if validation.ok:
                             page["stage2"].update(
                                 {
@@ -358,11 +370,13 @@ def _run_brain_stage(
                         neighbor_raw=_neighbor_raw_map(raw_data_map, slide_no),
                     )
                     page["validation"] = validation.to_dict()
+                    refresh_page_suspects(page)
                     if not validation.ok:
                         message = "; ".join(issue.message for issue in validation.errors)
                         stage_failed(page, "stage2", "validation_failed", message)
                         page["stage2"]["elapsed_seconds"] = round(perf_counter() - started_at, 3)
                         page["final"].update({"status": "failed", "reason": "stage2_validation_failed"})
+                        refresh_page_suspects(page)
                         _write_stage2_failure(ppt_root, slide_no, "validation_failed", message, validation=validation.to_dict())
                         failed += 1
                         continue
@@ -393,6 +407,7 @@ def _run_brain_stage(
                     stage_failed(page, "stage2", code, message)
                     page["stage2"]["elapsed_seconds"] = round(perf_counter() - started_at, 3)
                     page["final"].update({"status": "failed", "reason": "stage2_failed"})
+                    refresh_page_suspects(page)
                     _write_stage2_failure(ppt_root, slide_no, code, message, raw_response=result.get("raw_response"))
                     failed += 1
             except Exception as e:
@@ -400,6 +415,7 @@ def _run_brain_stage(
                 stage_failed(page, "stage2", "stage2_exception", str(e))
                 page["stage2"]["elapsed_seconds"] = round(perf_counter() - started_at, 3)
                 page["final"].update({"status": "failed", "reason": "stage2_exception"})
+                refresh_page_suspects(page)
                 _write_stage2_failure(ppt_root, slide_no, "stage2_exception", str(e))
                 failed += 1
             finally:

@@ -65,6 +65,8 @@ def test_brain_stage_error_does_not_write_normal_markdown(monkeypatch, tmp_path)
     assert (tmp_path / "Slide_01.error.json").exists()
     assert read_json(tmp_path / "Slide_01.meta.json")["status"] == "failed"
     assert page_reports[1]["final"]["status"] == "failed"
+    assert page_reports[1]["suspects"][0]["code"] == "Brain Error"
+    assert page_reports[1]["suspects"][0]["op_hint"] == "mark_failed_page"
 
 
 def test_brain_stage_records_checked_refiner_ops(monkeypatch, tmp_path):
@@ -157,7 +159,11 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     assert report["summary"]["formula_warning_count"] == 1
     assert report["summary"]["table_warning_count"] == 1
     assert report["summary"]["ocr_coverage_warning_count"] == 1
+    assert report["summary"]["suspects"]["by_code"]["ocr_coverage_low"] == 1
+    assert report["summary"]["suspects"]["by_code"]["table_quality_warning"] == 1
+    assert report["summary"]["suspects"]["by_code"]["latex_frac_missing_braces"] == 1
     assert "ocr_coverage_low" in {issue["code"] for issue in report["pages"][0]["validation"]["warnings"]}
+    assert report["pages"][0]["suspects"]
     assert report["pages"][0]["stage1"]["blocks_count"] >= 1
     assert report["pages"][0]["block_refiner"]["changed"] is True
     assert report["pages"][0]["block_refiner"]["applied_ops"][0]["op"]["op"] == "normalize_formula"

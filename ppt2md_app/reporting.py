@@ -8,6 +8,7 @@ from .artifacts import (
     report_prompt_identity,
 )
 from .config import AppConfig
+from .detect import detect_page_suspects, summarize_suspects
 from .provenance import merge_provenance_summaries
 from .table_quality import assess_table
 from .versioning import PNG2MD_PIPELINE_VERSION
@@ -31,6 +32,7 @@ def build_run_report(
                 "stage2": _stage_state(),
                 "validation": {"ok": None, "errors": [], "warnings": []},
                 "quality": _empty_quality_summary(),
+                "suspects": [],
                 "provenance": {"schema_version": None, "entries": [], "summary": {}},
                 "block_refiner": {"version": None, "changed": False, "applied_ops": [], "dismissed": [], "validation": None},
                 "refiner": {"changed": False, "applied_ops": [], "dismissed": []},
@@ -102,6 +104,7 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "formula_warning_count": formula_warning_count,
         "table_warning_count": table_warning_count,
         "ocr_coverage_warning_count": ocr_coverage_warning_count,
+        "suspects": summarize_suspects(pages),
     }
     if pages_ok == len(pages):
         report["status"] = "ok"
@@ -167,6 +170,19 @@ def summarize_blocks(blocks: Iterable[Dict[str, Any]] | None) -> Dict[str, Any]:
                     }
                 )
     return summary
+
+
+def refresh_page_suspects(page: Dict[str, Any]) -> list[Dict[str, Any]]:
+    suspects = detect_page_suspects(
+        slide_no=int(page.get("slide_no") or 0),
+        stage1=page.get("stage1") or {},
+        stage2=page.get("stage2") or {},
+        validation=page.get("validation") or {},
+        quality=page.get("quality") or {},
+        block_refiner=page.get("block_refiner") or {},
+    )
+    page["suspects"] = suspects
+    return suspects
 
 
 def _stage_state():
