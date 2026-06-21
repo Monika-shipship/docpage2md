@@ -9,7 +9,7 @@ from .renderer import (
     render_page_record_to_markdown,
 )
 
-PAGE_IR_SCHEMA_VERSION = 3
+PAGE_IR_SCHEMA_VERSION = 4
 
 
 def build_page_ir(raw_text: str, slide_no: int) -> Dict[str, Any]:

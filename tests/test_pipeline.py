@@ -107,7 +107,9 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
             "raw_text": (
                 "标题:\n\n"
                 "### Formula\n"
-                "E = [?] mc^2\n\n"
+                "$$\n"
+                "E = [?] mc^2\n"
+                "$$\n\n"
                 "### Table Analysis\n"
                 "| A | B |\n"
                 "| --- | --- |\n"
@@ -141,13 +143,18 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     raw = read_json(deck_dir / "temp_raw_vision" / "Raw_01.json")
     assert report["status"] == "ok"
     assert report["summary"]["pages_ok"] == 1
+    assert report["summary"]["block_refiner_changed_pages"] == 1
+    assert report["summary"]["block_refiner_applied_ops"] == 1
     assert report["summary"]["block_counts"]["formula_block"] == 1
     assert report["summary"]["figure_count"] == 1
     assert report["summary"]["figure_warning_count"] == 1
     assert report["summary"]["formula_warning_count"] == 1
     assert report["summary"]["table_warning_count"] == 1
     assert report["pages"][0]["stage1"]["blocks_count"] >= 1
+    assert report["pages"][0]["block_refiner"]["changed"] is True
+    assert report["pages"][0]["block_refiner"]["applied_ops"][0]["op"]["op"] == "normalize_formula"
     assert report["pages"][0]["quality"]["figure_warning_count"] == 1
     assert report["pages"][0]["quality"]["table_warning_count"] == 1
     assert raw["blocks"]
+    assert raw["block_refiner"]["applied_ops"][0]["after_block_ids"]
     assert "# Slide 1" in (deck_dir / "Deck_FULL.md").read_text(encoding="utf-8")

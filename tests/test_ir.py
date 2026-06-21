@@ -6,7 +6,7 @@ from ppt2md_app.ir import build_page_ir, render_blocks_to_markdown, render_page_
 def test_build_page_ir_creates_stable_blocks():
     ir = build_page_ir("标题:\n\n- a\n- b\n\n### Figure Analysis\n左侧是 A。\n", 3)
 
-    assert ir["schema_version"] == 3
+    assert ir["schema_version"] == 4
     assert [block["id"] for block in ir["blocks"]] == ["p0003-b001", "p0003-b002", "p0003-b003"]
     assert [block["type"] for block in ir["blocks"]] == ["heading", "list", "figure_note"]
     assert [block["text"] for block in ir["blocks"]] == ["标题:", "- a\n- b", "左侧是 A。"]

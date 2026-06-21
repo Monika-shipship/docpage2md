@@ -30,6 +30,7 @@ def build_run_report(
                 "stage2": _stage_state(),
                 "validation": {"ok": None, "errors": [], "warnings": []},
                 "quality": _empty_quality_summary(),
+                "block_refiner": {"version": None, "changed": False, "applied_ops": [], "dismissed": [], "validation": None},
                 "refiner": {"changed": False, "applied_ops": [], "dismissed": []},
                 "final": {
                     "status": "pending",
@@ -67,6 +68,7 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
     stage1_cache_hits = sum(1 for page in pages if page.get("stage1", {}).get("cache") == "hit")
     stage2_cache_hits = sum(1 for page in pages if page.get("stage2", {}).get("cache") == "hit")
     warnings = sum(len(page.get("validation", {}).get("warnings") or []) for page in pages)
+    block_refiner_applied_ops = sum(len(page.get("block_refiner", {}).get("applied_ops") or []) for page in pages)
     formula_warning_count = sum(
         _count_validation_codes(page, ("formula_", "latex_"))
         + int(page.get("quality", {}).get("formula_warning_count") or 0)
@@ -86,6 +88,8 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "stage2_cache_hits": stage2_cache_hits,
         "fail_open_pages": sum(1 for page in pages if page.get("final", {}).get("status") == "fail_open"),
         "validation_warnings": warnings,
+        "block_refiner_changed_pages": sum(1 for page in pages if page.get("block_refiner", {}).get("changed")),
+        "block_refiner_applied_ops": block_refiner_applied_ops,
         "block_counts": block_counts,
         "uncertain_block_count": block_counts.get("uncertain", 0),
         "figure_count": block_counts.get("figure_note", 0),

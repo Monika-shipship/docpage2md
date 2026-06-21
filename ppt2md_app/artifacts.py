@@ -11,6 +11,7 @@ from .prompts import (
     PROMPT_STAGE_2_VERSION,
     PROMPT_STAGE_2_BRAIN,
 )
+from .refiner import BLOCK_REFINER_VERSION, refine_page_ir
 from .versioning import PNG2MD_PIPELINE_VERSION
 
 
@@ -81,7 +82,8 @@ def build_raw_cache_record(result: Dict[str, Any], image_path: str | Path, confi
     raw_text = result.get("raw_text") or ""
     slide_no = int(result.get("slide_no") or 0)
     fingerprint = stage1_fingerprint(image_path, config)
-    page_ir = build_page_ir(raw_text, slide_no)
+    block_refine_result = refine_page_ir(build_page_ir(raw_text, slide_no), slide_no=slide_no, target_raw=raw_text)
+    page_ir = block_refine_result.page_ir
     return {
         "schema_version": RAW_CACHE_SCHEMA_VERSION,
         "status": "ok",
@@ -90,6 +92,7 @@ def build_raw_cache_record(result: Dict[str, Any], image_path: str | Path, confi
         "raw_text": raw_text,
         "blocks": page_ir["blocks"],
         "page_ir": page_ir,
+        "block_refiner": block_refine_result.to_dict(),
         "raw_text_sha256": sha256_text(raw_text),
         "error": None,
         "metadata": {
@@ -103,6 +106,7 @@ def build_raw_cache_record(result: Dict[str, Any], image_path: str | Path, confi
                 "sha256": fingerprint["prompt_sha256"],
             },
             "ir_schema_version": PAGE_IR_SCHEMA_VERSION,
+            "block_refiner_version": BLOCK_REFINER_VERSION,
             "model": fingerprint["model"],
         },
         "fingerprint": fingerprint,
@@ -175,6 +179,9 @@ def validate_raw_cache_record(
         return False, "invalid"
     page_ir = data.get("page_ir")
     if not isinstance(page_ir, dict) or page_ir.get("schema_version") != PAGE_IR_SCHEMA_VERSION:
+        return False, "invalid"
+    block_refiner = data.get("block_refiner")
+    if not isinstance(block_refiner, dict) or block_refiner.get("version") != BLOCK_REFINER_VERSION:
         return False, "invalid"
     if data.get("raw_text_sha256") != sha256_text(raw_text):
         return False, "invalid"
