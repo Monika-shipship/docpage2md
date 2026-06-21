@@ -172,7 +172,7 @@ def summarize_blocks(blocks: Iterable[Dict[str, Any]] | None) -> Dict[str, Any]:
     return summary
 
 
-def refresh_page_suspects(page: Dict[str, Any]) -> list[Dict[str, Any]]:
+def refresh_page_suspects(page: Dict[str, Any], blocks: list[Dict[str, Any]] | None = None) -> list[Dict[str, Any]]:
     suspects = detect_page_suspects(
         slide_no=int(page.get("slide_no") or 0),
         stage1=page.get("stage1") or {},
@@ -180,6 +180,7 @@ def refresh_page_suspects(page: Dict[str, Any]) -> list[Dict[str, Any]]:
         validation=page.get("validation") or {},
         quality=page.get("quality") or {},
         block_refiner=page.get("block_refiner") or {},
+        blocks=blocks,
     )
     page["suspects"] = suspects
     return suspects

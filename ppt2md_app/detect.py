@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
 
+from .table_quality import assess_table
+
 
 Severity = Literal["error", "warning", "info"]
 
@@ -60,6 +62,7 @@ class Suspect:
     block_id: str | None = None
     block_type: str | None = None
     op_hint: str | None = None
+    op: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +76,7 @@ class Suspect:
             "block_id": self.block_id,
             "block_type": self.block_type,
             "op_hint": self.op_hint,
+            "op": self.op,
         }
 
 
@@ -84,20 +88,26 @@ def detect_page_suspects(
     validation: dict[str, Any] | None = None,
     quality: dict[str, Any] | None = None,
     block_refiner: dict[str, Any] | None = None,
+    blocks: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     suspects: list[Suspect] = []
     suspects.extend(_stage_suspects(slide_no, "stage1", stage1 or {}, len(suspects)))
     suspects.extend(_stage_suspects(slide_no, "stage2", stage2 or {}, len(suspects)))
     suspects.extend(_validation_suspects(slide_no, validation or {}, len(suspects)))
-    suspects.extend(_quality_suspects(slide_no, quality or {}, len(suspects)))
+    block_suspects = _block_suspects(slide_no, blocks or [], len(suspects))
+    suspects.extend(block_suspects)
+    if not blocks:
+        suspects.extend(_quality_suspects(slide_no, quality or {}, len(suspects)))
     suspects.extend(_block_refiner_suspects(slide_no, block_refiner or {}, len(suspects)))
     return [suspect.to_dict() for suspect in suspects]
 
 
 def summarize_suspects(pages: Iterable[dict[str, Any]]) -> dict[str, Any]:
     by_code: dict[str, int] = {}
+    by_op: dict[str, int] = {}
     by_severity: dict[str, int] = {}
     total = 0
+    actionable_total = 0
     for page in pages:
         for suspect in page.get("suspects") or []:
             total += 1
@@ -105,9 +115,16 @@ def summarize_suspects(pages: Iterable[dict[str, Any]]) -> dict[str, Any]:
             severity = str(suspect.get("severity") or "unknown")
             by_code[code] = by_code.get(code, 0) + 1
             by_severity[severity] = by_severity.get(severity, 0) + 1
+            op = suspect.get("op") if isinstance(suspect.get("op"), dict) else None
+            op_name = str((op or {}).get("op") or suspect.get("op_hint") or "")
+            if op_name:
+                actionable_total += 1
+                by_op[op_name] = by_op.get(op_name, 0) + 1
     return {
         "total": total,
+        "actionable_total": actionable_total,
         "by_code": by_code,
+        "by_op": by_op,
         "by_severity": by_severity,
     }
 
@@ -176,6 +193,85 @@ def _quality_suspects(slide_no: int, quality: dict[str, Any], offset: int) -> li
     return suspects
 
 
+def _block_suspects(slide_no: int, blocks: list[dict[str, Any]], offset: int) -> list[Suspect]:
+    suspects = []
+    for block in blocks:
+        block_id = block.get("id")
+        block_type = block.get("type")
+        if not block_id or not block_type:
+            continue
+        if block_type in {"formula_inline", "formula_block"}:
+            suspects.extend(_formula_block_suspects(slide_no, block, offset + len(suspects)))
+        elif block_type == "table":
+            suspect = _table_block_suspect(slide_no, block, offset + len(suspects) + 1)
+            if suspect:
+                suspects.append(suspect)
+        elif block_type == "figure_note" and block.get("unrecognizable"):
+            suspects.append(
+                Suspect(
+                    id=_suspect_id(slide_no, offset + len(suspects) + 1),
+                    slide_no=slide_no,
+                    source="block",
+                    code="figure_unrecognizable",
+                    severity="warning",
+                    message="图示 block 标记为不可可靠识别。",
+                    evidence={"figure_type": block.get("figure_type")},
+                    block_id=str(block_id),
+                    block_type=str(block_type),
+                    op_hint="mark_uncertain",
+                    op={"op": "mark_uncertain", "id": block_id},
+                )
+            )
+    return suspects
+
+
+def _formula_block_suspects(slide_no: int, block: dict[str, Any], offset: int) -> list[Suspect]:
+    quality = block.get("formula_quality") if isinstance(block.get("formula_quality"), dict) else {}
+    warnings = quality.get("warnings") or []
+    suspects = []
+    for warning in warnings:
+        if not isinstance(warning, dict):
+            continue
+        code = str(warning.get("code") or "formula_quality_warning")
+        block_id = str(block.get("id"))
+        suspects.append(
+            Suspect(
+                id=_suspect_id(slide_no, offset + len(suspects) + 1),
+                slide_no=slide_no,
+                source="block",
+                code=code,
+                severity="warning",
+                message=str(warning.get("message") or code),
+                evidence={"latex": quality.get("latex"), "warning": warning.get("evidence")},
+                block_id=block_id,
+                block_type=str(block.get("type") or "formula_block"),
+                op_hint="mark_uncertain",
+                op={"op": "mark_uncertain", "id": block_id},
+            )
+        )
+    return suspects
+
+
+def _table_block_suspect(slide_no: int, block: dict[str, Any], index: int) -> Suspect | None:
+    quality = assess_table(block.get("text") or "")
+    if quality.reliable:
+        return None
+    block_id = str(block.get("id"))
+    return Suspect(
+        id=_suspect_id(slide_no, index),
+        slide_no=slide_no,
+        source="block",
+        code="table_quality_warning",
+        severity="warning",
+        message="表格结构不可靠。",
+        evidence=quality.to_dict(),
+        block_id=block_id,
+        block_type=str(block.get("type") or "table"),
+        op_hint="mark_uncertain",
+        op={"op": "mark_uncertain", "id": block_id},
+    )
+
+
 def _block_refiner_suspects(slide_no: int, block_refiner: dict[str, Any], offset: int) -> list[Suspect]:
     suspects = []
     for item in block_refiner.get("dismissed") or []:
@@ -194,6 +290,7 @@ def _block_refiner_suspects(slide_no: int, block_refiner: dict[str, Any], offset
                 evidence=item.get("dismissed"),
                 block_id=op.get("id") or op.get("a"),
                 op_hint=op.get("op"),
+                op=op or None,
             )
         )
     return suspects

@@ -162,8 +162,10 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     assert report["summary"]["suspects"]["by_code"]["ocr_coverage_low"] == 1
     assert report["summary"]["suspects"]["by_code"]["table_quality_warning"] == 1
     assert report["summary"]["suspects"]["by_code"]["latex_frac_missing_braces"] == 1
+    assert report["summary"]["suspects"]["by_op"]["mark_uncertain"] >= 2
+    assert report["summary"]["suspects"]["actionable_total"] >= 3
     assert "ocr_coverage_low" in {issue["code"] for issue in report["pages"][0]["validation"]["warnings"]}
-    assert report["pages"][0]["suspects"]
+    assert any(suspect.get("block_id") and suspect.get("op") for suspect in report["pages"][0]["suspects"])
     assert report["pages"][0]["stage1"]["blocks_count"] >= 1
     assert report["pages"][0]["block_refiner"]["changed"] is True
     assert report["pages"][0]["block_refiner"]["applied_ops"][0]["op"]["op"] == "normalize_formula"
