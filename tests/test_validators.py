@@ -35,6 +35,34 @@ def test_unbalanced_display_math_is_error():
     assert {issue.code for issue in result.errors} == {"display_math_unbalanced"}
 
 
+def test_unbalanced_inline_math_is_error():
+    result = validate_slide_markdown("# Slide 1\n\n速度为 $v，质量为 $m$。\n", 1)
+
+    assert not result.ok
+    assert {issue.code for issue in result.errors} == {"inline_math_unbalanced"}
+
+
+def test_formula_brace_warning_does_not_block_slide():
+    result = validate_slide_markdown("# Slide 1\n\n$$\\frac{a}{b$$\n", 1)
+
+    assert result.ok
+    assert [issue.code for issue in result.warnings] == ["formula_brace_unbalanced"]
+
+
+def test_valid_complex_formula_is_not_warned():
+    result = validate_slide_markdown("# Slide 1\n\n$$\\int_0^1 \\frac{x^2}{1+x}\\,dx$$\n", 1)
+
+    assert result.ok
+    assert result.warnings == []
+
+
+def test_ragged_markdown_table_warns():
+    result = validate_slide_markdown("# Slide 1\n\n| A | B |\n| --- | --- |\n| 1 | 2 | 3 |\n", 1)
+
+    assert result.ok
+    assert [issue.code for issue in result.warnings] == ["table_structure_warning"]
+
+
 def test_figure_analysis_is_warning_not_error():
     result = validate_slide_markdown("# Slide 1\n\n### Figure Analysis\n左侧是 A。\n", 1)
 

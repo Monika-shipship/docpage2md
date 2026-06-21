@@ -2,6 +2,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from .table_quality import assess_table_markdown
+
 
 Severity = Literal["error", "warning"]
 
@@ -124,6 +126,9 @@ def validate_slide_markdown(
     code_free = _strip_code_regions(text)
     if code_free.count("$$") % 2:
         errors.append(_issue("display_math_unbalanced", "error", "行间公式 $$ 分隔符数量不成对。", slide_no))
+    errors.extend(_formula_delimiter_errors(code_free, slide_no))
+    warnings.extend(_formula_quality_warnings(code_free, slide_no))
+    warnings.extend(_table_quality_warnings(code_free, slide_no))
 
     body = "\n".join(stripped.splitlines()[1:]).strip()
     if not body:
@@ -174,6 +179,115 @@ def _fence_count(text: str) -> int:
 def _strip_code_regions(text: str) -> str:
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
     return re.sub(r"`[^`\n]*`", "", text)
+
+
+def _formula_delimiter_errors(text: str, slide_no: int) -> list[ValidationIssue]:
+    without_display = re.sub(r"\$\$.*?\$\$", "", text, flags=re.DOTALL)
+    single_dollars = re.findall(r"(?<!\\)(?<!\$)\$(?!\$)", without_display)
+    if len(single_dollars) % 2:
+        return [_issue("inline_math_unbalanced", "error", "行内公式 $ 分隔符数量不成对。", slide_no)]
+    return []
+
+
+def _formula_quality_warnings(text: str, slide_no: int) -> list[ValidationIssue]:
+    warnings = []
+    for segment in _math_segments(text):
+        if _unbalanced_pair(segment, "{", "}"):
+            warnings.append(_issue("formula_brace_unbalanced", "warning", "公式中的花括号数量不平衡。", slide_no, segment[:120]))
+        if _unbalanced_pair(segment, "(", ")"):
+            warnings.append(_issue("formula_parenthesis_unbalanced", "warning", "公式中的圆括号数量不平衡。", slide_no, segment[:120]))
+        if _unbalanced_pair(segment, "[", "]"):
+            warnings.append(_issue("formula_bracket_unbalanced", "warning", "公式中的方括号数量不平衡。", slide_no, segment[:120]))
+        if _latex_left_right_unbalanced(segment):
+            warnings.append(_issue("latex_left_right_unbalanced", "warning", "\\left 与 \\right 数量不匹配。", slide_no, segment[:120]))
+        if re.search(r"\\frac(?!\s*\{)", segment):
+            warnings.append(_issue("latex_frac_missing_braces", "warning", "\\frac 后缺少花括号参数。", slide_no, segment[:120]))
+        if _has_uncertain_formula_marker(segment):
+            warnings.append(_issue("formula_uncertain_marker", "warning", "公式中包含不确定识别标记。", slide_no, segment[:120]))
+    return _dedupe_issues(warnings)
+
+
+def _table_quality_warnings(text: str, slide_no: int) -> list[ValidationIssue]:
+    warnings = []
+    for table_text in _markdown_table_candidates(text):
+        quality = assess_table_markdown(table_text)
+        if quality.reliable:
+            continue
+        issue_codes = [issue.code for issue in quality.errors + quality.warnings]
+        warnings.append(
+            _issue(
+                "table_structure_warning",
+                "warning",
+                "Markdown 表格结构不可靠，建议降级为不确定表格或保留原始识别。",
+                slide_no,
+                ", ".join(issue_codes),
+            )
+        )
+    return warnings
+
+
+def _math_segments(text: str) -> list[str]:
+    segments = []
+    segments.extend(match.group(1) for match in re.finditer(r"\$\$(.*?)\$\$", text, flags=re.DOTALL))
+    text_without_display = re.sub(r"\$\$.*?\$\$", "", text, flags=re.DOTALL)
+    segments.extend(match.group(1) for match in re.finditer(r"(?<!\\)(?<!\$)\$(?!\$)(.*?)(?<!\\)(?<!\$)\$(?!\$)", text_without_display, flags=re.DOTALL))
+    segments.extend(match.group(1) for match in re.finditer(r"\\\((.*?)\\\)", text_without_display, flags=re.DOTALL))
+    segments.extend(match.group(1) for match in re.finditer(r"\\\[(.*?)\\\]", text_without_display, flags=re.DOTALL))
+    return [segment.strip() for segment in segments if segment.strip()]
+
+
+def _unbalanced_pair(text: str, left: str, right: str) -> bool:
+    escaped_left = re.escape(left)
+    escaped_right = re.escape(right)
+    return len(re.findall(rf"(?<!\\){escaped_left}", text)) != len(re.findall(rf"(?<!\\){escaped_right}", text))
+
+
+def _latex_left_right_unbalanced(text: str) -> bool:
+    return len(re.findall(r"\\left\b", text)) != len(re.findall(r"\\right\b", text))
+
+
+def _has_uncertain_formula_marker(text: str) -> bool:
+    lower = text.lower()
+    return (
+        "[?]" in text
+        or "？" in text
+        or "无法确定" in text
+        or "看不清" in text
+        or "不确定" in text
+        or "uncertain" in lower
+        or "illegible" in lower
+    )
+
+
+def _dedupe_issues(issues: list[ValidationIssue]) -> list[ValidationIssue]:
+    seen = set()
+    deduped = []
+    for issue in issues:
+        key = (issue.code, issue.evidence)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(issue)
+    return deduped
+
+
+def _markdown_table_candidates(text: str) -> list[str]:
+    candidates = []
+    current = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(">"):
+            stripped = stripped[1:].strip()
+        if "|" in stripped:
+            current.append(stripped)
+            continue
+        if current:
+            if len(current) >= 2:
+                candidates.append("\n".join(current))
+            current = []
+    if current and len(current) >= 2:
+        candidates.append("\n".join(current))
+    return candidates
 
 
 def _has_figure_note(text: str) -> bool:

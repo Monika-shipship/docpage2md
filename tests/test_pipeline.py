@@ -104,7 +104,17 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
         lambda img_path, slide_no, ppt_name, msg_queue, config: {
             "success": True,
             "slide_no": slide_no,
-            "raw_text": "标题:\n\n正文。",
+            "raw_text": (
+                "标题:\n\n"
+                "### Formula\n"
+                "E = [?] mc^2\n\n"
+                "### Table Analysis\n"
+                "| A | B |\n"
+                "| --- | --- |\n"
+                "| 1 | 2 | 3 |\n\n"
+                "### Figure Analysis\n"
+                "左侧是 A。"
+            ),
         },
     )
     monkeypatch.setattr(
@@ -131,6 +141,11 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     raw = read_json(deck_dir / "temp_raw_vision" / "Raw_01.json")
     assert report["status"] == "ok"
     assert report["summary"]["pages_ok"] == 1
+    assert report["summary"]["block_counts"]["formula_block"] == 1
+    assert report["summary"]["figure_count"] == 1
+    assert report["summary"]["formula_warning_count"] == 1
+    assert report["summary"]["table_warning_count"] == 1
     assert report["pages"][0]["stage1"]["blocks_count"] >= 1
+    assert report["pages"][0]["quality"]["table_warning_count"] == 1
     assert raw["blocks"]
     assert "# Slide 1" in (deck_dir / "Deck_FULL.md").read_text(encoding="utf-8")

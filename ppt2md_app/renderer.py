@@ -1,5 +1,7 @@
 from typing import Any, Dict, List
 
+from .table_quality import assess_table_markdown
+
 
 RENDERER_VERSION = "markdown-first-renderer-2026-06-21"
 
@@ -38,8 +40,10 @@ def render_block(block: Dict[str, Any]) -> str:
     block_type = block.get("type")
     if block_type == "heading":
         return f"## {_strip_heading_marks(text)}"
-    if block_type in ("paragraph", "formula_inline", "list", "table"):
+    if block_type in ("paragraph", "formula_inline", "list"):
         return _strip_known_section_heading(text)
+    if block_type == "table":
+        return _render_table(text)
     if block_type == "formula_block":
         return _render_formula_block(text)
     if block_type == "figure_note":
@@ -67,6 +71,8 @@ def _strip_heading_marks(text: str) -> str:
 
 def _render_formula_block(text: str) -> str:
     stripped = _strip_known_section_heading(text)
+    if _has_uncertain_marker(stripped):
+        return _render_uncertain_formula(stripped)
     if stripped.startswith("$$") and stripped.endswith("$$"):
         return stripped
     return f"$$\n{stripped}\n$$"
@@ -82,6 +88,26 @@ def _render_figure_note(text: str) -> str:
 def _render_uncertain(text: str) -> str:
     stripped = _strip_known_section_heading(text)
     return "> [!WARNING] 识别不确定\n" + "\n".join(f"> {line}" for line in stripped.splitlines())
+
+
+def _render_uncertain_formula(text: str) -> str:
+    return "> [!WARNING] 公式识别不确定\n" + "\n".join(f"> {line}" for line in text.splitlines())
+
+
+def _render_table(text: str) -> str:
+    stripped = _strip_known_section_heading(text)
+    quality = assess_table_markdown(stripped)
+    if quality.reliable:
+        return stripped
+
+    issue_lines = [issue.message for issue in quality.errors + quality.warnings]
+    rendered = ["> [!WARNING] 表格识别不确定"]
+    for message in issue_lines[:3]:
+        rendered.append(f"> {message}")
+    rendered.append(">")
+    rendered.append("> 原始识别：")
+    rendered.extend(f"> {line}" for line in stripped.splitlines())
+    return "\n".join(rendered)
 
 
 def _render_image_ref(block: Dict[str, Any]) -> str:
@@ -114,3 +140,16 @@ def _strip_known_section_heading(text: str) -> str:
     ):
         lines = lines[1:]
     return "\n".join(line.strip() for line in lines).strip()
+
+
+def _has_uncertain_marker(text: str) -> bool:
+    lower = text.lower()
+    return (
+        "[?]" in text
+        or "？" in text
+        or "无法确定" in text
+        or "看不清" in text
+        or "不确定" in text
+        or "uncertain" in lower
+        or "illegible" in lower
+    )

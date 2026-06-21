@@ -60,6 +60,26 @@ def test_handwritten_sections_become_renderable_block_types():
     ]
 
 
+def test_uncertain_formula_renders_as_warning_block():
+    markdown = render_page_ir_to_markdown(build_page_ir("### Formula\nE = [?] mc^2", 8))
+
+    assert markdown == (
+        "# Slide 8\n\n"
+        "> [!WARNING] 公式识别不确定\n"
+        "> E = [?] mc^2\n"
+    )
+
+
+def test_unreliable_table_degrades_to_warning_block():
+    raw = "### Table Analysis\n| A | B |\n| --- | --- |\n| 1 | 2 | 3 |"
+
+    markdown = render_page_ir_to_markdown(build_page_ir(raw, 9))
+
+    assert markdown.startswith("# Slide 9\n\n> [!WARNING] 表格识别不确定\n")
+    assert "Markdown 表格行列数不一致" in markdown
+    assert "> | 1 | 2 | 3 |" in markdown
+
+
 def test_render_page_record_falls_back_to_raw_text_when_blocks_missing():
     markdown = render_page_record_to_markdown({"slide_no": 5, "raw_text": "只有 raw。"})
 

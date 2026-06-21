@@ -8,6 +8,7 @@ from .artifacts import (
     report_prompt_identity,
 )
 from .config import AppConfig
+from .table_quality import assess_table_markdown
 from .versioning import PNG2MD_PIPELINE_VERSION
 
 
@@ -28,6 +29,7 @@ def build_run_report(
                 "stage1": _stage_state(),
                 "stage2": _stage_state(),
                 "validation": {"ok": None, "errors": [], "warnings": []},
+                "quality": _empty_quality_summary(),
                 "refiner": {"changed": False, "applied_ops": [], "dismissed": []},
                 "final": {
                     "status": "pending",
@@ -65,6 +67,16 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
     stage1_cache_hits = sum(1 for page in pages if page.get("stage1", {}).get("cache") == "hit")
     stage2_cache_hits = sum(1 for page in pages if page.get("stage2", {}).get("cache") == "hit")
     warnings = sum(len(page.get("validation", {}).get("warnings") or []) for page in pages)
+    formula_warning_count = sum(
+        _count_validation_codes(page, ("formula_", "latex_"))
+        + int(page.get("quality", {}).get("formula_warning_count") or 0)
+        for page in pages
+    )
+    table_warning_count = sum(
+        _count_validation_codes(page, ("table_",)) + int(page.get("quality", {}).get("table_warning_count") or 0)
+        for page in pages
+    )
+    block_counts = _sum_block_counts(pages)
 
     report["summary"] = {
         "pages_total": len(pages),
@@ -74,6 +86,11 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "stage2_cache_hits": stage2_cache_hits,
         "fail_open_pages": sum(1 for page in pages if page.get("final", {}).get("status") == "fail_open"),
         "validation_warnings": warnings,
+        "block_counts": block_counts,
+        "uncertain_block_count": block_counts.get("uncertain", 0),
+        "figure_count": block_counts.get("figure_note", 0),
+        "formula_warning_count": formula_warning_count,
+        "table_warning_count": table_warning_count,
     }
     if pages_ok == len(pages):
         report["status"] = "ok"
@@ -104,6 +121,34 @@ def stage_blocked(page: Dict[str, Any], stage: str, code: str, message: str):
     )
 
 
+def summarize_blocks(blocks: Iterable[Dict[str, Any]] | None) -> Dict[str, Any]:
+    summary = _empty_quality_summary()
+    for block in blocks or []:
+        block_type = block.get("type") or "unknown"
+        summary["block_counts"][block_type] = summary["block_counts"].get(block_type, 0) + 1
+        if block_type == "uncertain":
+            summary["uncertain_block_count"] += 1
+        elif block_type == "figure_note":
+            summary["figure_count"] += 1
+        elif block_type in {"formula_inline", "formula_block"}:
+            warning = _formula_block_warning(block.get("text") or "")
+            if warning:
+                summary["formula_warning_count"] += 1
+                summary["warnings"].append(warning)
+        elif block_type == "table":
+            quality = assess_table_markdown(block.get("text") or "")
+            if not quality.reliable:
+                summary["table_warning_count"] += 1
+                summary["warnings"].append(
+                    {
+                        "code": "table_quality_warning",
+                        "message": "表格结构不可靠。",
+                        "details": quality.to_dict(),
+                    }
+                )
+    return summary
+
+
 def _stage_state():
     return {
         "status": "pending",
@@ -115,3 +160,42 @@ def _stage_state():
         "error_message": None,
         "warnings": [],
     }
+
+
+def _empty_quality_summary() -> Dict[str, Any]:
+    return {
+        "block_counts": {},
+        "uncertain_block_count": 0,
+        "figure_count": 0,
+        "formula_warning_count": 0,
+        "table_warning_count": 0,
+        "warnings": [],
+    }
+
+
+def _count_validation_codes(page: Dict[str, Any], prefixes: tuple[str, ...]) -> int:
+    warnings = page.get("validation", {}).get("warnings") or []
+    return sum(1 for issue in warnings if str(issue.get("code") or "").startswith(prefixes))
+
+
+def _sum_block_counts(pages: list[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for page in pages:
+        for block_type, count in (page.get("quality", {}).get("block_counts") or {}).items():
+            counts[block_type] = counts.get(block_type, 0) + count
+    return counts
+
+
+def _formula_block_warning(text: str) -> Dict[str, Any] | None:
+    lower = (text or "").lower()
+    if (
+        "[?]" in text
+        or "？" in text
+        or "无法确定" in text
+        or "看不清" in text
+        or "不确定" in text
+        or "uncertain" in lower
+        or "illegible" in lower
+    ):
+        return {"code": "formula_uncertain_marker", "message": "公式 block 包含不确定识别标记。"}
+    return None

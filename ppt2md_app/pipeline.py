@@ -16,7 +16,7 @@ from .config import AppConfig
 from .files import merge_markdowns, read_json, write_json, write_text_atomic
 from .models import run_stage_1_vision, run_stage_2_brain_parallel, set_dashscope_api_key
 from .refiner import refine_slide_markdown
-from .reporting import build_run_report, finalize_run_report, stage_blocked, stage_failed
+from .reporting import build_run_report, finalize_run_report, stage_blocked, stage_failed, summarize_blocks
 from .validators import first_api_error_prefix, is_api_error_text, validate_slide_markdown
 
 
@@ -142,6 +142,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                     page["stage1"]["cache"] = cache_status
                     if valid:
                         raw_data_map[actual_slide_no] = data["raw_text"]
+                        page["quality"] = summarize_blocks(data.get("blocks") or [])
                         page["stage1"].update(
                             {
                                 "status": "ok",
@@ -191,6 +192,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                     raw_data_map[slide_no] = raw_text
                     cache_record = build_raw_cache_record(result, img_path, config)
                     write_json(raw_file, cache_record)
+                    page["quality"] = summarize_blocks(cache_record.get("blocks") or [])
                     page["stage1"].update(
                         {
                             "status": "ok",
