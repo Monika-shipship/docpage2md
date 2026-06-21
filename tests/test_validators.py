@@ -102,3 +102,38 @@ def test_chinese_figure_note_satisfies_figure_analysis():
 
     assert result.ok
     assert result.warnings == []
+
+
+def test_low_ocr_coverage_warns_but_does_not_block():
+    result = validate_slide_markdown(
+        "# Slide 1\n\n热力学第一定律。\n",
+        1,
+        target_blocks=[
+            {
+                "type": "paragraph",
+                "origin": "vision_ocr",
+                "text": "热力学第一定律描述内能、热量和功之间的关系。孤立系统的总能量保持守恒。",
+            }
+        ],
+    )
+
+    assert result.ok
+    assert [issue.code for issue in result.warnings] == ["ocr_coverage_low"]
+
+
+def test_ocr_coverage_does_not_count_figure_description_as_missing_text():
+    result = validate_slide_markdown(
+        "# Slide 1\n\n正文完整。\n",
+        1,
+        target_blocks=[
+            {"type": "paragraph", "origin": "vision_ocr", "text": "正文完整。"},
+            {
+                "type": "figure_note",
+                "origin": "vision_description",
+                "text": "坐标图中横轴为 t，纵轴为 v，曲线逐渐上升。",
+            },
+        ],
+    )
+
+    assert result.ok
+    assert result.warnings == []

@@ -29,10 +29,11 @@ def test_vision_stage_rejects_legacy_cache_and_rewrites_v1(monkeypatch, tmp_path
 
     monkeypatch.setattr(pipeline, "run_stage_1_vision", fake_stage1)
 
-    raw_data = pipeline._run_vision_stage("Deck", [str(image)], 0, temp_dir, 1, DummyQueue(), config, page_reports)
+    raw_data, blocks_by_slide = pipeline._run_vision_stage("Deck", [str(image)], 0, temp_dir, 1, DummyQueue(), config, page_reports)
 
     assert calls["count"] == 1
     assert raw_data == {1: "fresh raw"}
+    assert blocks_by_slide[1]
     rewritten = read_json(temp_dir / "Raw_01.json")
     assert rewritten["schema_version"] == 1
     assert page_reports[1]["stage1"]["cache"] == "legacy_miss"
@@ -105,7 +106,7 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
             "success": True,
             "slide_no": slide_no,
             "raw_text": (
-                "标题:\n\n"
+                "热力学第一定律描述内能、热量和功之间的关系。孤立系统的总能量保持守恒。\n\n"
                 "### Formula\n"
                 "$$\n"
                 "E = [?] mc^2\n"
@@ -155,6 +156,8 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     assert report["summary"]["figure_warning_count"] == 1
     assert report["summary"]["formula_warning_count"] == 1
     assert report["summary"]["table_warning_count"] == 1
+    assert report["summary"]["ocr_coverage_warning_count"] == 1
+    assert "ocr_coverage_low" in {issue["code"] for issue in report["pages"][0]["validation"]["warnings"]}
     assert report["pages"][0]["stage1"]["blocks_count"] >= 1
     assert report["pages"][0]["block_refiner"]["changed"] is True
     assert report["pages"][0]["block_refiner"]["applied_ops"][0]["op"]["op"] == "normalize_formula"

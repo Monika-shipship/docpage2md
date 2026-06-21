@@ -2,6 +2,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from .coverage import assess_ocr_coverage
+from .ir import build_page_ir
 from .table_quality import assess_table
 
 
@@ -83,6 +85,7 @@ def validate_slide_markdown(
     *,
     raw_response: str | None = None,
     target_raw: str | None = None,
+    target_blocks: list[dict] | None = None,
     neighbor_raw: dict[int, str] | None = None,
 ) -> ValidationResult:
     errors: list[ValidationIssue] = []
@@ -135,6 +138,21 @@ def validate_slide_markdown(
         errors.append(_issue("empty_body", "error", "Markdown 只有标题，没有正文。", slide_no))
     elif target_raw and len(target_raw.strip()) > 120 and len(body) < 20:
         warnings.append(_issue("short_body", "warning", "当前页 Raw Data 较长，但 Markdown 正文很短，可能遗漏内容。", slide_no))
+
+    coverage_blocks = target_blocks
+    if coverage_blocks is None and target_raw:
+        coverage_blocks = build_page_ir(target_raw, slide_no).get("blocks") or []
+    coverage = assess_ocr_coverage(text, coverage_blocks)
+    if coverage.warning:
+        warnings.append(
+            _issue(
+                "ocr_coverage_low",
+                "warning",
+                "最终 Markdown 对当前页 OCR 正文覆盖率偏低，可能遗漏手写/扫描正文。",
+                slide_no,
+                f"ratio={coverage.ratio}; missing={coverage.missing_snippets[:3]}",
+            )
+        )
 
     if "### Figure Analysis" in text:
         warnings.append(_issue("unrendered_figure_analysis", "warning", "Figure Analysis 未整理为 Figure 描述引用块。", slide_no))

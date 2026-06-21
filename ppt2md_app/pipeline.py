@@ -62,7 +62,7 @@ def process_single_ppt_task(ppt_name, task_config, msg_queue, config: AppConfig)
 
     pipeline_started = perf_counter()
     try:
-        raw_data_map = _run_vision_stage(
+        raw_data_map, target_blocks_by_slide = _run_vision_stage(
             ppt_name=ppt_name,
             target_images=target_images,
             start_idx=start_idx,
@@ -85,6 +85,7 @@ def process_single_ppt_task(ppt_name, task_config, msg_queue, config: AppConfig)
             msg_queue=msg_queue,
             config=config,
             page_reports=page_reports,
+            target_blocks_by_slide=target_blocks_by_slide,
         )
 
         msg_queue.put(("status", task_id, "正在合并..."))
@@ -108,6 +109,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
 
     vision_futures = {}
     raw_data_map = {}
+    blocks_by_slide = {}
     cache_hits = 0
     submitted = 0
     failed = 0
@@ -142,6 +144,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                     page["stage1"]["cache"] = cache_status
                     if valid:
                         raw_data_map[actual_slide_no] = data["raw_text"]
+                        blocks_by_slide[actual_slide_no] = data.get("blocks") or []
                         page["quality"] = summarize_blocks(data.get("blocks") or [])
                         page["provenance"] = data.get("provenance") or page.get("provenance")
                         page["block_refiner"] = data.get("block_refiner") or page.get("block_refiner")
@@ -194,6 +197,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                     raw_data_map[slide_no] = raw_text
                     cache_record = build_raw_cache_record(result, img_path, config)
                     write_json(raw_file, cache_record)
+                    blocks_by_slide[slide_no] = cache_record.get("blocks") or []
                     page["quality"] = summarize_blocks(cache_record.get("blocks") or [])
                     page["provenance"] = cache_record.get("provenance") or page.get("provenance")
                     page["block_refiner"] = cache_record.get("block_refiner") or page.get("block_refiner")
@@ -237,7 +241,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
             ),
         )
     )
-    return raw_data_map
+    return raw_data_map, blocks_by_slide
 
 
 def _run_brain_stage(
@@ -250,6 +254,7 @@ def _run_brain_stage(
     msg_queue,
     config: AppConfig,
     page_reports,
+    target_blocks_by_slide=None,
 ):
     stage_started = perf_counter()
     msg_queue.put(("status", task_id, f"[green]Step 2: 并行思考 (并发 {config.brain_batch_workers})..."))
@@ -259,6 +264,7 @@ def _run_brain_stage(
     submitted = 0
     failed = 0
     ok_slides = []
+    target_blocks_by_slide = target_blocks_by_slide or {}
 
     with ThreadPoolExecutor(max_workers=config.brain_batch_workers) as executor:
         for i in range(total_slides):
@@ -290,6 +296,7 @@ def _run_brain_stage(
                             markdown,
                             actual_slide_no,
                             target_raw=raw_data_map.get(actual_slide_no),
+                            target_blocks=target_blocks_by_slide.get(actual_slide_no),
                             neighbor_raw=_neighbor_raw_map(raw_data_map, actual_slide_no),
                         )
                         page["validation"] = validation.to_dict()
@@ -338,6 +345,7 @@ def _run_brain_stage(
                         slide_no,
                         raw_response=result.get("raw_response"),
                         target_raw=raw_data_map.get(slide_no),
+                        target_blocks=target_blocks_by_slide.get(slide_no),
                     )
                     final_markdown = refine_result.markdown
                     page["refiner"] = refine_result.to_dict()
@@ -346,6 +354,7 @@ def _run_brain_stage(
                         slide_no,
                         raw_response=result.get("raw_response"),
                         target_raw=raw_data_map.get(slide_no),
+                        target_blocks=target_blocks_by_slide.get(slide_no),
                         neighbor_raw=_neighbor_raw_map(raw_data_map, slide_no),
                     )
                     page["validation"] = validation.to_dict()

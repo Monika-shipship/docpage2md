@@ -80,6 +80,7 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         _count_validation_codes(page, ("table_",)) + int(page.get("quality", {}).get("table_warning_count") or 0)
         for page in pages
     )
+    ocr_coverage_warning_count = sum(_count_validation_codes(page, ("ocr_coverage_",)) for page in pages)
     block_counts = _sum_block_counts(pages)
     provenance_summary = merge_provenance_summaries(pages)
 
@@ -100,6 +101,7 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "figure_warning_count": sum(int(page.get("quality", {}).get("figure_warning_count") or 0) for page in pages),
         "formula_warning_count": formula_warning_count,
         "table_warning_count": table_warning_count,
+        "ocr_coverage_warning_count": ocr_coverage_warning_count,
     }
     if pages_ok == len(pages):
         report["status"] = "ok"

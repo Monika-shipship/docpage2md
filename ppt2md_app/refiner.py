@@ -356,16 +356,29 @@ def apply_op_checked(
     *,
     raw_response: str | None = None,
     target_raw: str | None = None,
+    target_blocks: list[dict] | None = None,
 ) -> tuple[str, bool, Dict[str, Any]]:
     if suspect.op not in SAFE_OPS or is_api_error_text(raw_response) or is_api_error_text(markdown):
         return markdown, False, {"reason": "unsafe_or_error_text"}
 
-    before = validate_slide_markdown(markdown, slide_no, raw_response=raw_response, target_raw=target_raw)
+    before = validate_slide_markdown(
+        markdown,
+        slide_no,
+        raw_response=raw_response,
+        target_raw=target_raw,
+        target_blocks=target_blocks,
+    )
     candidate = _apply_op(markdown, suspect.op, slide_no)
     if candidate == markdown:
         return markdown, False, {"reason": "no_change"}
 
-    after = validate_slide_markdown(candidate, slide_no, raw_response=raw_response, target_raw=target_raw)
+    after = validate_slide_markdown(
+        candidate,
+        slide_no,
+        raw_response=raw_response,
+        target_raw=target_raw,
+        target_blocks=target_blocks,
+    )
     if _is_no_worse(before.errors, after.errors):
         return candidate, True, after.to_dict()
     return markdown, False, {"reason": "validation_would_get_worse", "validation": after.to_dict()}
@@ -377,6 +390,7 @@ def refine_slide_markdown(
     *,
     raw_response: str | None = None,
     target_raw: str | None = None,
+    target_blocks: list[dict] | None = None,
 ) -> RefineResult:
     current = markdown
     applied = []
@@ -388,6 +402,7 @@ def refine_slide_markdown(
             slide_no,
             raw_response=raw_response,
             target_raw=target_raw,
+            target_blocks=target_blocks,
         )
         if ok:
             item = suspect.to_dict()
@@ -398,7 +413,13 @@ def refine_slide_markdown(
             item["dismissed"] = validation
             dismissed.append(item)
 
-    final_validation = validate_slide_markdown(current, slide_no, raw_response=raw_response, target_raw=target_raw)
+    final_validation = validate_slide_markdown(
+        current,
+        slide_no,
+        raw_response=raw_response,
+        target_raw=target_raw,
+        target_blocks=target_blocks,
+    )
     return RefineResult(
         markdown=current,
         applied_ops=applied,
