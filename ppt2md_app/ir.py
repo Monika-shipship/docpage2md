@@ -2,13 +2,14 @@ import hashlib
 import re
 from typing import Any, Dict, List
 
+from .figures import analyze_figure_description
 from .renderer import (
     render_blocks_to_markdown,
     render_page_ir_to_markdown,
     render_page_record_to_markdown,
 )
 
-PAGE_IR_SCHEMA_VERSION = 2
+PAGE_IR_SCHEMA_VERSION = 3
 
 
 def build_page_ir(raw_text: str, slide_no: int) -> Dict[str, Any]:
@@ -34,18 +35,18 @@ def raw_text_to_blocks(raw_text: str, slide_no: int) -> List[Dict[str, Any]]:
         block_text = _strip_section_heading(paragraph)
         if not block_text:
             continue
-        blocks.append(
-            {
-                "id": f"p{slide_no:04d}-b{len(blocks) + 1:03d}",
-                "type": block_type,
-                "text": block_text,
-                "source_page": slide_no,
-                "confidence": _confidence_for_type(block_type),
-                "origin": _origin_for_type(block_type),
-                "evidence": {"raw_text": paragraph},
-                "bbox": None,
-            }
-        )
+        block = {
+            "id": f"p{slide_no:04d}-b{len(blocks) + 1:03d}",
+            "type": block_type,
+            "text": block_text,
+            "source_page": slide_no,
+            "confidence": _confidence_for_type(block_type, block_text),
+            "origin": _origin_for_type(block_type),
+            "evidence": {"raw_text": paragraph},
+            "bbox": None,
+        }
+        block.update(_extra_block_fields(block_type, block_text))
+        blocks.append(block)
     return blocks
 
 
@@ -108,7 +109,9 @@ def _infer_block_type(text: str) -> str:
     return "paragraph"
 
 
-def _confidence_for_type(block_type: str) -> float:
+def _confidence_for_type(block_type: str, text: str = "") -> float:
+    if block_type == "figure_note" and analyze_figure_description(text).unrecognizable:
+        return 0.25
     if block_type in {"figure_note", "list"}:
         return 0.72
     if block_type in {"heading", "formula_inline", "formula_block", "table"}:
@@ -128,6 +131,12 @@ def _origin_for_type(block_type: str) -> str:
     if block_type == "table":
         return "vision_table"
     return "vision_ocr"
+
+
+def _extra_block_fields(block_type: str, text: str) -> Dict[str, Any]:
+    if block_type == "figure_note":
+        return analyze_figure_description(text).to_block_fields()
+    return {}
 
 
 def _is_list_line(line: str) -> bool:

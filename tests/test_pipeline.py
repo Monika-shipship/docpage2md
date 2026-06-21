@@ -113,7 +113,7 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
                 "| --- | --- |\n"
                 "| 1 | 2 | 3 |\n\n"
                 "### Figure Analysis\n"
-                "左侧是 A。"
+                "图示被遮挡，无法确定节点和箭头方向。"
             ),
         },
     )
@@ -143,9 +143,11 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     assert report["summary"]["pages_ok"] == 1
     assert report["summary"]["block_counts"]["formula_block"] == 1
     assert report["summary"]["figure_count"] == 1
+    assert report["summary"]["figure_warning_count"] == 1
     assert report["summary"]["formula_warning_count"] == 1
     assert report["summary"]["table_warning_count"] == 1
     assert report["pages"][0]["stage1"]["blocks_count"] >= 1
+    assert report["pages"][0]["quality"]["figure_warning_count"] == 1
     assert report["pages"][0]["quality"]["table_warning_count"] == 1
     assert raw["blocks"]
     assert "# Slide 1" in (deck_dir / "Deck_FULL.md").read_text(encoding="utf-8")

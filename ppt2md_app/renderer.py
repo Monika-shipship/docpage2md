@@ -33,7 +33,7 @@ def render_blocks_to_markdown(blocks: List[Dict[str, Any]], slide_no: int) -> st
 
 
 def render_block(block: Dict[str, Any]) -> str:
-    text = (block.get("text") or "").strip()
+    text = (block.get("text") or block.get("description") or "").strip()
     if not text and block.get("type") != "image_ref":
         return ""
 
@@ -47,7 +47,7 @@ def render_block(block: Dict[str, Any]) -> str:
     if block_type == "formula_block":
         return _render_formula_block(text)
     if block_type == "figure_note":
-        return _render_figure_note(text)
+        return _render_figure_note(block)
     if block_type == "image_ref":
         return _render_image_ref(block)
     if block_type == "uncertain":
@@ -78,11 +78,23 @@ def _render_formula_block(text: str) -> str:
     return f"$$\n{stripped}\n$$"
 
 
-def _render_figure_note(text: str) -> str:
+def _render_figure_note(block: Dict[str, Any]) -> str:
+    text = block.get("description") or block.get("text") or ""
     lines = [line.strip() for line in _strip_known_section_heading(text).splitlines() if line.strip()]
-    if not lines:
-        return "> [!NOTE] 图示说明"
-    return "> [!NOTE] 图示说明\n" + "\n".join(f"> {line}" for line in lines)
+    path = (block.get("path") or block.get("image_path") or "").strip()
+    rendered = []
+    if path:
+        alt = (block.get("alt") or "figure").strip()
+        rendered.append(f"![{alt}]({path})")
+
+    if block.get("unrecognizable") or _has_uncertain_marker(text):
+        body = lines or ["图示不可可靠识别。"]
+        rendered.append("> [!WARNING] 图示识别不确定\n" + "\n".join(f"> {line}" for line in body))
+    elif lines:
+        rendered.append("> [!NOTE] 图示说明\n" + "\n".join(f"> {line}" for line in lines))
+    else:
+        rendered.append("> [!WARNING] 图示识别不确定\n> Figure Analysis 为空。")
+    return "\n\n".join(rendered)
 
 
 def _render_uncertain(text: str) -> str:

@@ -1,18 +1,21 @@
 from pathlib import Path
 
-from ppt2md_app.ir import build_page_ir, render_page_ir_to_markdown, render_page_record_to_markdown
+from ppt2md_app.ir import build_page_ir, render_blocks_to_markdown, render_page_ir_to_markdown, render_page_record_to_markdown
 
 
 def test_build_page_ir_creates_stable_blocks():
     ir = build_page_ir("标题:\n\n- a\n- b\n\n### Figure Analysis\n左侧是 A。\n", 3)
 
-    assert ir["schema_version"] == 2
+    assert ir["schema_version"] == 3
     assert [block["id"] for block in ir["blocks"]] == ["p0003-b001", "p0003-b002", "p0003-b003"]
     assert [block["type"] for block in ir["blocks"]] == ["heading", "list", "figure_note"]
     assert [block["text"] for block in ir["blocks"]] == ["标题:", "- a\n- b", "左侧是 A。"]
     assert all(block["source_page"] == 3 for block in ir["blocks"])
     assert [block["origin"] for block in ir["blocks"]] == ["vision_ocr", "vision_ocr", "vision_description"]
     assert ir["blocks"][2]["evidence"]["raw_text"].startswith("### Figure Analysis")
+    assert ir["blocks"][2]["figure_type"] == "unknown"
+    assert ir["blocks"][2]["description"] == "左侧是 A。"
+    assert ir["blocks"][2]["unrecognizable"] is False
 
 
 def test_render_page_ir_to_markdown_is_deterministic():
@@ -36,6 +39,62 @@ def test_golden_renderer_fixture():
     expected = (fixtures / "golden_rendered.md").read_text(encoding="utf-8")
 
     assert render_page_ir_to_markdown(build_page_ir(raw, 7)) == expected
+
+
+def test_figure_analysis_extracts_structured_fields():
+    raw = (
+        "### Figure Analysis\n"
+        "类型：流程图。\n"
+        "节点：A、B、C。\n"
+        "连接：A 指向 B，B 指向 C。\n"
+        "正文关联：对应当前页的实验步骤。"
+    )
+
+    block = build_page_ir(raw, 6)["blocks"][0]
+
+    assert block["type"] == "figure_note"
+    assert block["figure_type"] == "flowchart"
+    assert block["description"].startswith("类型：流程图")
+    assert block["labels"][:3] == ["A", "B", "C"]
+    assert block["relations"] == ["连接：A 指向 B，B 指向 C。"]
+    assert block["origin"] == "vision_description"
+
+
+def test_unrecognizable_figure_renders_as_warning_block():
+    raw = "### Figure Analysis\n图示被遮挡，无法确定节点和箭头方向。"
+
+    ir = build_page_ir(raw, 10)
+    markdown = render_page_ir_to_markdown(ir)
+
+    assert ir["blocks"][0]["unrecognizable"] is True
+    assert ir["blocks"][0]["confidence"] == 0.25
+    assert markdown == (
+        "# Slide 10\n\n"
+        "> [!WARNING] 图示识别不确定\n"
+        "> 图示被遮挡，无法确定节点和箭头方向。\n"
+    )
+
+
+def test_figure_with_image_path_renders_markdown_image_reference():
+    markdown = render_blocks_to_markdown(
+        [
+            {
+                "type": "figure_note",
+                "description": "坐标图：横轴为 t，纵轴为 v。",
+                "image_path": "assets/figures/page-1-figure-1.png",
+                "alt": "page 1 figure 1",
+                "unrecognizable": False,
+            }
+        ],
+        11,
+    )
+
+    assert markdown == (
+        "# Slide 11\n\n"
+        "![page 1 figure 1](assets/figures/page-1-figure-1.png)\n\n"
+        "> [!NOTE] 图示说明\n"
+        "> 坐标图：横轴为 t，纵轴为 v。\n"
+    )
 
 
 def test_handwritten_sections_become_renderable_block_types():

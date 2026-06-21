@@ -89,6 +89,7 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "block_counts": block_counts,
         "uncertain_block_count": block_counts.get("uncertain", 0),
         "figure_count": block_counts.get("figure_note", 0),
+        "figure_warning_count": sum(int(page.get("quality", {}).get("figure_warning_count") or 0) for page in pages),
         "formula_warning_count": formula_warning_count,
         "table_warning_count": table_warning_count,
     }
@@ -130,6 +131,15 @@ def summarize_blocks(blocks: Iterable[Dict[str, Any]] | None) -> Dict[str, Any]:
             summary["uncertain_block_count"] += 1
         elif block_type == "figure_note":
             summary["figure_count"] += 1
+            if block.get("unrecognizable"):
+                summary["figure_warning_count"] += 1
+                summary["warnings"].append(
+                    {
+                        "code": "figure_unrecognizable",
+                        "message": "图示 block 标记为不可可靠识别。",
+                        "figure_type": block.get("figure_type"),
+                    }
+                )
         elif block_type in {"formula_inline", "formula_block"}:
             warning = _formula_block_warning(block.get("text") or "")
             if warning:
@@ -167,6 +177,7 @@ def _empty_quality_summary() -> Dict[str, Any]:
         "block_counts": {},
         "uncertain_block_count": 0,
         "figure_count": 0,
+        "figure_warning_count": 0,
         "formula_warning_count": 0,
         "table_warning_count": 0,
         "warnings": [],

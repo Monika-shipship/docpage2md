@@ -1,4 +1,4 @@
-PROMPT_STAGE_1_VERSION = "stage1-handwritten-docs-2026-06-21"
+PROMPT_STAGE_1_VERSION = "stage1-handwritten-docs-figures-2026-06-21"
 PROMPT_STAGE_2_VERSION = "stage2-brain-2026-06-21"
 
 
@@ -26,6 +26,7 @@ PROMPT_STAGE_1_VISION = r"""
      * **节点**：形状（圆/矩形/菱形）、颜色、包含的文字。
      * **连接**：箭头方向（A指向B）、线型（实线/虚线）、连线上的标签。
      * **坐标/曲线**：坐标轴名称、曲线形状、关键点、趋势。
+     * **正文关联**：如果图示明显对应当前页公式、定理、实验步骤或正文段落，请说明关联；如果不能确定，请明确写“不确定”。
    - 如果图片仅为纯文本或无意义装饰，则**不要**输出此区块。
 5. **Uncertain / Illegible**：如果存在看不清、严重涂改、遮挡、截断或无法确定阅读顺序的区域，请单独输出 `### Uncertain` 区块，说明位置和原因。
 
