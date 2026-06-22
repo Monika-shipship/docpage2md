@@ -1,6 +1,8 @@
+import re
 from typing import Any, Dict, List
 
 from .provenance import provenance_comment, renderer_template_block
+from .formula_quality import format_display_math
 from .table_quality import assess_table, normalize_table_text
 
 
@@ -44,7 +46,18 @@ def render_blocks_to_markdown(
     if include_provenance_comments:
         heading = f"{provenance_comment(renderer_template_block(slide_no))}\n{heading}"
     chunks = [heading]
-    for block in blocks:
+    skip_indexes = set()
+    for index, block in enumerate(blocks):
+        if index in skip_indexes:
+            continue
+        next_block = blocks[index + 1] if index + 1 < len(blocks) else None
+        if _is_table_caption_block(block) and _is_reliable_table_block(next_block):
+            rendered = _render_table_with_caption(block, next_block)
+            skip_indexes.add(index + 1)
+            if include_provenance_comments:
+                rendered = f"{provenance_comment(block)}\n{provenance_comment(next_block)}\n{rendered}"
+            chunks.append(rendered)
+            continue
         rendered = render_block(block)
         if rendered:
             if include_provenance_comments:
@@ -107,7 +120,7 @@ def _render_formula_block(block: Dict[str, Any], text: str) -> str:
         return _render_uncertain_formula(block, raw, warnings if isinstance(warnings, list) else [])
     if stripped.startswith("$$") and stripped.endswith("$$"):
         return stripped
-    return f"$$\n{stripped}\n$$"
+    return format_display_math(stripped)
 
 
 def _render_figure_note(block: Dict[str, Any]) -> str:
@@ -226,6 +239,58 @@ def _render_table(block: Dict[str, Any]) -> str:
     raw = _fenced_plain_text(stripped) if stripped else ""
     body = f"{warning}\n\n{raw}" if raw else warning
     return f"{image}\n\n{body}" if image else body
+
+
+def _is_table_caption_block(block: Dict[str, Any] | None) -> bool:
+    if not isinstance(block, dict) or block.get("type") != "table":
+        return False
+    text = _strip_known_section_heading(block.get("text") or "")
+    if not text or assess_table(text).reliable:
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return bool(lines) and not any("|" in line for line in lines)
+
+
+def _is_reliable_table_block(block: Dict[str, Any] | None) -> bool:
+    if not isinstance(block, dict) or block.get("type") != "table":
+        return False
+    text = _strip_known_section_heading(block.get("text") or "")
+    return assess_table(text).reliable
+
+
+def _render_table_with_caption(caption_block: Dict[str, Any], table_block: Dict[str, Any]) -> str:
+    caption = _table_caption_text(caption_block)
+    table = _render_table(table_block)
+    return f"{caption}\n\n{table}" if caption else table
+
+
+def _table_caption_text(block: Dict[str, Any]) -> str:
+    text = _strip_known_section_heading(block.get("text") or "")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    title = None
+    details = []
+    for line in lines:
+        stripped = re.sub(r"^[-*+]\s+", "", line).strip()
+        if re.match(r"^\*\*?数据内容\*\*?[：:]\s*$", stripped) or stripped in {"数据内容：", "数据内容:"}:
+            continue
+        if title is None:
+            title = _extract_table_title(stripped) or stripped
+            continue
+        details.append(f"- {stripped}")
+    rendered = []
+    if title:
+        rendered.append(f"**{title.rstrip('。.：:')}**")
+    rendered.extend(details)
+    return "\n".join(rendered)
+
+
+def _extract_table_title(text: str) -> str | None:
+    match = re.search(r"展示了群\s*(?P<title>\$[^$]+\$|[^，。,；;]+)", text)
+    if match:
+        title = match.group("title").strip()
+        suffix = " 特征标表" if "特征标" in text else ""
+        return f"{title}{suffix}".strip()
+    return None
 
 
 def _table_image_reference(block: Dict[str, Any]) -> str:

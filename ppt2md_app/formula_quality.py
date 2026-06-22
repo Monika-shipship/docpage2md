@@ -155,6 +155,12 @@ def _normalize_alignment_environments(text: str) -> str:
                 moved_tag = f"\\tag{{{quad_match.group('number').strip()}}}"
                 normalized_body = quad_match.group("body")
         else:
+            split = _split_multi_tag_alignment_body(body)
+            if split:
+                return "\n\n".join(
+                    _render_tagged_aligned_part(part_body, tag.group(0).strip(), output_env, args)
+                    for part_body, tag in split
+                )
             if output_env == env:
                 return match.group(0)
 
@@ -165,6 +171,34 @@ def _normalize_alignment_environments(text: str) -> str:
         return f"{rendered}\n{moved_tag}" if moved_tag else rendered
 
     return _ALIGNMENT_ENV_RE.sub(replace, text)
+
+
+def _split_multi_tag_alignment_body(body: str) -> list[tuple[str, re.Match]]:
+    matches = list(_TAG_RE.finditer(body))
+    if len(matches) <= 1:
+        return []
+
+    parts = []
+    previous_end = 0
+    for index, tag in enumerate(matches):
+        segment = body[previous_end : tag.start()]
+        segment = re.sub(r"^\s*(?:\\\\\s*)?&?\s*", "", segment)
+        segment = re.sub(r"\s*\\\\\s*$", "", segment, flags=re.DOTALL)
+        segment = segment.strip()
+        if not segment:
+            return []
+        parts.append((segment, tag))
+        previous_end = tag.end()
+
+    trailing = body[previous_end:].strip()
+    if trailing and re.sub(r"\\\\", "", trailing).strip():
+        return []
+    return parts
+
+
+def _render_tagged_aligned_part(body: str, tag: str, output_env: str, args: str) -> str:
+    cleaned = _clean_alignment_body(f"\n{body}\n")
+    return f"\\begin{{{output_env}}}{args}{cleaned}\\end{{{output_env}}}\n{tag}"
 
 
 def _clean_alignment_body(body: str) -> str:
@@ -202,8 +236,20 @@ def _normalize_display_match(match: re.Match) -> str:
     return _format_display_math(normalized)
 
 
+def format_display_math(latex: str) -> str:
+    return "\n\n".join(f"$$\n{part}\n$$" for part in _display_math_parts(latex))
+
+
 def _format_display_math(latex: str) -> str:
-    return f"$$\n{latex.strip()}\n$$"
+    return format_display_math(latex)
+
+
+def _display_math_parts(latex: str) -> list[str]:
+    stripped = (latex or "").strip()
+    parts = [part.strip() for part in re.split(r"\n\s*\n", stripped) if part.strip()]
+    if len(parts) > 1 and all(_TAG_RE.search(part) for part in parts):
+        return parts
+    return [stripped]
 
 
 def has_uncertain_formula_marker(text: str) -> bool:

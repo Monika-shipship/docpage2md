@@ -166,9 +166,9 @@ def validate_slide_markdown(
             _issue(
                 "ocr_coverage_low",
                 "warning",
-                "最终 Markdown 对当前页 OCR 正文覆盖率偏低，可能遗漏手写/扫描正文。",
+                "最终 Markdown 对 Stage 1 正文类 block 的保留率偏低，可能遗漏手写/扫描正文；公式、表格和图示另有独立覆盖检查。",
                 slide_no,
-                f"ratio={coverage.ratio}; missing={coverage.missing_snippets[:3]}",
+                f"ratio={coverage.ratio}; source_chars={coverage.source_chars}; matched_chars={coverage.matched_chars}; missing={coverage.missing_snippets[:3]}",
             )
         )
 

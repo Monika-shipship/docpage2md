@@ -310,6 +310,29 @@ def test_aligned_text_table_renders_as_markdown_table():
     )
 
 
+def test_table_caption_followed_by_reliable_table_renders_without_degrade_warning():
+    raw = (
+        "### Table Analysis\n"
+        "表格位于页面下方，展示了群 $T = C_3 \\otimes D_2$ 的特征标或相关数据。\n"
+        "- **表头（列）**：$e$, $3C_2^{(2)}$, $4C_3^{(1)}$, $4(C_3^{(1)})^2$\n"
+        "- **行标签**：$D_1, D_2, D_3, D_4$\n"
+        "- **数据内容**：\n\n"
+        "| | $e$ | $3C_2^{(2)}$ | $4C_3^{(1)}$ | $4(C_3^{(1)})^2$ |\n"
+        "| :--- | :---: | :---: | :---: | :---: |\n"
+        "| **$D_1$** | 1 | 1 | 1 | 1 |\n"
+        "| **$D_2$** | 1 | 1 | $w$ | $w^*$ |\n"
+        "| **$D_3$** | 1 | 1 | $w^*$ | $w$ |\n"
+        "| **$D_4$** | 3 | -1 | 0 | 0 |"
+    )
+
+    markdown = render_page_ir_to_markdown(build_page_ir(raw, 10))
+
+    assert "> [!WARNING] 表格识别不确定" not in markdown
+    assert "**$T = C_3 \\otimes D_2$ 特征标表**" in markdown
+    assert "- **表头（列）**：$e$, $3C_2^{(2)}$, $4C_3^{(1)}$, $4(C_3^{(1)})^2$" in markdown
+    assert "| **$D_4$** | 3 | -1 | 0 | 0 |" in markdown
+
+
 def test_simple_html_table_renders_as_markdown_table():
     raw = "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>"
     markdown = render_page_ir_to_markdown(build_page_ir(raw, 14))

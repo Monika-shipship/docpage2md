@@ -71,6 +71,51 @@ def test_formula_quality_moves_tag_outside_aligned_environment():
     )
 
 
+def test_formula_quality_splits_multiple_tags_inside_aligned_environment():
+    source = (
+        "\\begin{aligned}\n"
+        "& \\begin{cases}\n"
+        "a_1 = -1 \\\\\n"
+        "a_2 = 0\n"
+        "\\end{cases} \\tag{1} \\\\\n"
+        "& w+w^* = -1 \\tag{2} \\\\\n"
+        "& \\Rightarrow a_3 = 0 \\tag{3}\n"
+        "\\end{aligned}"
+    )
+
+    normalized = normalize_formula_text(source)
+
+    assert normalized.count("\\begin{aligned}") == 3
+    assert normalized.count("\\end{aligned}") == 3
+    assert normalized.count("\\tag{") == 3
+    assert "\\tag{1} \\\\\n" not in normalized
+    assert "\\tag{2} \\\\\n" not in normalized
+    assert "\\tag{3}\n\\end{aligned}" not in normalized
+    assert "\\end{aligned}\n\\tag{1}" in normalized
+    assert "\\end{aligned}\n\\tag{2}" in normalized
+    assert "\\end{aligned}\n\\tag{3}" in normalized
+
+
+def test_markdown_formula_normalization_splits_multiple_tag_display_math():
+    markdown = (
+        "# Slide 10\n\n"
+        "$$\n"
+        "\\begin{aligned}\n"
+        "& x = 1 \\tag{1} \\\\\n"
+        "& y = 2 \\tag{2}\n"
+        "\\end{aligned}\n"
+        "$$\n"
+    )
+
+    normalized = normalize_markdown_formula_blocks(markdown)
+
+    assert normalized.count("$$") == 4
+    assert "\\tag{1} \\\\\n" not in normalized
+    assert "\\tag{1}\n\\end{aligned}" not in normalized
+    assert "\\end{aligned}\n\\tag{1}\n$$" in normalized
+    assert "\\end{aligned}\n\\tag{2}\n$$" in normalized
+
+
 def test_formula_quality_converts_align_and_trailing_quad_number_to_aligned_tag():
     source = (
         "\\begin{align}\n"
