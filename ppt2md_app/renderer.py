@@ -4,7 +4,7 @@ from .provenance import provenance_comment, renderer_template_block
 from .table_quality import assess_table, normalize_table_text
 
 
-RENDERER_VERSION = "markdown-first-renderer-2026-06-22-fallback-evidence"
+RENDERER_VERSION = "markdown-first-renderer-2026-06-22-handwritten-quality"
 
 
 def render_page_ir_to_markdown(
@@ -55,7 +55,7 @@ def render_blocks_to_markdown(
 
 def render_block(block: Dict[str, Any]) -> str:
     text = (block.get("text") or block.get("description") or "").strip()
-    if not text and block.get("type") != "image_ref":
+    if not text and block.get("type") not in {"image_ref", "figure_note", "table"}:
         return ""
 
     rendered = _render_block_body(block, text)
@@ -74,7 +74,7 @@ def _render_block_body(block: Dict[str, Any], text: str) -> str:
     if block_type == "table":
         return _render_table(block)
     if block_type == "formula_block":
-        return _render_formula_block(block.get("latex") or text)
+        return _render_formula_block(block, text)
     if block_type == "figure_note":
         return _render_figure_note(block)
     if block_type == "image_ref":
@@ -98,10 +98,13 @@ def _strip_heading_marks(text: str) -> str:
     return stripped.rstrip(":").strip()
 
 
-def _render_formula_block(text: str) -> str:
-    stripped = _strip_known_section_heading(text)
-    if _has_uncertain_marker(stripped):
-        return _render_uncertain_formula(stripped)
+def _render_formula_block(block: Dict[str, Any], text: str) -> str:
+    stripped = _strip_known_section_heading(block.get("latex") or text)
+    quality = block.get("formula_quality")
+    warnings = quality.get("warnings") if isinstance(quality, dict) else block.get("warnings")
+    if _has_uncertain_marker(stripped) or _has_blocking_formula_warning(warnings):
+        raw = block.get("raw_text") or block.get("text") or stripped
+        return _render_uncertain_formula(raw, warnings if isinstance(warnings, list) else [])
     if stripped.startswith("$$") and stripped.endswith("$$"):
         return stripped
     return f"$$\n{stripped}\n$$"
@@ -110,17 +113,32 @@ def _render_formula_block(text: str) -> str:
 def _render_figure_note(block: Dict[str, Any]) -> str:
     text = block.get("description") or block.get("text") or ""
     lines = [line.strip() for line in _strip_known_section_heading(text).splitlines() if line.strip()]
-    path = (block.get("path") or block.get("image_path") or "").strip()
+    figure = block.get("figure") if isinstance(block.get("figure"), dict) else {}
+    labels = block.get("labels") or figure.get("labels") or []
+    relations = block.get("relations") or figure.get("relations") or []
+    path = (
+        block.get("path")
+        or block.get("image_path")
+        or block.get("crop_ref")
+        or block.get("image_ref")
+        or ""
+    ).strip()
     rendered = []
     if path:
         alt = (block.get("alt") or "figure").strip()
         rendered.append(f"![{alt}]({path})")
 
-    if block.get("unrecognizable") or _has_uncertain_marker(text):
+    detail_lines = lines[:]
+    if not detail_lines and labels:
+        detail_lines.append("可见标签：" + "，".join(str(label) for label in labels[:12]))
+    if not detail_lines and relations:
+        detail_lines.append("关系：" + "；".join(str(relation) for relation in relations[:6]))
+
+    if block.get("unrecognizable") or figure.get("unrecognizable") or _has_figure_uncertain_marker(text):
         body = lines or ["图示不可可靠识别。"]
         rendered.append("> [!WARNING] 图示识别不确定\n" + "\n".join(f"> {line}" for line in body))
-    elif lines:
-        rendered.append("> [!NOTE] 图示说明\n" + "\n".join(f"> {line}" for line in lines))
+    elif detail_lines:
+        rendered.append("> [!NOTE] 图示说明\n" + "\n".join(f"> {line}" for line in detail_lines))
     else:
         rendered.append("> [!WARNING] 图示识别不确定\n> Figure Analysis 为空。")
     return "\n\n".join(rendered)
@@ -131,16 +149,48 @@ def _render_uncertain(text: str) -> str:
     return "> [!WARNING] 识别不确定\n" + "\n".join(f"> {line}" for line in stripped.splitlines())
 
 
-def _render_uncertain_formula(text: str) -> str:
+def _render_uncertain_formula(text: str, warnings: list | None = None) -> str:
     rendered = ["> [!WARNING] 公式识别不确定", "> 原始识别："]
     rendered.extend(f"> {line}" for line in text.splitlines())
+    warning_messages = []
+    for warning in warnings or []:
+        if isinstance(warning, dict):
+            message = warning.get("message") or warning.get("code")
+            if message:
+                warning_messages.append(str(message))
+    if warning_messages:
+        rendered.append(">")
+        rendered.append("> 质量警告：")
+        rendered.extend(f"> - {message}" for message in warning_messages[:4])
     return "\n".join(rendered)
+
+
+def _has_blocking_formula_warning(warnings) -> bool:
+    blocking_codes = {
+        "formula_empty",
+        "formula_uncertain_marker",
+        "formula_truncated",
+        "formula_isolated_operator",
+        "formula_reasoning_without_latex",
+        "formula_brace_unbalanced",
+        "latex_left_right_unbalanced",
+        "latex_frac_missing_braces",
+    }
+    for warning in warnings or []:
+        if isinstance(warning, dict) and warning.get("code") in blocking_codes:
+            return True
+    return False
 
 
 def _render_table(block: Dict[str, Any]) -> str:
     text = (block.get("text") or "").strip()
     stripped = _strip_known_section_heading(text)
     quality = assess_table(stripped)
+    table_format = str(block.get("table_format") or quality.table_format)
+    if table_format == "image_only":
+        image = _table_image_reference(block)
+        warning = "> [!WARNING] 表格识别不确定\n> 表格仅保留截图引用，未生成可靠结构化表格。"
+        return f"{image}\n\n{warning}" if image else warning
     if quality.reliable:
         return normalize_table_text(stripped)
 
@@ -152,16 +202,19 @@ def _render_table(block: Dict[str, Any]) -> str:
     if image:
         rendered.append("> 已保留表格截图引用。")
     rendered.append(">")
-    rendered.append("> 原始识别：")
-    rendered.extend(f"> {line}" for line in stripped.splitlines())
+    rendered.append("> 原始识别已按纯文本保留，未作为可信表格渲染。")
     warning = "\n".join(rendered)
-    return f"{image}\n\n{warning}" if image else warning
+    raw = _fenced_plain_text(stripped) if stripped else ""
+    body = f"{warning}\n\n{raw}" if raw else warning
+    return f"{image}\n\n{body}" if image else body
 
 
 def _table_image_reference(block: Dict[str, Any]) -> str:
     path = (
         block.get("table_image_path")
         or block.get("crop_path")
+        or block.get("crop_ref")
+        or block.get("image_ref")
         or block.get("image_path")
         or block.get("path")
         or ""
@@ -181,6 +234,13 @@ def _render_image_ref(block: Dict[str, Any]) -> str:
     caption = (block.get("caption") or "").strip()
     image = f"![{alt}]({path})"
     return f"{image}\n\n{caption}" if caption else image
+
+
+def _fenced_plain_text(text: str) -> str:
+    fence = "```"
+    while fence in text:
+        fence += "`"
+    return f"{fence}text\n{text}\n{fence}"
 
 
 def _strip_known_section_heading(text: str) -> str:
@@ -242,3 +302,16 @@ def _has_uncertain_marker(text: str) -> bool:
         or "uncertain" in lower
         or "illegible" in lower
     )
+
+
+def _has_figure_uncertain_marker(text: str) -> bool:
+    kept = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if (
+            ("正文关联" in stripped or "关联" in stripped)
+            and ("不确定" in stripped or "无法确定" in stripped or "无明确关联" in stripped)
+        ):
+            continue
+        kept.append(stripped)
+    return _has_uncertain_marker("\n".join(kept))

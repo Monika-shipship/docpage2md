@@ -1,3 +1,5 @@
+from ppt2md_app.ir import build_page_ir
+from ppt2md_app.renderer import render_page_ir_to_markdown
 from ppt2md_app.validators import is_api_error_text, validate_slide_markdown
 
 
@@ -61,6 +63,16 @@ def test_ragged_markdown_table_warns():
 
     assert result.ok
     assert [issue.code for issue in result.warnings] == ["table_structure_warning"]
+
+
+def test_degraded_table_warning_block_is_not_reflagged_as_live_table():
+    markdown = render_page_ir_to_markdown(
+        build_page_ir("### Table Analysis\n| A | B |\n| --- | --- |\n| 1 | 2 | 3 |", 21)
+    )
+
+    result = validate_slide_markdown(markdown, 21)
+
+    assert "table_structure_warning" not in {issue.code for issue in result.warnings}
 
 
 def test_figure_analysis_is_warning_not_error():

@@ -9,9 +9,9 @@ from .renderer import (
     render_page_ir_to_markdown,
     render_page_record_to_markdown,
 )
-from .table_quality import is_probably_aligned_text_table
+from .table_quality import assess_table, is_probably_aligned_text_table
 
-PAGE_IR_SCHEMA_VERSION = 9
+PAGE_IR_SCHEMA_VERSION = 10
 
 SEMANTIC_ROLE_LABELS = {
     "definition": "定义",
@@ -65,6 +65,7 @@ def raw_text_to_blocks(raw_text: str, slide_no: int) -> List[Dict[str, Any]]:
         block.update(_semantic_block_fields(section_role, block_text))
         block.update(_extra_block_fields(block_type, block_text))
         blocks.append(block)
+    _attach_figure_links(blocks)
     return blocks
 
 
@@ -162,9 +163,71 @@ def _extra_block_fields(block_type: str, text: str) -> Dict[str, Any]:
         quality = assess_formula_text(text)
         return {
             "latex": quality.latex,
+            "raw_text": text,
             "formula_quality": quality.to_dict(),
+            "warnings": [warning.to_dict() for warning in quality.warnings],
+        }
+    if block_type == "table":
+        quality = assess_table(text)
+        degrade_reason_codes = [issue.code for issue in quality.errors + quality.warnings] if not quality.reliable else []
+        return {
+            "table_format": quality.table_format if quality.reliable else "uncertain",
+            "table_reliable": quality.reliable,
+            "table_render_mode": _table_render_mode(quality),
+            "degrade_reason_codes": degrade_reason_codes,
+            "rows": quality.row_count,
+            "columns": quality.column_counts,
+            "raw_text": text,
+            "table_quality": quality.to_dict(),
+            "image_ref": None,
+            "crop_ref": None,
         }
     return {}
+
+
+def _table_render_mode(quality) -> str:
+    if quality.reliable:
+        return "normalized_markdown" if quality.normalized_markdown else quality.table_format
+    return "degraded_warning"
+
+
+def _attach_figure_links(blocks: List[Dict[str, Any]]):
+    formula_ids = [block["id"] for block in blocks if block.get("type") in {"formula_inline", "formula_block"}]
+    semantic_ids = [
+        block["id"]
+        for block in blocks
+        if block.get("type") in {"paragraph", "list", "heading"} and block.get("semantic_role")
+    ]
+    paragraph_ids = [block["id"] for block in blocks if block.get("type") in {"paragraph", "list"}]
+    for index, block in enumerate(blocks):
+        if block.get("type") != "figure_note":
+            continue
+        text = (block.get("description") or block.get("text") or "").lower()
+        linked = []
+        if any(keyword in text for keyword in ("公式", "方程", "latex", "equation", "函数", "曲线")):
+            linked.extend(formula_ids)
+        if any(keyword in text for keyword in ("正文关联", "对应", "证明", "定理", "实验", "步骤", "段落")):
+            linked.extend(semantic_ids)
+            if not linked:
+                linked.extend(_nearest_neighbor_ids(blocks, index, paragraph_ids))
+        deduped = []
+        for block_id in linked:
+            if block_id != block.get("id") and block_id not in deduped:
+                deduped.append(block_id)
+        block["linked_blocks"] = deduped
+        figure = block.get("figure")
+        if isinstance(figure, dict):
+            figure["linked_blocks"] = deduped
+
+
+def _nearest_neighbor_ids(blocks: List[Dict[str, Any]], index: int, candidates: list[str]) -> list[str]:
+    result = []
+    for neighbor_index in (index - 1, index + 1):
+        if 0 <= neighbor_index < len(blocks):
+            block_id = blocks[neighbor_index].get("id")
+            if block_id in candidates:
+                result.append(block_id)
+    return result
 
 
 def _is_list_line(line: str) -> bool:

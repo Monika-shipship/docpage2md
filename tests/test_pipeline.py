@@ -333,7 +333,7 @@ def test_brain_stage_bad_formula_falls_back_when_page_ir_is_clean(monkeypatch, t
     assert "$$\n\\frac a}{b\n$$" not in markdown
 
 
-def test_brain_stage_formula_warning_does_not_fallback_when_page_ir_is_not_better(monkeypatch, tmp_path):
+def test_brain_stage_formula_warning_falls_back_to_conservative_formula_warning(monkeypatch, tmp_path):
     config = AppConfig(brain_batch_workers=1)
     report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)
     page_reports[1]["stage1"]["status"] = "ok"
@@ -367,9 +367,12 @@ def test_brain_stage_formula_warning_does_not_fallback_when_page_ir_is_not_bette
     markdown = (tmp_path / "Slide_01.md").read_text(encoding="utf-8")
     meta = read_json(tmp_path / "Slide_01.meta.json")
     assert ok_slides == [1]
-    assert meta["status"] == "ok"
+    assert meta["status"] == "fail_open"
+    assert meta["error"]["code"] == "latex_frac_missing_braces"
+    assert "> [!WARNING] 公式识别不确定" in markdown
     assert "\\frac a}{b" in markdown
-    assert page_reports[1]["validation"]["warnings"]
+    assert "$$\n\\frac a}{b\n$$" not in markdown
+    assert page_reports[1]["final"]["status"] == "fail_open"
 
 
 def test_brain_stage_records_checked_refiner_ops(monkeypatch, tmp_path):

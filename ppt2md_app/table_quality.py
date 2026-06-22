@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 from typing import Literal
 
 
+TABLE_QUALITY_SCHEMA_VERSION = 1
 Severity = Literal["error", "warning"]
 
 
@@ -36,6 +37,7 @@ class TableQualityResult:
 
     def to_dict(self):
         return {
+            "schema_version": TABLE_QUALITY_SCHEMA_VERSION,
             "reliable": self.reliable,
             "table_format": self.table_format,
             "row_count": self.row_count,

@@ -60,6 +60,12 @@ def assess_formula_text(text: str) -> FormulaQualityResult:
         warnings.append(_issue("latex_left_right_unbalanced", "\\left 与 \\right 数量不匹配。", latex[:120]))
     if re.search(r"\\frac(?!\s*\{)", latex):
         warnings.append(_issue("latex_frac_missing_braces", "\\frac 后缺少花括号参数。", latex[:120]))
+    if _looks_truncated(latex):
+        warnings.append(_issue("formula_truncated", "公式疑似在运算符或未完成命令处截断。", latex[:120]))
+    if _is_isolated_operator_formula(latex):
+        warnings.append(_issue("formula_isolated_operator", "公式只有孤立运算符或关系符，无法可靠使用。", latex[:120]))
+    if _looks_like_reasoning_without_formula(latex):
+        warnings.append(_issue("formula_reasoning_without_latex", "公式 block 疑似包含模型思考说明而不是公式。", latex[:120]))
 
     uncertain = has_uncertain_formula_marker(latex)
     if uncertain:
@@ -89,6 +95,37 @@ def has_uncertain_formula_marker(text: str) -> bool:
         or "uncertain" in lower
         or "illegible" in lower
     )
+
+
+def _looks_truncated(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if re.search(r"(?:[=+\-*/^_,]|\\frac|\\sqrt|\\sum|\\int|\\lim)\s*$", stripped):
+        return True
+    return bool(re.search(r"\\[A-Za-z]+\\?$", stripped))
+
+
+def _is_isolated_operator_formula(text: str) -> bool:
+    stripped = re.sub(r"\s+", "", text or "")
+    if not stripped:
+        return False
+    return bool(re.fullmatch(r"[=≈≤≥<>+\-*/^_{}()[\],.;:|]+", stripped))
+
+
+def _looks_like_reasoning_without_formula(text: str) -> bool:
+    lower = (text or "").lower()
+    markers = (
+        "thinking",
+        "reasoning",
+        "analysis:",
+        "思考",
+        "推理过程",
+        "我将",
+        "我们需要",
+    )
+    has_math_signal = bool(re.search(r"(\\[A-Za-z]+|[=≈≤≥+\-*/^_{}]|\d)", text or ""))
+    return any(marker in lower for marker in markers) and not has_math_signal
 
 
 def _unbalanced_pair(text: str, left: str, right: str) -> bool:

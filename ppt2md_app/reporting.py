@@ -34,7 +34,15 @@ def build_run_report(
                 "quality": _empty_quality_summary(),
                 "suspects": [],
                 "provenance": {"schema_version": None, "entries": [], "summary": {}},
-                "block_refiner": {"version": None, "changed": False, "applied_ops": [], "dismissed": [], "validation": None},
+                "block_refiner": {
+                    "version": None,
+                    "changed": False,
+                    "applied_ops": [],
+                    "dismissed": [],
+                    "op_audit": [],
+                    "validation": None,
+                },
+                "op_audit": [],
                 "refiner": {"changed": False, "applied_ops": [], "dismissed": []},
                 "final": {
                     "status": "pending",
@@ -76,6 +84,7 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
     stage2_cache_hits = sum(1 for page in pages if page.get("stage2", {}).get("cache") == "hit")
     warnings = sum(len(page.get("validation", {}).get("warnings") or []) for page in pages)
     block_refiner_applied_ops = sum(len(page.get("block_refiner", {}).get("applied_ops") or []) for page in pages)
+    op_audit_status_counts = _op_audit_status_counts(pages)
     formula_warning_count = sum(
         _count_validation_codes(page, ("formula_", "latex_"))
         + int(page.get("quality", {}).get("formula_warning_count") or 0)
@@ -100,6 +109,10 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "validation_warnings": warnings,
         "block_refiner_changed_pages": sum(1 for page in pages if page.get("block_refiner", {}).get("changed")),
         "block_refiner_applied_ops": block_refiner_applied_ops,
+        "op_audit": {
+            "total": sum(op_audit_status_counts.values()),
+            "by_status": op_audit_status_counts,
+        },
         "block_counts": block_counts,
         "semantic_role_counts": _sum_semantic_role_counts(pages),
         "provenance": provenance_summary,
@@ -252,6 +265,20 @@ def _markdown_source_counts(pages: list[Dict[str, Any]]) -> Dict[str, int]:
             continue
         kind = str(source.get("kind") or "unknown")
         counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def _op_audit_status_counts(pages: list[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for page in pages:
+        audits = page.get("op_audit")
+        if not isinstance(audits, list):
+            audits = page.get("block_refiner", {}).get("op_audit") or []
+        for audit in audits:
+            if not isinstance(audit, dict):
+                continue
+            status = str(audit.get("status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
     return counts
 
 

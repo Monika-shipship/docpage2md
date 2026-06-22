@@ -28,3 +28,25 @@ def test_formula_quality_marks_uncertain_formula():
 
     assert result.uncertain
     assert [warning.code for warning in result.warnings] == ["formula_uncertain_marker"]
+
+
+def test_formula_quality_records_truncated_formula():
+    result = assess_formula_text("E =")
+
+    assert not result.ok
+    assert "formula_truncated" in [warning.code for warning in result.warnings]
+
+
+def test_formula_quality_records_isolated_operator_formula():
+    result = assess_formula_text("=")
+
+    assert not result.ok
+    assert "formula_isolated_operator" in [warning.code for warning in result.warnings]
+
+
+def test_formula_quality_warns_on_half_open_interval_without_uncertain_marker():
+    result = assess_formula_text("[0,1)")
+
+    assert not result.ok
+    assert result.uncertain is False
+    assert "formula_bracket_unbalanced" in [warning.code for warning in result.warnings]

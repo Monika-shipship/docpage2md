@@ -101,6 +101,7 @@ class BlockRefineResult:
     applied_ops: List[Dict[str, Any]]
     dismissed: List[Dict[str, Any]]
     validation: Dict[str, Any]
+    op_audit: List[Dict[str, Any]]
 
     @property
     def changed(self) -> bool:
@@ -112,6 +113,7 @@ class BlockRefineResult:
             "changed": self.changed,
             "applied_ops": self.applied_ops,
             "dismissed": self.dismissed,
+            "op_audit": self.op_audit,
             "validation": self.validation,
         }
 
@@ -281,7 +283,7 @@ def apply_block_op_checked(
 ) -> tuple[Dict[str, Any], bool, Dict[str, Any]]:
     op_name = op.get("op")
     if op_name not in BLOCK_SAFE_OPS:
-        return page_ir, False, {"reason": "unknown_or_unsafe_op"}
+        return page_ir, False, {"reason": "unknown_or_unsafe_op", "op": op_name}
 
     slide = _resolve_slide_no(page_ir, slide_no)
     before_validation = validate_slide_markdown(
@@ -293,7 +295,13 @@ def apply_block_op_checked(
     candidate = deepcopy(page_ir)
     changed = _apply_block_op(candidate, op)
     if not changed:
-        return page_ir, False, {"reason": "no_change", "before_block_ids": before_ids, "after_block_ids": before_ids}
+        return page_ir, False, {
+            "reason": "no_change",
+            "before_block_ids": before_ids,
+            "after_block_ids": before_ids,
+            "validator_before": before_validation.to_dict(),
+            "validator_after": before_validation.to_dict(),
+        }
 
     contract_errors = page_ir_contract_errors(candidate, expected_slide_no=slide if slide > 0 else None)
     if contract_errors:
@@ -302,6 +310,7 @@ def apply_block_op_checked(
             "errors": contract_errors,
             "before_block_ids": before_ids,
             "after_block_ids": _block_ids(candidate),
+            "validator_before": before_validation.to_dict(),
         }
 
     after_markdown = render_page_ir_to_markdown(candidate, slide)
@@ -310,12 +319,16 @@ def apply_block_op_checked(
         return page_ir, False, {
             "reason": "validation_would_get_worse",
             "validation": after_validation.to_dict(),
+            "validator_before": before_validation.to_dict(),
+            "validator_after": after_validation.to_dict(),
             "before_block_ids": before_ids,
             "after_block_ids": _block_ids(candidate),
         }
 
     return candidate, True, {
         "validation": after_validation.to_dict(),
+        "validator_before": before_validation.to_dict(),
+        "validator_after": after_validation.to_dict(),
         "before_block_ids": before_ids,
         "after_block_ids": _block_ids(candidate),
     }
@@ -330,6 +343,7 @@ def refine_page_ir(
     current = deepcopy(page_ir)
     applied = []
     dismissed = []
+    op_audit = []
     for suspect in detect_block_suspects(current):
         current, ok, detail = apply_block_op_checked(
             current,
@@ -341,13 +355,15 @@ def refine_page_ir(
         if ok:
             item.update(detail)
             applied.append(item)
+            op_audit.append(_block_op_audit(suspect, "applied", detail))
         else:
             item["dismissed"] = detail
             dismissed.append(item)
+            op_audit.append(_block_op_audit(suspect, "rejected", detail))
 
     slide = _resolve_slide_no(current, slide_no)
     validation = validate_slide_markdown(render_page_ir_to_markdown(current, slide), slide, target_raw=target_raw)
-    return BlockRefineResult(current, applied, dismissed, validation.to_dict())
+    return BlockRefineResult(current, applied, dismissed, validation.to_dict(), op_audit)
 
 
 def apply_op_checked(
@@ -494,6 +510,27 @@ def _block_suspect(
         reason=reason,
         evidence=evidence,
     )
+
+
+def _block_op_audit(suspect: BlockSuspect, status: str, detail: Dict[str, Any]) -> Dict[str, Any]:
+    op = suspect.op if isinstance(suspect.op, dict) else {}
+    target_ids = []
+    for key in ("id", "a", "b"):
+        value = op.get(key)
+        if value and value not in target_ids:
+            target_ids.append(value)
+    return {
+        "suspect_id": suspect.id,
+        "code": suspect.code,
+        "op": op.get("op"),
+        "target_block_ids": target_ids,
+        "before_block_ids": detail.get("before_block_ids", []),
+        "after_block_ids": detail.get("after_block_ids", []),
+        "reason": detail.get("reason") or suspect.reason,
+        "status": status,
+        "validator_before": detail.get("validator_before"),
+        "validator_after": detail.get("validator_after") or detail.get("validation"),
+    }
 
 
 def _apply_block_op(page_ir: Dict[str, Any], op: Dict[str, Any]) -> bool:

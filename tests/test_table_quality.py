@@ -6,6 +6,7 @@ def test_reliable_markdown_table_passes_quality_gate():
     result = assess_table_markdown("| A | B |\n| --- | --- |\n| 1 | 2 |")
 
     assert result.reliable
+    assert result.to_dict()["schema_version"] == 1
     assert result.errors == []
     assert result.warnings == []
 

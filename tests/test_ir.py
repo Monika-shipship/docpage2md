@@ -78,7 +78,43 @@ def test_figure_analysis_extracts_structured_fields():
     assert block["description"].startswith("类型：流程图")
     assert block["labels"][:3] == ["A", "B", "C"]
     assert block["relations"] == ["连接：A 指向 B，B 指向 C。"]
+    assert block["linked_blocks"] == []
+    assert block["figure"]["figure_type"] == "flowchart"
+    assert block["figure"]["linked_blocks"] == []
     assert block["origin"] == "vision_description"
+
+
+def test_figure_link_uncertainty_does_not_mark_whole_figure_unrecognizable():
+    raw = (
+        "### Figure Analysis\n"
+        "类型：坐标图。\n"
+        "标签：横轴 t，纵轴 v。\n"
+        "关系：曲线随 t 增大上升。\n"
+        "正文关联：不确定。"
+    )
+
+    block = build_page_ir(raw, 19)["blocks"][0]
+
+    assert block["figure_type"] == "coordinate_plot"
+    assert block["unrecognizable"] is False
+    assert block["confidence"] == 0.72
+
+
+def test_figure_links_to_same_page_formula_block():
+    raw = (
+        "### Formula\n"
+        "v(t) = at\n\n"
+        "### Figure Analysis\n"
+        "类型：坐标图。\n"
+        "标签：横轴 t，纵轴 v。\n"
+        "关系：曲线随 t 增大上升。\n"
+        "正文关联：对应上方公式 v(t)。"
+    )
+
+    block = build_page_ir(raw, 20)["blocks"][1]
+
+    assert block["linked_blocks"] == ["p0020-b001"]
+    assert block["figure"]["linked_blocks"] == ["p0020-b001"]
 
 
 def test_unrecognizable_figure_renders_as_warning_block():
@@ -140,6 +176,11 @@ def test_handwritten_sections_become_renderable_block_types():
     ]
     assert ir["blocks"][0]["latex"] == "F = ma"
     assert ir["blocks"][0]["formula_quality"]["ok"] is True
+    assert ir["blocks"][0]["raw_text"] == "F = ma"
+    assert ir["blocks"][0]["warnings"] == []
+    assert ir["blocks"][1]["table_quality"]["schema_version"] == 1
+    assert ir["blocks"][1]["table_reliable"] is True
+    assert ir["blocks"][1]["table_render_mode"] == "normalized_markdown"
 
 
 def test_semantic_sections_render_as_readable_markdown_labels():
@@ -196,6 +237,9 @@ def test_uncertain_formula_renders_as_warning_block():
         "> [!WARNING] 公式识别不确定\n"
         "> 原始识别：\n"
         "> E = [?] mc^2\n"
+        ">\n"
+        "> 质量警告：\n"
+        "> - 公式中包含不确定识别标记。\n"
     )
 
 
@@ -206,7 +250,7 @@ def test_unreliable_table_degrades_to_warning_block():
 
     assert markdown.startswith("# Slide 9\n\n> [!WARNING] 表格识别不确定\n")
     assert "Markdown 表格行列数不一致" in markdown
-    assert "> | 1 | 2 | 3 |" in markdown
+    assert "```text\n| A | B |\n| --- | --- |\n| 1 | 2 | 3 |\n```" in markdown
 
 
 def test_unreliable_table_with_image_path_keeps_markdown_image_reference():
@@ -225,7 +269,7 @@ def test_unreliable_table_with_image_path_keeps_markdown_image_reference():
     assert markdown.startswith("# Slide 9\n\n![page 9 table 1](assets/tables/page-9-table-1.png)\n\n")
     assert "> [!WARNING] 表格识别不确定" in markdown
     assert "> 已保留表格截图引用。" in markdown
-    assert "> 原始识别：" in markdown
+    assert "> 原始识别已按纯文本保留" in markdown
 
 
 def test_aligned_text_table_renders_as_markdown_table():

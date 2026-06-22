@@ -156,6 +156,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                         page["quality"] = summarize_blocks(data.get("blocks") or [])
                         page["provenance"] = data.get("provenance") or page.get("provenance")
                         page["block_refiner"] = data.get("block_refiner") or page.get("block_refiner")
+                        page["op_audit"] = (page.get("block_refiner") or {}).get("op_audit") or []
                         page["stage1"].update(
                             {
                                 "status": "ok",
@@ -211,6 +212,7 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                     page["quality"] = summarize_blocks(cache_record.get("blocks") or [])
                     page["provenance"] = cache_record.get("provenance") or page.get("provenance")
                     page["block_refiner"] = cache_record.get("block_refiner") or page.get("block_refiner")
+                    page["op_audit"] = (page.get("block_refiner") or {}).get("op_audit") or []
                     page["stage1"].update(
                         {
                             "status": "ok",
