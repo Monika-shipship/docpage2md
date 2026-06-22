@@ -160,3 +160,35 @@ def test_ocr_coverage_does_not_count_figure_description_as_missing_text():
 
     assert result.ok
     assert result.warnings == []
+
+
+def test_missing_target_formula_block_warns_even_when_page_text_is_present():
+    target_blocks = build_page_ir(
+        "### Formula\n"
+        "\\begin{aligned}\n"
+        "S &= k\\left(\\ln Z-\\beta \\frac{\\partial}{\\partial \\beta} \\ln Z\\right) \\\\\n"
+        "&= k(\\ln Z+\\beta U) \\\\\n"
+        "&= \\frac{3}{2} N k \\ln T+N k \\ln \\frac{V}{N}+N k\\left[\\ln \\left(\\frac{2 \\pi m k}{h^{2}}\\right)^{\\frac{3}{2}}+\\frac{5}{2}\\right].\n"
+        "\\end{aligned}\n"
+        "\\tag{5}\n\n"
+        "上述式(3)、式(4)和式(5)分别与热力学中式(1.3.11)、式(1.7.4)和式(1.15.4)相当。",
+        3,
+    )["blocks"]
+    markdown_missing_formula = (
+        "# Slide 3\n\n"
+        "上述式(3)、式(4)和式(5)分别与热力学中式(1.3.11)、式(1.7.4)和式(1.15.4)相当。\n"
+    )
+
+    result = validate_slide_markdown(markdown_missing_formula, 3, target_blocks=target_blocks)
+
+    assert result.ok
+    assert "target_formula_block_missing" in {issue.code for issue in result.warnings}
+
+
+def test_present_target_formula_block_satisfies_formula_coverage():
+    raw = "### Formula\nE = mc^2\n\n正文。"
+    blocks = build_page_ir(raw, 4)["blocks"]
+
+    result = validate_slide_markdown("# Slide 4\n\n$$\nE = mc^2\n$$\n\n正文。\n", 4, target_blocks=blocks)
+
+    assert "target_formula_block_missing" not in {issue.code for issue in result.warnings}

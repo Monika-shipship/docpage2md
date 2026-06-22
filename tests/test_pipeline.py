@@ -375,6 +375,65 @@ def test_brain_stage_formula_warning_falls_back_to_conservative_formula_warning(
     assert page_reports[1]["final"]["status"] == "fail_open"
 
 
+def test_brain_stage_missing_target_formula_block_uses_page_ir_fallback(monkeypatch, tmp_path):
+    config = AppConfig(brain_batch_workers=1)
+    report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)
+    page_reports[1]["stage1"]["status"] = "ok"
+    raw_data_map = {
+        1: (
+            "### Formula\n"
+            "\\begin{aligned}\n"
+            "S &= k\\left(\\ln Z-\\beta \\frac{\\partial}{\\partial \\beta} \\ln Z\\right) \\\\\n"
+            "&= k(\\ln Z+\\beta U) \\\\\n"
+            "&= \\frac{3}{2} N k \\ln T+N k \\ln \\frac{V}{N}+N k\\left[\\ln \\left(\\frac{2 \\pi m k}{h^{2}}\\right)^{\\frac{3}{2}}+\\frac{5}{2}\\right].\n"
+            "\\end{aligned}\n"
+            "\\tag{5}\n\n"
+            "上述式(3)、式(4)和式(5)分别与热力学中式(1.3.11)、式(1.7.4)和式(1.15.4)相当。"
+        )
+    }
+    target_blocks = {1: build_page_ir(raw_data_map[1], 1)["blocks"]}
+
+    monkeypatch.setattr(
+        pipeline,
+        "run_stage_2_brain_parallel",
+        lambda slide_no, raw_data_map, config: {
+            "success": True,
+            "slide_no": slide_no,
+            "markdown": (
+                "# Slide 1\n\n"
+                "上述式(3)、式(4)和式(5)分别与热力学中式(1.3.11)、式(1.7.4)和式(1.15.4)相当。\n"
+            ),
+            "raw_response": (
+                "# Slide 1\n\n"
+                "上述式(3)、式(4)和式(5)分别与热力学中式(1.3.11)、式(1.7.4)和式(1.15.4)相当。\n"
+            ),
+        },
+    )
+
+    ok_slides = pipeline._run_brain_stage(
+        "Deck",
+        1,
+        0,
+        tmp_path,
+        raw_data_map,
+        1,
+        DummyQueue(),
+        config,
+        page_reports,
+        target_blocks_by_slide=target_blocks,
+    )
+
+    markdown = (tmp_path / "Slide_01.md").read_text(encoding="utf-8")
+    meta = read_json(tmp_path / "Slide_01.meta.json")
+    assert ok_slides == [1]
+    assert meta["status"] == "fail_open"
+    assert meta["error"]["code"] == "target_formula_block_missing"
+    assert "Stage 2 重组失败" in markdown
+    assert "\\begin{aligned}" in markdown
+    assert "\\frac{3}{2} N k \\ln T" in markdown
+    assert page_reports[1]["final"]["status"] == "fail_open"
+
+
 def test_brain_stage_records_checked_refiner_ops(monkeypatch, tmp_path):
     config = AppConfig(brain_batch_workers=1)
     report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)

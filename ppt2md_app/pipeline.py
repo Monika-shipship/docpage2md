@@ -669,6 +669,7 @@ def _stage2_warning_fallback_issue(validation: dict, *, slide_no, raw_data_map, 
         "figure_note_missing",
         "unrendered_figure_analysis",
         "table_structure_warning",
+        "target_formula_block_missing",
     }
     formula_codes = {
         "formula_brace_unbalanced",

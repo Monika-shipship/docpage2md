@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Literal
 
 from .coverage import assess_ocr_coverage
@@ -132,6 +133,7 @@ def validate_slide_markdown(
     errors.extend(_formula_delimiter_errors(code_free, slide_no))
     warnings.extend(_formula_quality_warnings(code_free, slide_no))
     warnings.extend(_table_quality_warnings(code_free, slide_no))
+    warnings.extend(_target_formula_block_warnings(text, target_blocks, slide_no))
 
     body = "\n".join(stripped.splitlines()[1:]).strip()
     if not body:
@@ -244,6 +246,34 @@ def _table_quality_warnings(text: str, slide_no: int) -> list[ValidationIssue]:
     return warnings
 
 
+def _target_formula_block_warnings(markdown: str, target_blocks: list[dict] | None, slide_no: int) -> list[ValidationIssue]:
+    warnings = []
+    markdown_norm = _normalize_formula_for_coverage(markdown)
+    if not markdown_norm:
+        return warnings
+    for block in target_blocks or []:
+        if not isinstance(block, dict) or block.get("type") != "formula_block":
+            continue
+        formula = block.get("latex") or block.get("text") or block.get("raw_text") or ""
+        formula_norm = _normalize_formula_for_coverage(str(formula))
+        if len(formula_norm) < 24:
+            continue
+        if formula_norm in markdown_norm:
+            continue
+        ratio = _formula_match_ratio(formula_norm, markdown_norm)
+        if ratio < 0.82:
+            warnings.append(
+                _issue(
+                    "target_formula_block_missing",
+                    "warning",
+                    "最终 Markdown 遗漏了当前页 Stage 1 识别到的重要公式块。",
+                    slide_no,
+                    f"block_id={block.get('id')}; ratio={ratio:.4f}; preview={_formula_preview(formula)}",
+                )
+            )
+    return warnings
+
+
 def _math_segments(text: str) -> list[str]:
     segments = []
     segments.extend(match.group(1) for match in re.finditer(r"\$\$(.*?)\$\$", text, flags=re.DOTALL))
@@ -314,6 +344,26 @@ def _has_figure_note(text: str) -> bool:
         or "> [!NOTE] 图示说明" in text
         or "> [!WARNING] 图示识别不确定" in text
     )
+
+
+def _formula_match_ratio(formula_norm: str, markdown_norm: str) -> float:
+    matcher = SequenceMatcher(None, formula_norm, markdown_norm, autojunk=False)
+    matched = sum(block.size for block in matcher.get_matching_blocks())
+    return matched / len(formula_norm) if formula_norm else 1.0
+
+
+def _normalize_formula_for_coverage(text: str) -> str:
+    normalized = (text or "").lower()
+    normalized = normalized.replace(r"\mathrm", "")
+    normalized = normalized.replace(r"\operatorname", "")
+    return re.sub(r"[^\w]+", "", normalized, flags=re.UNICODE).replace("_", "")
+
+
+def _formula_preview(text: str, limit: int = 120) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
 
 
 def _find_possible_neighbor_leak(markdown: str, target_raw: str, neighbor_raw: dict[int, str]) -> str | None:
