@@ -42,7 +42,7 @@ def assess_ocr_coverage(markdown: str, blocks: Iterable[dict[str, Any]] | None) 
     if not source_segments:
         return CoverageResult(False, None, 0, 0, [], "no_ocr_segments")
 
-    markdown_norm = _normalize_text(markdown)
+    markdown_norm = _normalize_text(_markdown_content_for_coverage(markdown))
     source_norm = "".join(_normalize_text(segment) for segment in source_segments)
     source_chars = len(source_norm)
     if source_chars < OCR_COVERAGE_MIN_CHARS:
@@ -104,6 +104,27 @@ def _strip_markdown_prefix(text: str) -> str:
     stripped = re.sub(r"^[-*+]\s+", "", stripped)
     stripped = re.sub(r"^\d+[.)]\s+", "", stripped)
     return stripped.strip()
+
+
+def _markdown_content_for_coverage(markdown: str) -> str:
+    text = re.sub(r"<!--.*?-->", "\n", markdown or "", flags=re.DOTALL)
+    kept = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.match(r"^#\s*Slide\s+\d+\b", stripped, flags=re.IGNORECASE):
+            continue
+        if re.match(r"^!\[[^\]]*\]\([^)]+\)\s*$", stripped):
+            continue
+        if stripped.startswith(">"):
+            stripped = stripped.lstrip("> ").strip()
+        if re.match(r"^\[!(NOTE|WARNING|TIP|IMPORTANT|CAUTION)\]", stripped, flags=re.IGNORECASE):
+            continue
+        if stripped in {"原始识别：", "原始识别:", "图示说明", "Figure 描述"}:
+            continue
+        kept.append(stripped)
+    return "\n".join(kept)
 
 
 def _normalize_text(text: str) -> str:

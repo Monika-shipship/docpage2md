@@ -46,3 +46,41 @@ def test_ocr_coverage_ignores_generated_figure_descriptions():
 
     assert not result.checked
     assert result.reason == "no_ocr_segments"
+
+
+def test_ocr_coverage_ignores_renderer_and_admonition_template_text():
+    blocks = [
+        {
+            "type": "paragraph",
+            "origin": "vision_ocr",
+            "text": "Stage 2 重组失败 原始识别 确定性 Markdown fallback 这些只是模板词。",
+        }
+    ]
+    markdown = (
+        "<!-- png2md-provenance id=p0001-template-slide-heading type=renderer_template -->\n"
+        "# Slide 1\n\n"
+        "> [!WARNING] Stage 2 重组失败，已使用 Stage 1 确定性 Markdown fallback。\n"
+        "> 原始识别：\n"
+    )
+
+    result = assess_ocr_coverage(markdown, blocks)
+
+    assert result.checked
+    assert result.warning
+    assert result.ratio == 0.0
+
+
+def test_ocr_coverage_keeps_real_text_inside_blockquotes():
+    blocks = [
+        {
+            "type": "paragraph",
+            "origin": "vision_ocr",
+            "text": "热力学第一定律描述内能、热量和功之间的关系。",
+        }
+    ]
+
+    result = assess_ocr_coverage("# Slide 1\n\n> 热力学第一定律描述内能、热量和功之间的关系。\n", blocks)
+
+    assert result.checked
+    assert result.warning is False
+    assert result.ratio == 1.0

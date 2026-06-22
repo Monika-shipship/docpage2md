@@ -1,3 +1,3 @@
 """Compatibility versions for generated png2md artifacts."""
 
-PNG2MD_PIPELINE_VERSION = "2026.06.22-v7-renderer-template-provenance"
+PNG2MD_PIPELINE_VERSION = "2026.06.22-v8-ocr-coverage-template-filter"
