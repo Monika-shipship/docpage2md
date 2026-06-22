@@ -34,10 +34,11 @@ def test_raw_cache_hits_only_when_fingerprint_matches(tmp_path):
     assert record["blocks"][0]["id"] == "p0001-b001"
     assert record["block_refiner"]["version"].startswith("block-refiner-")
     assert record["block_refiner"]["changed"] is False
-    assert record["provenance"]["schema_version"] == 1
-    assert record["provenance"]["entries"][0]["id"] == "p0001-b001"
-    assert record["provenance"]["entries"][0]["origin"] == "vision_ocr"
-    assert record["provenance"]["summary"]["origin_counts"] == {"vision_ocr": 1}
+    assert record["provenance"]["schema_version"] == 2
+    assert record["provenance"]["entries"][0]["origin"] == "renderer_template"
+    assert record["provenance"]["entries"][1]["id"] == "p0001-b001"
+    assert record["provenance"]["entries"][1]["origin"] == "vision_ocr"
+    assert record["provenance"]["summary"]["origin_counts"] == {"renderer_template": 1, "vision_ocr": 1}
 
     valid, reason = validate_raw_cache_record(record, 1, fingerprint)
     assert valid

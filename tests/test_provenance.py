@@ -8,11 +8,18 @@ def test_build_page_provenance_tracks_origins_and_generated_descriptions():
 
     provenance = build_page_provenance(page_ir)
 
-    assert provenance["schema_version"] == 1
-    assert [entry["origin"] for entry in provenance["entries"]] == ["vision_ocr", "vision_description"]
-    assert provenance["entries"][1]["generated_description"] is True
+    assert provenance["schema_version"] == 2
+    assert [entry["origin"] for entry in provenance["entries"]] == [
+        "renderer_template",
+        "vision_ocr",
+        "vision_description",
+    ]
+    assert provenance["entries"][0]["type"] == "renderer_template"
+    assert provenance["entries"][0]["markdown"] == "# Slide 1"
+    assert provenance["entries"][2]["generated_description"] is True
     assert provenance["summary"]["generated_description_count"] == 1
     assert provenance["summary"]["renderer_template_count"] == 1
+    assert provenance["summary"]["origin_counts"]["renderer_template"] == 1
 
 
 def test_merge_provenance_summaries_counts_refiner_ops():
@@ -22,15 +29,17 @@ def test_merge_provenance_summaries_counts_refiner_ops():
     merged = merge_provenance_summaries([{"provenance": provenance}])
 
     assert merged["origin_counts"]["refiner_op"] == 1
+    assert merged["origin_counts"]["renderer_template"] == 1
     assert merged["refiner_op_count"] == 1
     assert merged["type_counts"]["formula_block"] == 1
+    assert merged["type_counts"]["renderer_template"] == 1
 
 
 def test_formula_provenance_records_latex_warning_count():
     page_ir = build_page_ir("### Formula\n\\frac a}{b", 3)
     provenance = build_page_provenance(page_ir)
 
-    entry = provenance["entries"][0]
+    entry = next(entry for entry in provenance["entries"] if entry["type"] == "formula_block")
     assert entry["type"] == "formula_block"
     assert entry["formula_warning_count"] == 1
     assert entry["latex_sha256"]

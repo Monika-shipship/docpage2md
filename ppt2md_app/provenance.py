@@ -2,15 +2,17 @@ import hashlib
 from typing import Any, Dict, Iterable
 
 
-PROVENANCE_SCHEMA_VERSION = 1
+PROVENANCE_SCHEMA_VERSION = 2
 
 
 def build_page_provenance(page_ir: Dict[str, Any]) -> Dict[str, Any]:
     blocks = page_ir.get("blocks") or []
-    entries = [_block_entry(block, index) for index, block in enumerate(blocks, start=1)]
+    source_page = page_ir.get("source_page")
+    entries = [_renderer_template_entry(source_page, 0)]
+    entries.extend(_block_entry(block, index) for index, block in enumerate(blocks, start=1))
     return {
         "schema_version": PROVENANCE_SCHEMA_VERSION,
-        "source_page": page_ir.get("source_page"),
+        "source_page": source_page,
         "entries": entries,
         "summary": summarize_provenance(entries),
     }
@@ -21,7 +23,7 @@ def summarize_provenance(entries: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     type_counts: Dict[str, int] = {}
     generated_description_count = 0
     refiner_op_count = 0
-    renderer_template_count = 1
+    renderer_template_count = 0
     for entry in entries:
         origin = entry.get("origin") or "unknown"
         block_type = entry.get("type") or "unknown"
@@ -31,6 +33,8 @@ def summarize_provenance(entries: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             generated_description_count += 1
         if origin == "refiner_op":
             refiner_op_count += 1
+        if origin == "renderer_template":
+            renderer_template_count += 1
     return {
         "origin_counts": origin_counts,
         "type_counts": type_counts,
@@ -79,6 +83,36 @@ def provenance_comment(block: Dict[str, Any]) -> str:
     if confidence is not None:
         parts.append(f"confidence={confidence}")
     return "<!-- " + " ".join(parts) + " -->"
+
+
+def renderer_template_block(source_page: int | None) -> Dict[str, Any]:
+    page = int(source_page or 0)
+    return {
+        "id": f"p{page:04d}-template-slide-heading",
+        "type": "renderer_template",
+        "origin": "renderer_template",
+        "source_page": page,
+        "confidence": 1.0,
+    }
+
+
+def _renderer_template_entry(source_page: int | None, index: int) -> Dict[str, Any]:
+    page = int(source_page or 0)
+    block = renderer_template_block(page)
+    return {
+        "index": index,
+        "id": block["id"],
+        "type": block["type"],
+        "origin": block["origin"],
+        "source_page": page,
+        "confidence": block["confidence"],
+        "bbox": None,
+        "raw_text_sha256": None,
+        "has_raw_text": False,
+        "refiner_op": None,
+        "template": "slide_heading",
+        "markdown": f"# Slide {page}",
+    }
 
 
 def _block_entry(block: Dict[str, Any], index: int) -> Dict[str, Any]:

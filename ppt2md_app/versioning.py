@@ -1,3 +1,3 @@
 """Compatibility versions for generated png2md artifacts."""
 
-PNG2MD_PIPELINE_VERSION = "2026.06.22-v6-table-quality-warnings"
+PNG2MD_PIPELINE_VERSION = "2026.06.22-v7-renderer-template-provenance"

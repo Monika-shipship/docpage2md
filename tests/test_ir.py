@@ -51,6 +51,7 @@ def test_renderer_provenance_comments_are_opt_in():
     debug_markdown = render_page_ir_to_markdown(ir, include_provenance_comments=True)
 
     assert "png2md-provenance" not in default_markdown
+    assert "<!-- png2md-provenance id=p0012-template-slide-heading type=renderer_template origin=renderer_template source_page=12" in debug_markdown
     assert "<!-- png2md-provenance id=p0012-b001 type=heading origin=vision_ocr source_page=12" in debug_markdown
     assert "<!-- png2md-provenance id=p0012-b002 type=paragraph origin=vision_ocr source_page=12" in debug_markdown
 

@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from .provenance import provenance_comment
+from .provenance import provenance_comment, renderer_template_block
 from .table_quality import assess_table, normalize_table_text
 
 
@@ -40,7 +40,10 @@ def render_blocks_to_markdown(
     *,
     include_provenance_comments: bool = False,
 ) -> str:
-    chunks = [f"# Slide {slide_no}"]
+    heading = f"# Slide {slide_no}"
+    if include_provenance_comments:
+        heading = f"{provenance_comment(renderer_template_block(slide_no))}\n{heading}"
+    chunks = [heading]
     for block in blocks:
         rendered = render_block(block)
         if rendered:
