@@ -11,7 +11,7 @@ from .renderer import (
 )
 from .table_quality import is_probably_aligned_text_table
 
-PAGE_IR_SCHEMA_VERSION = 6
+PAGE_IR_SCHEMA_VERSION = 7
 
 SEMANTIC_ROLE_LABELS = {
     "definition": "定义",
@@ -33,6 +33,7 @@ def build_page_ir(raw_text: str, slide_no: int) -> Dict[str, Any]:
     return {
         "schema_version": PAGE_IR_SCHEMA_VERSION,
         "source_page": slide_no,
+        "raw_text": raw_text or "",
         "raw_text_sha256": _sha256_text(raw_text or ""),
         "blocks": blocks,
     }

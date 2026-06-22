@@ -1,3 +1,4 @@
+import hashlib
 import re
 from dataclasses import dataclass
 from copy import deepcopy
@@ -640,6 +641,13 @@ def _page_ir_contract_errors(page_ir: Dict[str, Any]) -> list[str]:
     errors = []
     if not isinstance(page_ir, dict):
         return ["page_ir_not_dict"]
+    raw_text = page_ir.get("raw_text")
+    if raw_text is not None and not isinstance(raw_text, str):
+        errors.append("raw_text_not_string")
+    if isinstance(raw_text, str):
+        expected = page_ir.get("raw_text_sha256")
+        if expected and expected != _sha256_text(raw_text):
+            errors.append("raw_text_sha256_mismatch")
     blocks = page_ir.get("blocks")
     if not isinstance(blocks, list):
         return ["blocks_not_list"]
@@ -662,6 +670,10 @@ def _page_ir_contract_errors(page_ir: Dict[str, Any]) -> list[str]:
         if "evidence" not in block:
             errors.append(f"block_{index}_missing_evidence")
     return errors
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
 def _looks_like_body_text(text: str) -> bool:

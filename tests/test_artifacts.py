@@ -29,6 +29,8 @@ def test_raw_cache_hits_only_when_fingerprint_matches(tmp_path):
     fingerprint = stage1_fingerprint(image, config)
 
     assert record["page_ir"]["source_page"] == 1
+    assert record["page_ir"]["raw_text"] == "raw text"
+    assert record["page_ir"]["raw_text_sha256"] == record["raw_text_sha256"]
     assert record["blocks"][0]["id"] == "p0001-b001"
     assert record["block_refiner"]["version"].startswith("block-refiner-")
     assert record["block_refiner"]["changed"] is False
@@ -79,6 +81,19 @@ def test_raw_cache_without_provenance_does_not_hit(tmp_path):
     config = AppConfig()
     record = build_raw_cache_record({"success": True, "slide_no": 1, "raw_text": "raw text"}, image, config)
     del record["provenance"]
+
+    valid, reason = validate_raw_cache_record(record, 1, stage1_fingerprint(image, config))
+
+    assert not valid
+    assert reason == "invalid"
+
+
+def test_raw_cache_with_page_ir_raw_text_mismatch_does_not_hit(tmp_path):
+    image = tmp_path / "page.png"
+    image.write_bytes(b"fake image")
+    config = AppConfig()
+    record = build_raw_cache_record({"success": True, "slide_no": 1, "raw_text": "raw text"}, image, config)
+    record["page_ir"]["raw_text"] = "different raw"
 
     valid, reason = validate_raw_cache_record(record, 1, stage1_fingerprint(image, config))
 

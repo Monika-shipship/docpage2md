@@ -234,6 +234,10 @@ def validate_raw_cache_record(
     page_ir = data.get("page_ir")
     if not isinstance(page_ir, dict) or page_ir.get("schema_version") != PAGE_IR_SCHEMA_VERSION:
         return False, "invalid"
+    if page_ir.get("raw_text") != raw_text:
+        return False, "invalid"
+    if page_ir.get("raw_text_sha256") != sha256_text(raw_text):
+        return False, "invalid"
     block_refiner = data.get("block_refiner")
     if not isinstance(block_refiner, dict) or block_refiner.get("version") != BLOCK_REFINER_VERSION:
         return False, "invalid"
