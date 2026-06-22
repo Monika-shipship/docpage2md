@@ -691,6 +691,10 @@ def _page_ir_contract_errors(page_ir: Dict[str, Any]) -> list[str]:
             errors.append(f"block_{index}_missing_text")
         if block.get("source_page") != page_ir.get("source_page"):
             errors.append(f"block_{index}_source_page_mismatch")
+        if "confidence" not in block:
+            errors.append(f"block_{index}_missing_confidence")
+        elif not _valid_confidence(block.get("confidence")):
+            errors.append(f"block_{index}_invalid_confidence")
         if "bbox" not in block:
             errors.append(f"block_{index}_missing_bbox")
         elif not _valid_bbox(block.get("bbox")):
@@ -715,6 +719,12 @@ def _valid_bbox(value) -> bool:
     if not isinstance(value, list) or len(value) != 4:
         return False
     return all(isinstance(item, (int, float)) for item in value)
+
+
+def _valid_confidence(value) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return 0.0 <= float(value) <= 1.0
 
 
 def _looks_like_body_text(text: str) -> bool:

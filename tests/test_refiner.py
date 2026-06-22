@@ -264,3 +264,35 @@ def test_block_op_checked_rejects_invalid_bbox_shape():
     assert refined == page_ir
     assert detail["reason"] == "page_ir_contract_failed"
     assert "block_1_invalid_bbox" in detail["errors"]
+
+
+def test_block_op_checked_rejects_missing_confidence_field():
+    page_ir = build_page_ir("普通正文\n\n后续正文。", 10)
+    del page_ir["blocks"][1]["confidence"]
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "promote_heading", "id": "p0010-b001"},
+        slide_no=10,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "page_ir_contract_failed"
+    assert "block_1_missing_confidence" in detail["errors"]
+
+
+def test_block_op_checked_rejects_invalid_confidence_value():
+    page_ir = build_page_ir("普通正文\n\n后续正文。", 11)
+    page_ir["blocks"][1]["confidence"] = 1.5
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "promote_heading", "id": "p0011-b001"},
+        slide_no=11,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "page_ir_contract_failed"
+    assert "block_1_invalid_confidence" in detail["errors"]
