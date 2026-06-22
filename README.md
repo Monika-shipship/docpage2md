@@ -150,11 +150,28 @@ python docpage2md.py -n my_session -o .\markdown_output
 8             只处理第 8 页
 ```
 
-## 两阶段架构
+## 生成原理：从图片到 Markdown
 
-### Step 1: 视觉提取
+完整说明见 [PNG 到 Markdown 的生成原理](docs/architecture/png-to-markdown-pipeline.md)。README 这里只放短版。
 
-对每张图片做 OCR、公式识别、图形结构描述，输出 Raw Data。
+当前流程不是让模型直接“看图写 Markdown”后就保存，而是分成识别、结构化、重组、校验和保守回退几层：
+
+```text
+PNG/JPG 页面图片
+  -> Step 1 Vision 识别 Raw Data
+  -> PageIR / BlockIR 结构化中间层
+  -> Step 2 Brain 用前后页上下文重组 Markdown
+  -> Markdown refiner 做有限格式修复
+  -> Validator 检查格式、公式、表格、图示和内容覆盖
+  -> 正常写入 Slide_XX.md，或 fail-open 回退到 PageIR 确定性渲染
+  -> 合并生成 任务名_FULL.md，并写 run_report.json
+```
+
+核心原则是：最终产物仍然是 Markdown，但内部会保留 Raw JSON、PageIR、稳定 block id、provenance 和 run report，用来防止公式、图表、手写文字等内容被静默遗漏。
+
+### Step 1: Vision 识别
+
+对每张图片做 OCR、公式识别、图形结构描述和表格识别，输出 Raw Data。
 
 默认模型：
 
@@ -164,9 +181,33 @@ dashscope:qwen3-vl-plus
 
 也可以选择 Qwen3.7-Plus、Qwen3.6-Flash、Qwen3.5-Flash 等视觉模型，或配置自定义 OpenAI-compatible 视觉 API。
 
+Step 1 的结果会写入：
+
+```text
+markdown_output/任务名/temp_raw_vision/Raw_XX.json
+```
+
+Raw cache 会记录图片 hash、模型身份、prompt 版本、pipeline 版本、PageIR blocks 和质量信息。缓存命中前会校验这些指纹，避免旧版本结果污染新流程。
+
+### PageIR / BlockIR
+
+Raw Data 会被解析成弱结构化 PageIR。每个 block 都有稳定 ID，例如 `p0003-b002`。常见 block 类型包括：
+
+- `heading`
+- `paragraph`
+- `list`
+- `formula_inline`
+- `formula_block`
+- `table`
+- `figure_note`
+- `image_ref`
+- `uncertain`
+
+这些 block 是后续校验、防遗漏和报告追踪的依据。
+
 ### Step 2: Brain 重组
 
-使用前后各 2 页 Raw Data，也就是 5 页滑动窗口，把当前页整理成 Markdown。
+Step 2 使用前后各 2 页 Raw Data，也就是 5 页滑动窗口，把当前页整理成 Markdown。
 
 推荐模型：
 
@@ -175,6 +216,26 @@ deepseek:deepseek-v4-flash
 ```
 
 它便宜、上下文长，适合做 Markdown 清洗、公式修正、跨页上下文判断。
+
+### Refiner / Validator / Fail-open
+
+Step 2 输出后还会经过两道保护：
+
+1. `refiner` 做有限格式修复，例如补 `# Slide N`、去掉全文代码围栏、清理模型寒暄、规范公式环境，把 `\tag{n}` 移到 `aligned` 外层。
+2. `validator` 检查最终 Markdown 是否可信，包括 API 错误文本、公式分隔符、表格结构、邻页泄漏、OCR 覆盖率和目标 block 覆盖率。
+
+目标 block 覆盖率是防遗漏的核心：如果 Step 1 已经识别到文字、公式、表格、图示或不确定内容，但 Step 2 最终 Markdown 没有保留，系统会产生类似下面的 warning：
+
+```text
+target_text_block_missing
+target_formula_block_missing
+target_table_block_missing
+target_figure_block_missing
+target_uncertain_block_missing
+target_image_ref_block_missing
+```
+
+这些 warning 会触发 fail-open：程序不把漏内容的 Brain 输出当作正常结果，而是用 Stage 1 PageIR 进行确定性 Markdown 渲染。回退结果可能不如 Brain 输出漂亮，但优先保证已经识别出的内容不被静默删掉。
 
 ## 并行是否真实
 
