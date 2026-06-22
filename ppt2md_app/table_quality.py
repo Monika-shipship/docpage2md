@@ -197,8 +197,22 @@ def _assess_html_table(text: str) -> TableQualityResult:
         warnings.append(_issue("html_table_complex_span", "warning", "HTML table 包含 rowspan/colspan，保留原始 HTML 以避免错误拍平。"))
     if not re.search(r"</table>", text, flags=re.IGNORECASE):
         errors.append(_issue("html_table_unclosed", "error", "HTML table 缺少结束标签。"))
+    if _header_missing(rows[0]):
+        warnings.append(_issue("table_header_missing", "warning", "HTML table 表头为空或缺失。"))
+    if _mostly_empty_body(rows[1:]):
+        warnings.append(_issue("table_body_empty", "warning", "HTML table 主体大多为空。"))
+    garbled_ratio = _garbled_ratio(["|".join(row) for row in rows])
+    if garbled_ratio >= 0.25:
+        warnings.append(
+            _issue(
+                "table_garbled_text",
+                "warning",
+                "HTML table 疑似包含较多乱码或不确定字符。",
+                f"garbled_ratio={garbled_ratio:.2f}",
+            )
+        )
 
-    reliable = not errors
+    reliable = not errors and not any(issue.code in {"table_body_empty", "table_garbled_text"} for issue in warnings)
     normalized = _aligned_rows_to_markdown(rows) if reliable and not parsed["complex"] and len(set(column_counts)) == 1 else text.strip()
     return TableQualityResult(reliable, "html", len(rows), column_counts, errors, warnings, normalized if reliable else None)
 

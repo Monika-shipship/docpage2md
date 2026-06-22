@@ -171,12 +171,12 @@ def summarize_blocks(blocks: Iterable[Dict[str, Any]] | None) -> Dict[str, Any]:
                 summary["warnings"].extend(warnings)
         elif block_type == "table":
             quality = assess_table(block.get("text") or "")
-            if not quality.reliable:
+            if quality.errors or quality.warnings:
                 summary["table_warning_count"] += 1
                 summary["warnings"].append(
                     {
                         "code": "table_quality_warning",
-                        "message": "表格结构不可靠。",
+                        "message": "表格存在质量警告。" if quality.reliable else "表格结构不可靠。",
                         "details": quality.to_dict(),
                     }
                 )

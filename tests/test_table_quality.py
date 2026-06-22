@@ -1,3 +1,4 @@
+from ppt2md_app.reporting import summarize_blocks
 from ppt2md_app.table_quality import assess_table, assess_table_markdown, normalize_table_text
 
 
@@ -21,6 +22,20 @@ def test_table_shell_is_warning_and_unreliable():
 
     assert not result.reliable
     assert [issue.code for issue in result.warnings] == ["table_shell"]
+
+
+def test_missing_markdown_table_header_is_warning_but_not_unreliable():
+    result = assess_table_markdown("|  |  |\n| --- | --- |\n| 1 | 2 |")
+
+    assert result.reliable
+    assert [issue.code for issue in result.warnings] == ["table_header_missing"]
+
+
+def test_garbled_markdown_table_is_unreliable():
+    result = assess_table_markdown("| 字段 | 值 |\n| --- | --- |\n| [?] | □□ |")
+
+    assert not result.reliable
+    assert [issue.code for issue in result.warnings] == ["table_garbled_text"]
 
 
 def test_aligned_text_table_normalizes_to_markdown_table():
@@ -48,6 +63,28 @@ def test_complex_html_table_keeps_original_html():
     assert result.reliable
     assert result.table_format == "html"
     assert [issue.code for issue in result.warnings] == ["html_table_ragged", "html_table_complex_span"]
+    assert normalize_table_text(text) == text
+
+
+def test_html_table_missing_header_is_warning_and_reported():
+    text = "<table><tr><th></th><th></th></tr><tr><td>1</td><td>2</td></tr></table>"
+    result = assess_table(text)
+
+    assert result.reliable
+    assert [issue.code for issue in result.warnings] == ["table_header_missing"]
+    assert normalize_table_text(text) == "|  |  |\n| --- | --- |\n| 1 | 2 |"
+
+    summary = summarize_blocks([{"type": "table", "text": text}])
+    assert summary["table_warning_count"] == 1
+    assert summary["warnings"][0]["details"]["warnings"][0]["code"] == "table_header_missing"
+
+
+def test_garbled_html_table_is_unreliable():
+    text = "<table><tr><th>A</th><th>B</th></tr><tr><td>[?]</td><td>□□□</td></tr></table>"
+    result = assess_table(text)
+
+    assert not result.reliable
+    assert [issue.code for issue in result.warnings] == ["table_garbled_text"]
     assert normalize_table_text(text) == text
 
 
