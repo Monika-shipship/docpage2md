@@ -1,4 +1,3 @@
-import hashlib
 import re
 from dataclasses import dataclass
 from copy import deepcopy
@@ -6,7 +5,7 @@ from typing import Any, Dict, List
 
 from .figures import analyze_figure_description
 from .formula_quality import assess_formula_text, normalize_formula_text
-from .ir import PAGE_IR_SCHEMA_VERSION
+from .invariant import page_ir_contract_errors, valid_source_page
 from .renderer import render_page_ir_to_markdown
 from .validators import ValidationIssue, is_api_error_text, validate_slide_markdown
 
@@ -39,38 +38,6 @@ BLOCK_KNOWN_OPS = {
 }
 
 BLOCK_SAFE_OPS = set(BLOCK_KNOWN_OPS)
-
-BLOCK_ALLOWED_ORIGINS = {
-    "vision_ocr",
-    "vision_formula",
-    "vision_description",
-    "vision_table",
-    "vision_uncertain",
-    "brain_refine",
-    "renderer_template",
-    "refiner_op",
-}
-
-BLOCK_ALLOWED_TYPES = {
-    "heading",
-    "paragraph",
-    "list",
-    "formula_inline",
-    "formula_block",
-    "figure_note",
-    "table",
-    "image_ref",
-    "uncertain",
-}
-
-BLOCK_VISION_ORIGINS = {
-    "vision_ocr",
-    "vision_formula",
-    "vision_description",
-    "vision_table",
-    "vision_uncertain",
-}
-
 
 @dataclass(frozen=True)
 class Suspect:
@@ -328,7 +295,7 @@ def apply_block_op_checked(
     if not changed:
         return page_ir, False, {"reason": "no_change", "before_block_ids": before_ids, "after_block_ids": before_ids}
 
-    contract_errors = _page_ir_contract_errors(candidate, expected_slide_no=slide if slide > 0 else None)
+    contract_errors = page_ir_contract_errors(candidate, expected_slide_no=slide if slide > 0 else None)
     if contract_errors:
         return page_ir, False, {
             "reason": "page_ir_contract_failed",
@@ -669,128 +636,13 @@ def _block_ids(page_ir: Dict[str, Any]) -> list[str]:
     return [str(block.get("id")) for block in page_ir.get("blocks") or [] if block.get("id")]
 
 
-def _page_ir_contract_errors(page_ir: Dict[str, Any], *, expected_slide_no: int | None = None) -> list[str]:
-    errors = []
-    if not isinstance(page_ir, dict):
-        return ["page_ir_not_dict"]
-    schema_version = page_ir.get("schema_version")
-    if "schema_version" not in page_ir:
-        errors.append("schema_version_missing")
-    elif isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        errors.append("schema_version_not_int")
-    elif schema_version != PAGE_IR_SCHEMA_VERSION:
-        errors.append("schema_version_mismatch")
-    source_page = page_ir.get("source_page")
-    if "source_page" not in page_ir:
-        errors.append("source_page_missing")
-    elif not _valid_source_page(source_page):
-        errors.append("source_page_not_positive_int")
-    elif expected_slide_no is not None and source_page != expected_slide_no:
-        errors.append("source_page_mismatch")
-    raw_text = page_ir.get("raw_text")
-    if "raw_text" not in page_ir:
-        errors.append("raw_text_missing")
-    elif not isinstance(raw_text, str):
-        errors.append("raw_text_not_string")
-    if "raw_text_sha256" not in page_ir:
-        errors.append("raw_text_sha256_missing")
-    elif not isinstance(page_ir.get("raw_text_sha256"), str):
-        errors.append("raw_text_sha256_not_string")
-    elif isinstance(raw_text, str) and page_ir.get("raw_text_sha256") != _sha256_text(raw_text):
-        errors.append("raw_text_sha256_mismatch")
-    blocks = page_ir.get("blocks")
-    if not isinstance(blocks, list):
-        errors.append("blocks_not_list")
-        return errors
-    seen = set()
-    for index, block in enumerate(blocks):
-        block_id = block.get("id")
-        if not block_id:
-            errors.append(f"block_{index}_missing_id")
-        elif not _valid_block_id(block_id, page_ir.get("source_page")):
-            errors.append(f"block_{index}_invalid_id")
-        elif block_id in seen:
-            errors.append(f"block_{index}_duplicate_id")
-        seen.add(block_id)
-        block_type = block.get("type")
-        if not block_type:
-            errors.append(f"block_{index}_missing_type")
-        elif block_type not in BLOCK_ALLOWED_TYPES:
-            errors.append(f"block_{index}_unknown_type")
-        if "text" not in block and block_type != "image_ref":
-            errors.append(f"block_{index}_missing_text")
-        if block.get("source_page") != page_ir.get("source_page"):
-            errors.append(f"block_{index}_source_page_mismatch")
-        if "confidence" not in block:
-            errors.append(f"block_{index}_missing_confidence")
-        elif not _valid_confidence(block.get("confidence")):
-            errors.append(f"block_{index}_invalid_confidence")
-        if "bbox" not in block:
-            errors.append(f"block_{index}_missing_bbox")
-        elif not _valid_bbox(block.get("bbox")):
-            errors.append(f"block_{index}_invalid_bbox")
-        origin = block.get("origin")
-        if not origin:
-            errors.append(f"block_{index}_missing_origin")
-        elif origin not in BLOCK_ALLOWED_ORIGINS:
-            errors.append(f"block_{index}_unknown_origin")
-        if "evidence" not in block:
-            errors.append(f"block_{index}_missing_evidence")
-        elif not isinstance(block.get("evidence"), dict):
-            errors.append(f"block_{index}_invalid_evidence")
-        else:
-            errors.extend(_block_evidence_errors(index, block))
-    return errors
-
-
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
-
-
-def _valid_block_id(value, source_page) -> bool:
-    if not isinstance(value, str):
-        return False
-    if not _valid_source_page(source_page):
-        return False
-    return bool(re.fullmatch(rf"p{source_page:04d}-b\d{{3}}", value))
-
-
-def _valid_source_page(value) -> bool:
-    return not isinstance(value, bool) and isinstance(value, int) and value > 0
-
-
 def _resolve_slide_no(page_ir: Dict[str, Any], slide_no: int | None) -> int:
     if slide_no is not None:
         return slide_no
     source_page = page_ir.get("source_page")
-    if _valid_source_page(source_page):
+    if valid_source_page(source_page):
         return source_page
     return 0
-
-
-def _valid_bbox(value) -> bool:
-    if value is None:
-        return True
-    if not isinstance(value, list) or len(value) != 4:
-        return False
-    return all(isinstance(item, (int, float)) for item in value)
-
-
-def _valid_confidence(value) -> bool:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    return 0.0 <= float(value) <= 1.0
-
-
-def _block_evidence_errors(index: int, block: Dict[str, Any]) -> list[str]:
-    evidence = block.get("evidence") or {}
-    origin = block.get("origin")
-    errors = []
-    if origin in BLOCK_VISION_ORIGINS and not isinstance(evidence.get("raw_text"), str):
-        errors.append(f"block_{index}_missing_raw_text_evidence")
-    if origin == "refiner_op" and not isinstance(evidence.get("refiner_op"), str):
-        errors.append(f"block_{index}_missing_refiner_op_evidence")
-    return errors
 
 
 def _looks_like_body_text(text: str) -> bool:

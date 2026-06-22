@@ -63,6 +63,32 @@ def test_raw_cache_without_blocks_does_not_hit(tmp_path):
     assert reason == "invalid"
 
 
+def test_raw_cache_with_top_level_blocks_mismatch_does_not_hit(tmp_path):
+    image = tmp_path / "page.png"
+    image.write_bytes(b"fake image")
+    config = AppConfig()
+    record = build_raw_cache_record({"success": True, "slide_no": 1, "raw_text": "raw text"}, image, config)
+    record["blocks"] = []
+
+    valid, reason = validate_raw_cache_record(record, 1, stage1_fingerprint(image, config))
+
+    assert not valid
+    assert reason == "invalid"
+
+
+def test_raw_cache_with_invalid_page_ir_contract_does_not_hit(tmp_path):
+    image = tmp_path / "page.png"
+    image.write_bytes(b"fake image")
+    config = AppConfig()
+    record = build_raw_cache_record({"success": True, "slide_no": 1, "raw_text": "raw text"}, image, config)
+    del record["page_ir"]["blocks"][0]["evidence"]
+
+    valid, reason = validate_raw_cache_record(record, 1, stage1_fingerprint(image, config))
+
+    assert not valid
+    assert reason == "invalid"
+
+
 def test_raw_cache_without_block_refiner_does_not_hit(tmp_path):
     image = tmp_path / "page.png"
     image.write_bytes(b"fake image")

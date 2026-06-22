@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .config import AppConfig
+from .invariant import page_ir_contract_errors
 from .ir import PAGE_IR_SCHEMA_VERSION, build_page_ir
 from .prompts import (
     PROMPT_STAGE_1_VERSION,
@@ -232,7 +233,9 @@ def validate_raw_cache_record(
     if not isinstance(data.get("blocks"), list):
         return False, "invalid"
     page_ir = data.get("page_ir")
-    if not isinstance(page_ir, dict) or page_ir.get("schema_version") != PAGE_IR_SCHEMA_VERSION:
+    if page_ir_contract_errors(page_ir, expected_slide_no=slide_no):
+        return False, "invalid"
+    if data.get("blocks") != page_ir.get("blocks"):
         return False, "invalid"
     if page_ir.get("raw_text") != raw_text:
         return False, "invalid"
