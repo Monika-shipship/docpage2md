@@ -175,7 +175,81 @@ def test_ocr_coverage_does_not_count_figure_description_as_missing_text():
     )
 
     assert result.ok
-    assert result.warnings == []
+    codes = {issue.code for issue in result.warnings}
+    assert "ocr_coverage_low" not in codes
+    assert codes == {"target_figure_block_missing"}
+
+
+def test_present_target_figure_block_satisfies_block_coverage():
+    blocks = [
+        {
+            "id": "p0001-b002",
+            "type": "figure_note",
+            "origin": "vision_description",
+            "text": "坐标图中横轴为 t，纵轴为 v，曲线逐渐上升。",
+        }
+    ]
+
+    result = validate_slide_markdown(
+        "# Slide 1\n\n> [!NOTE] 图示说明\n> 坐标图中横轴为 t，纵轴为 v，曲线逐渐上升。\n",
+        1,
+        target_blocks=blocks,
+    )
+
+    assert "target_figure_block_missing" not in {issue.code for issue in result.warnings}
+
+
+def test_missing_short_target_text_block_warns_even_when_ocr_coverage_is_not_checked():
+    result = validate_slide_markdown(
+        "# Slide 1\n\n其他内容。\n",
+        1,
+        target_blocks=[
+            {
+                "id": "p0001-b001",
+                "type": "paragraph",
+                "origin": "vision_ocr",
+                "text": "关键结论保持不变",
+            }
+        ],
+    )
+
+    codes = {issue.code for issue in result.warnings}
+    assert "ocr_coverage_low" not in codes
+    assert "target_text_block_missing" in codes
+
+
+def test_missing_target_table_block_warns():
+    blocks = build_page_ir("### Table Analysis\n| 量 | 值 |\n| --- | --- |\n| 力 | N |", 5)["blocks"]
+
+    result = validate_slide_markdown("# Slide 5\n\n这里讨论物理量。\n", 5, target_blocks=blocks)
+
+    assert "target_table_block_missing" in {issue.code for issue in result.warnings}
+
+
+def test_present_target_table_block_satisfies_block_coverage():
+    raw = "### Table Analysis\n| 量 | 值 |\n| --- | --- |\n| 力 | N |"
+    blocks = build_page_ir(raw, 5)["blocks"]
+
+    result = validate_slide_markdown(render_page_ir_to_markdown(build_page_ir(raw, 5)), 5, target_blocks=blocks)
+
+    assert "target_table_block_missing" not in {issue.code for issue in result.warnings}
+
+
+def test_missing_target_uncertain_block_warns():
+    blocks = build_page_ir("### Uncertain\n此处手写文字疑似为配分函数，但无法确定。", 6)["blocks"]
+
+    result = validate_slide_markdown("# Slide 6\n\n正文。\n", 6, target_blocks=blocks)
+
+    assert "target_uncertain_block_missing" in {issue.code for issue in result.warnings}
+
+
+def test_present_target_uncertain_block_satisfies_block_coverage():
+    raw = "### Uncertain\n此处手写文字疑似为配分函数，但无法确定。"
+    blocks = build_page_ir(raw, 6)["blocks"]
+
+    result = validate_slide_markdown(render_page_ir_to_markdown(build_page_ir(raw, 6)), 6, target_blocks=blocks)
+
+    assert "target_uncertain_block_missing" not in {issue.code for issue in result.warnings}
 
 
 def test_missing_target_formula_block_warns_even_when_page_text_is_present():

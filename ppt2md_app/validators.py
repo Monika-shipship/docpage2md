@@ -10,6 +10,13 @@ from .table_quality import assess_table
 
 
 Severity = Literal["error", "warning"]
+TEXT_TARGET_BLOCK_TYPES = {"heading", "paragraph", "list", "formula_inline"}
+BLOCK_COVERAGE_MIN_CHARS = 6
+FORMULA_BLOCK_COVERAGE_MIN_CHARS = 2
+TEXT_BLOCK_MATCH_RATIO = 0.82
+TABLE_BLOCK_MATCH_RATIO = 0.78
+FIGURE_BLOCK_MATCH_RATIO = 0.58
+UNCERTAIN_BLOCK_MATCH_RATIO = 0.7
 
 ERROR_TEXT_PREFIXES = (
     "[Vision Failed]",
@@ -143,7 +150,6 @@ def validate_slide_markdown(
             )
         )
     warnings.extend(_table_quality_warnings(code_free, slide_no))
-    warnings.extend(_target_formula_block_warnings(text, target_blocks, slide_no))
 
     body = "\n".join(stripped.splitlines()[1:]).strip()
     if not body:
@@ -171,6 +177,16 @@ def validate_slide_markdown(
 
     if target_raw and "### Figure Analysis" in target_raw and not _has_figure_note(text):
         warnings.append(_issue("figure_note_missing", "warning", "当前页 Raw Data 含 Figure Analysis，但输出没有 Figure 描述引用块。", slide_no))
+
+    warnings.extend(_target_formula_block_warnings(text, target_blocks, slide_no))
+    warnings.extend(
+        _target_non_formula_block_warnings(
+            text,
+            target_blocks,
+            slide_no,
+            skip_text_blocks=coverage.warning,
+        )
+    )
 
     leak_evidence = _find_possible_neighbor_leak(text, target_raw or "", neighbor_raw or {})
     if leak_evidence:
@@ -266,7 +282,7 @@ def _target_formula_block_warnings(markdown: str, target_blocks: list[dict] | No
             continue
         formula = block.get("latex") or block.get("text") or block.get("raw_text") or ""
         formula_norm = _normalize_formula_for_coverage(str(formula))
-        if len(formula_norm) < 24:
+        if len(formula_norm) < FORMULA_BLOCK_COVERAGE_MIN_CHARS:
             continue
         if formula_norm in markdown_norm:
             continue
@@ -282,6 +298,160 @@ def _target_formula_block_warnings(markdown: str, target_blocks: list[dict] | No
                 )
             )
     return warnings
+
+
+def _target_non_formula_block_warnings(
+    markdown: str,
+    target_blocks: list[dict] | None,
+    slide_no: int,
+    *,
+    skip_text_blocks: bool = False,
+) -> list[ValidationIssue]:
+    warnings = []
+    markdown_norm = _normalize_block_text_for_coverage(markdown)
+    for block in target_blocks or []:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "")
+        if block_type in TEXT_TARGET_BLOCK_TYPES:
+            if not skip_text_blocks:
+                issue = _target_text_block_warning(markdown_norm, block, slide_no)
+                if issue:
+                    warnings.append(issue)
+        elif block_type == "table":
+            issue = _target_table_block_warning(markdown, markdown_norm, block, slide_no)
+            if issue:
+                warnings.append(issue)
+        elif block_type == "figure_note":
+            issue = _target_figure_block_warning(markdown, markdown_norm, block, slide_no)
+            if issue:
+                warnings.append(issue)
+        elif block_type == "uncertain":
+            issue = _target_uncertain_block_warning(markdown, markdown_norm, block, slide_no)
+            if issue:
+                warnings.append(issue)
+        elif block_type == "image_ref":
+            issue = _target_image_ref_block_warning(markdown, markdown_norm, block, slide_no)
+            if issue:
+                warnings.append(issue)
+    return _dedupe_issues(warnings)
+
+
+def _target_text_block_warning(markdown_norm: str, block: dict, slide_no: int) -> ValidationIssue | None:
+    source = _block_source_text(block)
+    source_norm = _normalize_block_text_for_coverage(source)
+    if len(source_norm) < BLOCK_COVERAGE_MIN_CHARS:
+        return None
+    ratio = _block_match_ratio(source_norm, markdown_norm)
+    if ratio >= TEXT_BLOCK_MATCH_RATIO:
+        return None
+    return _issue(
+        "target_text_block_missing",
+        "warning",
+        "最终 Markdown 遗漏了当前页 Stage 1 识别到的重要文字块。",
+        slide_no,
+        _block_evidence(block, ratio, source),
+    )
+
+
+def _target_table_block_warning(markdown: str, markdown_norm: str, block: dict, slide_no: int) -> ValidationIssue | None:
+    refs = _block_image_refs(block)
+    table_format = str(block.get("table_format") or "")
+    if table_format == "image_only" and _any_ref_present(markdown, refs):
+        return None
+    source = _table_source_text(block)
+    source_norm = _normalize_block_text_for_coverage(source)
+    if source_norm and source_norm in markdown_norm:
+        return None
+    if len(source_norm) < BLOCK_COVERAGE_MIN_CHARS:
+        if _any_ref_present(markdown, refs):
+            return None
+        return _issue(
+            "target_table_block_missing",
+            "warning",
+            "最终 Markdown 遗漏了当前页 Stage 1 识别到的表格块。",
+            slide_no,
+            _block_evidence(block, 0.0, source),
+        )
+    ratio = _block_match_ratio(source_norm, markdown_norm)
+    if ratio >= TABLE_BLOCK_MATCH_RATIO:
+        return None
+    return _issue(
+        "target_table_block_missing",
+        "warning",
+        "最终 Markdown 遗漏了当前页 Stage 1 识别到的表格块。",
+        slide_no,
+        _block_evidence(block, ratio, source),
+    )
+
+
+def _target_figure_block_warning(markdown: str, markdown_norm: str, block: dict, slide_no: int) -> ValidationIssue | None:
+    source = _figure_source_text(block)
+    source_norm = _normalize_block_text_for_coverage(source)
+    has_note = _has_figure_note(markdown)
+    if not has_note:
+        return _issue(
+            "target_figure_block_missing",
+            "warning",
+            "最终 Markdown 遗漏了当前页 Stage 1 识别到的图示说明块。",
+            slide_no,
+            _block_evidence(block, 0.0, source),
+        )
+    if len(source_norm) < BLOCK_COVERAGE_MIN_CHARS:
+        return None
+    ratio = _block_match_ratio(source_norm, markdown_norm)
+    if ratio >= FIGURE_BLOCK_MATCH_RATIO:
+        return None
+    return _issue(
+        "target_figure_block_missing",
+        "warning",
+        "最终 Markdown 的图示说明未覆盖当前页 Stage 1 识别到的关键图示内容。",
+        slide_no,
+        _block_evidence(block, ratio, source),
+    )
+
+
+def _target_uncertain_block_warning(markdown: str, markdown_norm: str, block: dict, slide_no: int) -> ValidationIssue | None:
+    source = _block_source_text(block)
+    source_norm = _normalize_block_text_for_coverage(source)
+    has_uncertain_marker = "> [!WARNING] 识别不确定" in markdown or "识别不确定" in markdown
+    if not has_uncertain_marker:
+        return _issue(
+            "target_uncertain_block_missing",
+            "warning",
+            "最终 Markdown 遗漏或未显式标注当前页 Stage 1 识别到的不确定内容块。",
+            slide_no,
+            _block_evidence(block, 0.0, source),
+        )
+    if len(source_norm) < BLOCK_COVERAGE_MIN_CHARS:
+        return None
+    ratio = _block_match_ratio(source_norm, markdown_norm)
+    if ratio >= UNCERTAIN_BLOCK_MATCH_RATIO:
+        return None
+    return _issue(
+        "target_uncertain_block_missing",
+        "warning",
+        "最终 Markdown 的不确定内容块未覆盖当前页 Stage 1 识别到的原始内容。",
+        slide_no,
+        _block_evidence(block, ratio, source),
+    )
+
+
+def _target_image_ref_block_warning(markdown: str, markdown_norm: str, block: dict, slide_no: int) -> ValidationIssue | None:
+    refs = _block_image_refs(block)
+    if _any_ref_present(markdown, refs):
+        return None
+    source = " ".join(str(block.get(key) or "") for key in ("caption", "alt", "text"))
+    source_norm = _normalize_block_text_for_coverage(source)
+    if len(source_norm) >= BLOCK_COVERAGE_MIN_CHARS and _block_match_ratio(source_norm, markdown_norm) >= TEXT_BLOCK_MATCH_RATIO:
+        return None
+    return _issue(
+        "target_image_ref_block_missing",
+        "warning",
+        "最终 Markdown 遗漏了当前页 Stage 1 识别到的图片引用块。",
+        slide_no,
+        _block_evidence(block, 0.0, source or "image_ref"),
+    )
 
 
 def _math_segments(text: str) -> list[str]:
@@ -362,10 +532,30 @@ def _formula_match_ratio(formula_norm: str, markdown_norm: str) -> float:
     return matched / len(formula_norm) if formula_norm else 1.0
 
 
+def _block_match_ratio(source_norm: str, markdown_norm: str) -> float:
+    if not source_norm:
+        return 1.0
+    if source_norm in markdown_norm:
+        return 1.0
+    matcher = SequenceMatcher(None, source_norm, markdown_norm, autojunk=False)
+    matched = sum(block.size for block in matcher.get_matching_blocks())
+    return matched / len(source_norm)
+
+
 def _normalize_formula_for_coverage(text: str) -> str:
     normalized = (text or "").lower()
     normalized = normalized.replace(r"\mathrm", "")
     normalized = normalized.replace(r"\operatorname", "")
+    return re.sub(r"[^\w]+", "", normalized, flags=re.UNICODE).replace("_", "")
+
+
+def _normalize_block_text_for_coverage(text: str) -> str:
+    normalized = re.sub(r"<!--.*?-->", " ", text or "", flags=re.DOTALL)
+    normalized = re.sub(r"<[^>]+>", " ", normalized)
+    normalized = re.sub(r"(?m)^#{1,6}\s*", "", normalized)
+    normalized = re.sub(r"(?m)^>\s*\[!(?:NOTE|WARNING|TIP|IMPORTANT|CAUTION)\].*$", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"(?m)^>\s*", "", normalized)
+    normalized = normalized.lower()
     return re.sub(r"[^\w]+", "", normalized, flags=re.UNICODE).replace("_", "")
 
 
@@ -374,6 +564,78 @@ def _formula_preview(text: str, limit: int = 120) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
+
+
+def _block_source_text(block: dict) -> str:
+    values = [
+        block.get("text"),
+        block.get("raw_text"),
+        block.get("description"),
+        block.get("caption"),
+    ]
+    return "\n".join(str(value).strip() for value in values if str(value or "").strip())
+
+
+def _table_source_text(block: dict) -> str:
+    text = str(block.get("raw_text") or block.get("text") or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    return text
+
+
+def _figure_source_text(block: dict) -> str:
+    figure = block.get("figure") if isinstance(block.get("figure"), dict) else {}
+    values = _dedupe_text_values([
+        block.get("description"),
+        block.get("text"),
+        figure.get("description"),
+        " ".join(str(item) for item in (block.get("labels") or figure.get("labels") or [])),
+        " ".join(str(item) for item in (block.get("relations") or figure.get("relations") or [])),
+    ])
+    return "\n".join(str(value).strip() for value in values if str(value or "").strip())
+
+
+def _dedupe_text_values(values: list) -> list[str]:
+    seen = set()
+    combined_norm = ""
+    deduped = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = _normalize_block_text_for_coverage(text)
+        if key in seen or (key and key in combined_norm):
+            continue
+        seen.add(key)
+        combined_norm += key
+        deduped.append(text)
+    return deduped
+
+
+def _block_image_refs(block: dict) -> list[str]:
+    refs = []
+    for key in (
+        "crop_ref",
+        "image_ref",
+        "image_path",
+        "path",
+        "table_image_path",
+        "formula_image_path",
+        "page_image_ref",
+    ):
+        value = str(block.get(key) or "").strip()
+        if value:
+            refs.append(value)
+    return refs
+
+
+def _any_ref_present(markdown: str, refs: list[str]) -> bool:
+    return any(ref and ref in markdown for ref in refs)
+
+
+def _block_evidence(block: dict, ratio: float, source: str) -> str:
+    block_id = block.get("id")
+    block_type = block.get("type")
+    return f"block_id={block_id}; type={block_type}; ratio={ratio:.4f}; preview={_formula_preview(source)}"
 
 
 def _find_possible_neighbor_leak(markdown: str, target_raw: str, neighbor_raw: dict[int, str]) -> str | None:

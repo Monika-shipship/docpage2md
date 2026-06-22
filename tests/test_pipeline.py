@@ -240,6 +240,46 @@ def test_brain_stage_missing_figure_note_uses_markdown_fail_open(monkeypatch, tm
     assert "左侧是 A，右侧是 B" in markdown
 
 
+def test_brain_stage_missing_target_figure_block_uses_page_ir_fallback(monkeypatch, tmp_path):
+    config = AppConfig(brain_batch_workers=1)
+    report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)
+    page_reports[1]["stage1"]["status"] = "ok"
+    raw_data_map = {1: "### Figure Analysis\n坐标图中横轴为 t，纵轴为 v，曲线逐渐上升。"}
+    target_blocks = {1: build_page_ir(raw_data_map[1], 1)["blocks"]}
+
+    monkeypatch.setattr(
+        pipeline,
+        "run_stage_2_brain_parallel",
+        lambda slide_no, raw_data_map, config: {
+            "success": True,
+            "slide_no": slide_no,
+            "markdown": "# Slide 1\n\n图中有一条曲线。\n",
+            "raw_response": "# Slide 1\n\n图中有一条曲线。\n",
+        },
+    )
+
+    ok_slides = pipeline._run_brain_stage(
+        "Deck",
+        1,
+        0,
+        tmp_path,
+        raw_data_map,
+        1,
+        DummyQueue(),
+        config,
+        page_reports,
+        target_blocks_by_slide=target_blocks,
+    )
+
+    markdown = (tmp_path / "Slide_01.md").read_text(encoding="utf-8")
+    meta = read_json(tmp_path / "Slide_01.meta.json")
+    assert ok_slides == [1]
+    assert meta["status"] == "fail_open"
+    assert meta["error"]["code"] in {"figure_note_missing", "target_figure_block_missing"}
+    assert "> [!NOTE] 图示说明" in markdown
+    assert "坐标图中横轴为 t，纵轴为 v，曲线逐渐上升" in markdown
+
+
 def test_brain_stage_bad_table_uses_markdown_fail_open(monkeypatch, tmp_path):
     config = AppConfig(brain_batch_workers=1)
     report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)
@@ -291,6 +331,87 @@ def test_brain_stage_bad_table_uses_markdown_fail_open(monkeypatch, tmp_path):
     assert meta["error"]["code"] == "table_structure_warning"
     assert "| 力 | N |" in markdown
     assert "extra" not in markdown
+
+
+def test_brain_stage_missing_target_table_block_uses_page_ir_fallback(monkeypatch, tmp_path):
+    config = AppConfig(brain_batch_workers=1)
+    report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)
+    page_reports[1]["stage1"]["status"] = "ok"
+    raw_data_map = {1: "### Table Analysis\n| 量 | 值 |\n| --- | --- |\n| 力 | N |"}
+    target_blocks = {1: build_page_ir(raw_data_map[1], 1)["blocks"]}
+
+    monkeypatch.setattr(
+        pipeline,
+        "run_stage_2_brain_parallel",
+        lambda slide_no, raw_data_map, config: {
+            "success": True,
+            "slide_no": slide_no,
+            "markdown": "# Slide 1\n\n本页给出物理量表。\n",
+            "raw_response": "# Slide 1\n\n本页给出物理量表。\n",
+        },
+    )
+
+    ok_slides = pipeline._run_brain_stage(
+        "Deck",
+        1,
+        0,
+        tmp_path,
+        raw_data_map,
+        1,
+        DummyQueue(),
+        config,
+        page_reports,
+        target_blocks_by_slide=target_blocks,
+    )
+
+    markdown = (tmp_path / "Slide_01.md").read_text(encoding="utf-8")
+    meta = read_json(tmp_path / "Slide_01.meta.json")
+    assert ok_slides == [1]
+    assert meta["status"] == "fail_open"
+    assert meta["error"]["code"] == "target_table_block_missing"
+    assert "| 量 | 值 |" in markdown
+    assert "| 力 | N |" in markdown
+    assert "本页给出物理量表" not in markdown
+
+
+def test_brain_stage_missing_target_uncertain_block_uses_page_ir_fallback(monkeypatch, tmp_path):
+    config = AppConfig(brain_batch_workers=1)
+    report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)
+    page_reports[1]["stage1"]["status"] = "ok"
+    raw_data_map = {1: "### Uncertain\n此处手写文字疑似为配分函数，但无法确定。"}
+    target_blocks = {1: build_page_ir(raw_data_map[1], 1)["blocks"]}
+
+    monkeypatch.setattr(
+        pipeline,
+        "run_stage_2_brain_parallel",
+        lambda slide_no, raw_data_map, config: {
+            "success": True,
+            "slide_no": slide_no,
+            "markdown": "# Slide 1\n\n正文整理完成。\n",
+            "raw_response": "# Slide 1\n\n正文整理完成。\n",
+        },
+    )
+
+    ok_slides = pipeline._run_brain_stage(
+        "Deck",
+        1,
+        0,
+        tmp_path,
+        raw_data_map,
+        1,
+        DummyQueue(),
+        config,
+        page_reports,
+        target_blocks_by_slide=target_blocks,
+    )
+
+    markdown = (tmp_path / "Slide_01.md").read_text(encoding="utf-8")
+    meta = read_json(tmp_path / "Slide_01.meta.json")
+    assert ok_slides == [1]
+    assert meta["status"] == "fail_open"
+    assert meta["error"]["code"] == "target_uncertain_block_missing"
+    assert "> [!WARNING] 识别不确定" in markdown
+    assert "此处手写文字疑似为配分函数" in markdown
 
 
 def test_brain_stage_bad_formula_falls_back_when_page_ir_is_clean(monkeypatch, tmp_path):
@@ -373,6 +494,46 @@ def test_brain_stage_formula_warning_falls_back_to_conservative_formula_warning(
     assert "\\frac a}{b" in markdown
     assert "$$\n\\frac a}{b\n$$" not in markdown
     assert page_reports[1]["final"]["status"] == "fail_open"
+
+
+def test_brain_stage_missing_short_text_block_uses_page_ir_fallback(monkeypatch, tmp_path):
+    config = AppConfig(brain_batch_workers=1)
+    report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)
+    page_reports[1]["stage1"]["status"] = "ok"
+    raw_data_map = {1: "关键结论保持不变"}
+    target_blocks = {1: build_page_ir(raw_data_map[1], 1)["blocks"]}
+
+    monkeypatch.setattr(
+        pipeline,
+        "run_stage_2_brain_parallel",
+        lambda slide_no, raw_data_map, config: {
+            "success": True,
+            "slide_no": slide_no,
+            "markdown": "# Slide 1\n\n其他结论。\n",
+            "raw_response": "# Slide 1\n\n其他结论。\n",
+        },
+    )
+
+    ok_slides = pipeline._run_brain_stage(
+        "Deck",
+        1,
+        0,
+        tmp_path,
+        raw_data_map,
+        1,
+        DummyQueue(),
+        config,
+        page_reports,
+        target_blocks_by_slide=target_blocks,
+    )
+
+    markdown = (tmp_path / "Slide_01.md").read_text(encoding="utf-8")
+    meta = read_json(tmp_path / "Slide_01.meta.json")
+    assert ok_slides == [1]
+    assert meta["status"] == "fail_open"
+    assert meta["error"]["code"] == "target_text_block_missing"
+    assert "关键结论保持不变" in markdown
+    assert "其他结论" not in markdown
 
 
 def test_brain_stage_missing_target_formula_block_uses_page_ir_fallback(monkeypatch, tmp_path):
@@ -564,12 +725,40 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
             "markdown": (
                 "# Slide 1\n\n"
                 "热力学第一定律描述内能、热量和功之间的关系。孤立系统的总能量保持守恒。\n\n"
+                "> [!WARNING] 公式识别不确定\n"
+                "> 原始识别：\n"
+                "> $$\n"
+                "> \\frac a}{b\n"
+                "> $$\n\n"
+                "> [!WARNING] 表格识别不确定\n"
+                "> Markdown 表格结构不可靠，已保留原始识别。\n"
+                ">\n"
+                "> 原始识别已按纯文本保留，未作为可信表格渲染。\n\n"
+                "```text\n"
+                "| A | B |\n"
+                "| --- | --- |\n"
+                "| 1 | 2 | 3 |\n"
+                "```\n\n"
                 "> [!WARNING] 图示识别不确定\n"
                 "> 图示被遮挡，无法确定节点和箭头方向。\n"
             ),
             "raw_response": (
                 "# Slide 1\n\n"
                 "热力学第一定律描述内能、热量和功之间的关系。孤立系统的总能量保持守恒。\n\n"
+                "> [!WARNING] 公式识别不确定\n"
+                "> 原始识别：\n"
+                "> $$\n"
+                "> \\frac a}{b\n"
+                "> $$\n\n"
+                "> [!WARNING] 表格识别不确定\n"
+                "> Markdown 表格结构不可靠，已保留原始识别。\n"
+                ">\n"
+                "> 原始识别已按纯文本保留，未作为可信表格渲染。\n\n"
+                "```text\n"
+                "| A | B |\n"
+                "| --- | --- |\n"
+                "| 1 | 2 | 3 |\n"
+                "```\n\n"
                 "> [!WARNING] 图示识别不确定\n"
                 "> 图示被遮挡，无法确定节点和箭头方向。\n"
             ),
@@ -601,11 +790,11 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     assert report["summary"]["provenance"]["generated_description_count"] == 1
     assert report["summary"]["figure_count"] == 1
     assert report["summary"]["figure_warning_count"] == 1
-    assert report["summary"]["formula_warning_count"] == 1
+    assert report["summary"]["formula_warning_count"] >= 1
     assert report["summary"]["table_warning_count"] == 1
     assert report["summary"]["ocr_coverage_warning_count"] == 0
     assert report["summary"]["suspects"]["by_code"]["table_quality_warning"] == 1
-    assert report["summary"]["suspects"]["by_code"]["latex_frac_missing_braces"] == 1
+    assert report["summary"]["suspects"]["by_code"]["latex_frac_missing_braces"] >= 1
     assert report["summary"]["suspects"]["by_op"]["mark_uncertain"] >= 2
     assert report["summary"]["suspects"]["actionable_total"] >= 3
     assert "ocr_coverage_low" not in {issue["code"] for issue in report["pages"][0]["validation"]["warnings"]}
