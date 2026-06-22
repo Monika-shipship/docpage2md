@@ -150,3 +150,44 @@ def test_block_op_checked_rejects_contract_breaking_drop():
     assert applied is False
     assert refined == page_ir
     assert detail["reason"] == "no_change"
+
+
+def test_block_op_checked_rejects_unknown_block_origin():
+    page_ir = {
+        "schema_version": 7,
+        "source_page": 6,
+        "raw_text": "定义:\n\n正文。",
+        "blocks": [
+            {
+                "id": "p0006-b001",
+                "type": "paragraph",
+                "text": "定义:",
+                "source_page": 6,
+                "origin": "vision_ocr",
+                "confidence": 0.55,
+                "evidence": {"raw_text": "定义:"},
+                "bbox": None,
+            },
+            {
+                "id": "p0006-b002",
+                "type": "paragraph",
+                "text": "正文。",
+                "source_page": 6,
+                "origin": "unknown_model_output",
+                "confidence": 0.55,
+                "evidence": {"raw_text": "正文。"},
+                "bbox": None,
+            },
+        ],
+    }
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "promote_heading", "id": "p0006-b001"},
+        slide_no=6,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "page_ir_contract_failed"
+    assert "block_1_unknown_origin" in detail["errors"]

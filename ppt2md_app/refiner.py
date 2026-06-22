@@ -39,6 +39,17 @@ BLOCK_KNOWN_OPS = {
 
 BLOCK_SAFE_OPS = set(BLOCK_KNOWN_OPS)
 
+BLOCK_ALLOWED_ORIGINS = {
+    "vision_ocr",
+    "vision_formula",
+    "vision_description",
+    "vision_table",
+    "vision_uncertain",
+    "brain_refine",
+    "renderer_template",
+    "refiner_op",
+}
+
 
 @dataclass(frozen=True)
 class Suspect:
@@ -665,8 +676,11 @@ def _page_ir_contract_errors(page_ir: Dict[str, Any]) -> list[str]:
             errors.append(f"block_{index}_missing_text")
         if block.get("source_page") != page_ir.get("source_page"):
             errors.append(f"block_{index}_source_page_mismatch")
-        if not block.get("origin"):
+        origin = block.get("origin")
+        if not origin:
             errors.append(f"block_{index}_missing_origin")
+        elif origin not in BLOCK_ALLOWED_ORIGINS:
+            errors.append(f"block_{index}_unknown_origin")
         if "evidence" not in block:
             errors.append(f"block_{index}_missing_evidence")
     return errors
