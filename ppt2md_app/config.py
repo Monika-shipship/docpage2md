@@ -75,6 +75,7 @@ class AppConfig:
     list_all_models: bool = False
     refresh_models: bool = False
     verify_models: bool = False
+    fix_ocr_confusion: bool = False
 
     @property
     def session_file_name(self) -> str:

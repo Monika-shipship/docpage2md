@@ -81,6 +81,10 @@ def test_apply_block_op_checked_merges_adjacent_blocks_with_audit():
     assert refined["blocks"][0]["origin"] == "refiner_op"
     assert detail["before_block_ids"] == ["p0001-b001", "p0001-b002"]
     assert detail["after_block_ids"] == ["p0001-b001"]
+    assert detail["removed_spans"][0]["block_id"] == "p0001-b002"
+    assert detail["removed_text_hashes"]
+    assert detail["before_text_sha256"]
+    assert detail["after_text_sha256"]
     assert render_page_ir_to_markdown(refined) == "# Slide 1\n\ninternal energy\n"
 
 
@@ -137,6 +141,10 @@ def test_block_refiner_promotes_heading_and_marks_uncertain_without_markdown_pat
     assert [op["op"]["op"] for op in result.applied_ops] == ["promote_heading", "mark_uncertain"]
     assert [block["type"] for block in result.page_ir["blocks"]] == ["heading", "uncertain"]
     assert result.page_ir["blocks"][0]["origin"] == "refiner_op"
+    assert result.op_audit[1]["op"] == "mark_uncertain"
+    assert result.op_audit[1]["degraded"] is True
+    assert result.op_audit[1]["before_blocks"]
+    assert result.op_audit[1]["after_blocks"]
     assert render_page_ir_to_markdown(result.page_ir).startswith("# Slide 3\n\n## 定义")
 
 

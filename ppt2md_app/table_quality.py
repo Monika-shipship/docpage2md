@@ -34,6 +34,8 @@ class TableQualityResult:
     errors: list[TableQualityIssue]
     warnings: list[TableQualityIssue]
     normalized_markdown: str | None = None
+    garbled_score: float = 0.0
+    sparse_score: float = 0.0
 
     def to_dict(self):
         return {
@@ -45,6 +47,8 @@ class TableQualityResult:
             "errors": [issue.to_dict() for issue in self.errors],
             "warnings": [issue.to_dict() for issue in self.warnings],
             "normalized_markdown": self.normalized_markdown,
+            "garbled_score": self.garbled_score,
+            "sparse_score": self.sparse_score,
         }
 
 
@@ -104,21 +108,32 @@ def assess_table_markdown(text: str) -> TableQualityResult:
         if _mostly_empty_body(body_rows):
             warnings.append(_issue("table_body_empty", "warning", "表格主体大多为空。"))
 
-    garbled_ratio = _garbled_ratio(rows)
-    if garbled_ratio >= 0.25:
+    garbled_score = _garbled_ratio(rows)
+    sparse_score = _sparse_ratio(cells[separator_index + 1 :] if separator_index is not None else cells)
+    if garbled_score >= 0.25:
         warnings.append(
             _issue(
                 "table_garbled_text",
                 "warning",
                 "表格疑似包含较多乱码或不确定字符。",
-                f"garbled_ratio={garbled_ratio:.2f}",
+                f"garbled_score={garbled_score:.2f}",
             )
         )
 
     reliable = not errors and not any(
         issue.code in {"table_shell", "table_body_empty", "table_garbled_text"} for issue in warnings
     )
-    return TableQualityResult(reliable, "markdown", len(rows), column_counts, errors, warnings, "\n".join(rows) if reliable else None)
+    return TableQualityResult(
+        reliable,
+        "markdown",
+        len(rows),
+        column_counts,
+        errors,
+        warnings,
+        "\n".join(rows) if reliable else None,
+        garbled_score=garbled_score,
+        sparse_score=sparse_score,
+    )
 
 
 def is_probably_markdown_table(text: str) -> bool:
@@ -158,14 +173,15 @@ def _assess_aligned_text_table(text: str) -> TableQualityResult:
         warnings.append(_issue("table_header_missing", "warning", "文本对齐表格表头为空或缺失。"))
     if len(rows) == 1:
         warnings.append(_issue("table_shell", "warning", "表格只有表头，没有数据行。"))
-    garbled_ratio = _garbled_ratio(["|".join(row) for row in rows])
-    if garbled_ratio >= 0.25:
+    garbled_score = _garbled_ratio(["|".join(row) for row in rows])
+    sparse_score = _sparse_ratio(rows[1:])
+    if garbled_score >= 0.25:
         warnings.append(
             _issue(
                 "table_garbled_text",
                 "warning",
                 "文本对齐表格疑似包含较多乱码或不确定字符。",
-                f"garbled_ratio={garbled_ratio:.2f}",
+                f"garbled_score={garbled_score:.2f}",
             )
         )
 
@@ -178,6 +194,8 @@ def _assess_aligned_text_table(text: str) -> TableQualityResult:
         errors,
         warnings,
         _aligned_rows_to_markdown(rows) if reliable else None,
+        garbled_score=garbled_score,
+        sparse_score=sparse_score,
     )
 
 
@@ -203,25 +221,36 @@ def _assess_html_table(text: str) -> TableQualityResult:
         warnings.append(_issue("table_header_missing", "warning", "HTML table 表头为空或缺失。"))
     if _mostly_empty_body(rows[1:]):
         warnings.append(_issue("table_body_empty", "warning", "HTML table 主体大多为空。"))
-    garbled_ratio = _garbled_ratio(["|".join(row) for row in rows])
-    if garbled_ratio >= 0.25:
+    garbled_score = _garbled_ratio(["|".join(row) for row in rows])
+    sparse_score = _sparse_ratio(rows[1:])
+    if garbled_score >= 0.25:
         warnings.append(
             _issue(
                 "table_garbled_text",
                 "warning",
                 "HTML table 疑似包含较多乱码或不确定字符。",
-                f"garbled_ratio={garbled_ratio:.2f}",
+                f"garbled_score={garbled_score:.2f}",
             )
         )
 
     reliable = not errors and not any(issue.code in {"table_body_empty", "table_garbled_text"} for issue in warnings)
     normalized = _aligned_rows_to_markdown(rows) if reliable and not parsed["complex"] and len(set(column_counts)) == 1 else text.strip()
-    return TableQualityResult(reliable, "html", len(rows), column_counts, errors, warnings, normalized if reliable else None)
+    return TableQualityResult(
+        reliable,
+        "html",
+        len(rows),
+        column_counts,
+        errors,
+        warnings,
+        normalized if reliable else None,
+        garbled_score=garbled_score,
+        sparse_score=sparse_score,
+    )
 
 
 def _unrecognized_table_result(text: str) -> TableQualityResult:
     errors = [_issue("table_unrecognized_format", "error", "表格 block 不是可靠的 Markdown、HTML 或文本对齐表格。", text[:120])]
-    return TableQualityResult(False, "unknown", 0, [], errors, [])
+    return TableQualityResult(False, "unknown", 0, [], errors, [], garbled_score=_garbled_ratio([text]))
 
 
 def _table_rows(text: str) -> list[str]:
@@ -356,6 +385,16 @@ def _mostly_empty_body(rows: list[list[str]]) -> bool:
     total = sum(len(row) for row in rows)
     empty = sum(1 for row in rows for cell in row if not cell.strip())
     return total > 0 and empty / total >= 0.75
+
+
+def _sparse_ratio(rows: list[list[str]]) -> float:
+    if not rows:
+        return 0.0
+    total = sum(len(row) for row in rows)
+    if total <= 0:
+        return 0.0
+    empty = sum(1 for row in rows for cell in row if not cell.strip())
+    return round(empty / total, 6)
 
 
 def _garbled_ratio(rows: list[str]) -> float:

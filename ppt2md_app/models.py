@@ -75,6 +75,35 @@ def _safe_error_str(exc: BaseException) -> str:
     return msg
 
 
+def _model_payload(content="", reasoning="", usage=None, request_id=None, provider_latency=None):
+    return {
+        "content": content or "",
+        "reasoning": reasoning or "",
+        "usage": usage,
+        "request_id": request_id,
+        "provider_latency": provider_latency,
+    }
+
+
+def _unpack_model_payload(value):
+    if isinstance(value, dict):
+        return _model_payload(
+            content=value.get("content") or "",
+            reasoning=value.get("reasoning") or "",
+            usage=value.get("usage"),
+            request_id=value.get("request_id"),
+            provider_latency=value.get("provider_latency"),
+        )
+    if isinstance(value, tuple):
+        content = value[0] if len(value) > 0 else ""
+        reasoning = value[1] if len(value) > 1 else ""
+        usage = value[2] if len(value) > 2 else None
+        request_id = value[3] if len(value) > 3 else None
+        provider_latency = value[4] if len(value) > 4 else None
+        return _model_payload(content, reasoning, usage, request_id, provider_latency)
+    return _model_payload(str(value or ""))
+
+
 # ==========================================================================
 # OpenAI 兼容调用路径（DashScope 原生之外的可选路径）
 # ==========================================================================
@@ -200,8 +229,11 @@ def _collect_openai_stream(req: urllib.request.Request, timeout: int):
     """收集 OpenAI 兼容流式响应。"""
     full_content = ""
     full_reasoning = ""
+    request_id = None
+    started_at = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            request_id = resp.headers.get("x-request-id") or resp.headers.get("request-id")
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line or line.startswith(":"):
@@ -223,19 +255,39 @@ def _collect_openai_stream(req: urllib.request.Request, timeout: int):
                 full_content += delta.get("content") or ""
     except Exception as e:
         return (f"OpenAI Stream Error: {_safe_error_str(e)}", full_reasoning)
-    return (full_content, full_reasoning)
+    return _model_payload(
+        full_content,
+        full_reasoning,
+        usage=None,
+        request_id=request_id,
+        provider_latency=round(time.perf_counter() - started_at, 3),
+    )
 
 
 def _collect_openai_sync(req: urllib.request.Request, timeout: int):
     """收集 OpenAI 兼容非流式响应。"""
+    started_at = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            request_id = resp.headers.get("x-request-id") or resp.headers.get("request-id")
             body = json.loads(resp.read().decode("utf-8"))
         choices = body.get("choices") or []
         if choices:
             msg = choices[0].get("message") or {}
-            return (msg.get("content") or "", msg.get("reasoning_content") or "")
-        return ("", "")
+            return _model_payload(
+                msg.get("content") or "",
+                msg.get("reasoning_content") or "",
+                usage=body.get("usage"),
+                request_id=body.get("id") or request_id,
+                provider_latency=round(time.perf_counter() - started_at, 3),
+            )
+        return _model_payload(
+            "",
+            "",
+            usage=body.get("usage"),
+            request_id=body.get("id") or request_id,
+            provider_latency=round(time.perf_counter() - started_at, 3),
+        )
     except Exception as e:
         return (f"OpenAI Sync Error: {_safe_error_str(e)}", "")
 
@@ -361,14 +413,18 @@ def _run_openai_compatible_vision(img_path, slide_no, config: AppConfig):
             "error": f"missing {config.vision_api_key_env}",
         }
 
-    content, reasoning = call_aliyun_openai_vision(
+    payload = _unpack_model_payload(
+        call_aliyun_openai_vision(
         model_id=config.model_vision,
         image_path=img_path,
         prompt_text=PROMPT_STAGE_1_VISION,
         api_key=api_key,
         base_url=config.vision_base_url,
         stream=True,
+        )
     )
+    content = payload["content"]
+    reasoning = payload["reasoning"]
     if content.startswith("OpenAI") or is_api_error_text(content):
         return {"success": False, "slide_no": slide_no, "error": content}
     if not content:
@@ -379,7 +435,14 @@ def _run_openai_compatible_vision(img_path, slide_no, config: AppConfig):
                 "error": f"Model only returned reasoning. Trace: {reasoning[:200]}...",
             }
         return {"success": False, "slide_no": slide_no, "error": "Empty response."}
-    return {"success": True, "slide_no": slide_no, "raw_text": content}
+    return {
+        "success": True,
+        "slide_no": slide_no,
+        "raw_text": content,
+        "usage": payload.get("usage"),
+        "request_id": payload.get("request_id"),
+        "provider_latency": payload.get("provider_latency"),
+    }
 
 
 def get_raw_content(raw_data_map, slide_no):
@@ -409,31 +472,42 @@ def run_stage_2_brain_parallel(slide_no, raw_data_map, config: AppConfig):
         raw_response = _run_openai_compatible_brain(filled_prompt, config)
     else:
         raw_response = _run_dashscope_brain(filled_prompt, config)
+    payload = _unpack_model_payload(raw_response)
+    raw_text = payload["content"]
 
-    if is_api_error_text(raw_response):
+    if is_api_error_text(raw_text):
         return {
             "success": False,
             "slide_no": slide_no,
-            "error": raw_response,
-            "error_code": first_api_error_prefix(raw_response) or "api_error_text",
-            "raw_response": raw_response,
+            "error": raw_text,
+            "error_code": first_api_error_prefix(raw_text) or "api_error_text",
+            "raw_response": raw_text,
+            "usage": payload.get("usage"),
+            "request_id": payload.get("request_id"),
+            "provider_latency": payload.get("provider_latency"),
         }
 
-    final_markdown = sanitize_stage_2_markdown(raw_response, slide_no)
+    final_markdown = sanitize_stage_2_markdown(raw_text, slide_no)
     if not final_markdown.strip():
         return {
             "success": False,
             "slide_no": slide_no,
             "error": "Empty Stage 2 markdown after sanitize.",
             "error_code": "empty_markdown",
-            "raw_response": raw_response,
+            "raw_response": raw_text,
+            "usage": payload.get("usage"),
+            "request_id": payload.get("request_id"),
+            "provider_latency": payload.get("provider_latency"),
         }
 
     return {
         "success": True,
         "slide_no": slide_no,
         "markdown": final_markdown,
-        "raw_response": raw_response,
+        "raw_response": raw_text,
+        "usage": payload.get("usage"),
+        "request_id": payload.get("request_id"),
+        "provider_latency": payload.get("provider_latency"),
     }
 
 
@@ -527,7 +601,8 @@ def _run_openai_compatible_brain(filled_prompt, config: AppConfig):
     if not api_key:
         return f"OpenAI Brain Error: missing {config.brain_api_key_env}."
 
-    content, reasoning = call_aliyun_openai_chat(
+    payload = _unpack_model_payload(
+        call_aliyun_openai_chat(
         model_id=config.model_brain,
         messages=[{"role": "user", "content": filled_prompt}],
         api_key=api_key,
@@ -535,14 +610,17 @@ def _run_openai_compatible_brain(filled_prompt, config: AppConfig):
         stream=True,
         thinking_budget=config.thinking_budget_brain,
         enable_thinking=(config.brain_provider == "dashscope_openai"),
+        )
     )
+    content = payload["content"]
+    reasoning = payload["reasoning"]
 
     if content.startswith("OpenAI") or content.startswith("Error"):
         return content
 
     if not content:
         return f"Error: OpenAI Brain generated no content. Trace: {reasoning[:100]}..."
-    return content
+    return payload
 
 
 def _run_deepseek_brain(filled_prompt, config: AppConfig):

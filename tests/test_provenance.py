@@ -8,7 +8,7 @@ def test_build_page_provenance_tracks_origins_and_generated_descriptions():
 
     provenance = build_page_provenance(page_ir)
 
-    assert provenance["schema_version"] == 2
+    assert provenance["schema_version"] == 3
     assert [entry["origin"] for entry in provenance["entries"]] == [
         "renderer_template",
         "vision_ocr",
@@ -20,6 +20,22 @@ def test_build_page_provenance_tracks_origins_and_generated_descriptions():
     assert provenance["summary"]["generated_description_count"] == 1
     assert provenance["summary"]["renderer_template_count"] == 1
     assert provenance["summary"]["origin_counts"]["renderer_template"] == 1
+
+
+def test_page_provenance_tracks_visual_evidence():
+    page_ir = build_page_ir("### Figure Analysis\n左侧是 A。", 4)
+    page_ir["page_image_ref"] = "assets/pages/page-4.png"
+    page_ir["blocks"][0]["page_image_ref"] = "assets/pages/page-4.png"
+    page_ir["blocks"][0]["crop_ref"] = "assets/pages/page-4.png"
+    page_ir["blocks"][0]["crop_ref_is_page"] = True
+
+    provenance = build_page_provenance(page_ir)
+
+    entry = provenance["entries"][1]
+    assert entry["page_image_ref"] == "assets/pages/page-4.png"
+    assert entry["crop_ref"] == "assets/pages/page-4.png"
+    assert entry["crop_ref_is_page"] is True
+    assert provenance["summary"]["visual_evidence_count"] == 1
 
 
 def test_merge_provenance_summaries_counts_refiner_ops():

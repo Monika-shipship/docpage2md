@@ -2,6 +2,7 @@ from pathlib import Path
 
 from ppt2md_app.ir import (
     PAGE_IR_SCHEMA_VERSION,
+    attach_page_image_evidence,
     build_page_ir,
     render_blocks_to_markdown,
     render_page_ir_to_markdown,
@@ -16,6 +17,7 @@ def test_build_page_ir_creates_stable_blocks():
 
     assert ir["schema_version"] == PAGE_IR_SCHEMA_VERSION
     assert ir["raw_text"] == raw
+    assert ir["page_image_ref"] is None
     assert [block["id"] for block in ir["blocks"]] == ["p0003-b001", "p0003-b002", "p0003-b003"]
     assert [block["type"] for block in ir["blocks"]] == ["heading", "list", "figure_note"]
     assert [block["text"] for block in ir["blocks"]] == ["标题:", "- a\n- b", "左侧是 A。"]
@@ -25,6 +27,19 @@ def test_build_page_ir_creates_stable_blocks():
     assert ir["blocks"][2]["figure_type"] == "unknown"
     assert ir["blocks"][2]["description"] == "左侧是 A。"
     assert ir["blocks"][2]["unrecognizable"] is False
+
+
+def test_attach_page_image_evidence_sets_page_and_block_refs():
+    ir = build_page_ir("### Formula\nE = [?] mc^2\n\n### Table Analysis\n| A | B |\n| --- | --- |\n| 1 | 2 |", 3)
+
+    attached = attach_page_image_evidence(ir, "assets/pages/page-3.png")
+
+    assert attached["page_image_ref"] == "assets/pages/page-3.png"
+    assert all(block["page_image_ref"] == "assets/pages/page-3.png" for block in attached["blocks"])
+    assert attached["blocks"][0]["crop_ref"] == "assets/pages/page-3.png"
+    assert attached["blocks"][0]["crop_ref_is_page"] is True
+    assert attached["blocks"][1]["crop_ref"] == "assets/pages/page-3.png"
+    assert attached["blocks"][1]["crop_ref_is_page"] is True
 
 
 def test_render_page_ir_to_markdown_is_deterministic():
@@ -241,6 +256,14 @@ def test_uncertain_formula_renders_as_warning_block():
         "> 质量警告：\n"
         "> - 公式中包含不确定识别标记。\n"
     )
+
+
+def test_uncertain_formula_with_page_evidence_renders_image_reference():
+    ir = attach_page_image_evidence(build_page_ir("### Formula\nE = [?] mc^2", 8), "assets/pages/page-8.png")
+
+    markdown = render_page_ir_to_markdown(ir)
+
+    assert markdown.startswith("# Slide 8\n\n![formula](assets/pages/page-8.png)\n\n> [!WARNING] 公式识别不确定")
 
 
 def test_unreliable_table_degrades_to_warning_block():

@@ -29,16 +29,23 @@ def test_raw_cache_hits_only_when_fingerprint_matches(tmp_path):
     fingerprint = stage1_fingerprint(image, config)
 
     assert record["page_ir"]["source_page"] == 1
+    assert record["page_image_ref"] == str(image)
+    assert record["metadata"]["page_image_ref"] == str(image)
+    assert record["page_ir"]["page_image_ref"] == str(image)
     assert record["page_ir"]["raw_text"] == "raw text"
     assert record["page_ir"]["raw_text_sha256"] == record["raw_text_sha256"]
     assert record["blocks"][0]["id"] == "p0001-b001"
     assert record["block_refiner"]["version"].startswith("block-refiner-")
     assert record["block_refiner"]["changed"] is False
-    assert record["provenance"]["schema_version"] == 2
+    assert record["provenance"]["schema_version"] == 3
     assert record["provenance"]["entries"][0]["origin"] == "renderer_template"
     assert record["provenance"]["entries"][1]["id"] == "p0001-b001"
     assert record["provenance"]["entries"][1]["origin"] == "vision_ocr"
+    assert record["provenance"]["entries"][1]["page_image_ref"] == str(image)
     assert record["provenance"]["summary"]["origin_counts"] == {"renderer_template": 1, "vision_ocr": 1}
+    assert record["provenance"]["summary"]["visual_evidence_count"] == 1
+    assert record["ocr_confusion"]["enabled"] is False
+    assert record["ocr_confusion"]["status"] == "disabled"
 
     valid, reason = validate_raw_cache_record(record, 1, fingerprint)
     assert valid
@@ -48,6 +55,36 @@ def test_raw_cache_hits_only_when_fingerprint_matches(tmp_path):
     valid, reason = validate_raw_cache_record(record, 1, other_fingerprint)
     assert not valid
     assert reason == "invalid"
+
+
+def test_raw_cache_fingerprint_includes_ocr_confusion_flag(tmp_path):
+    image = tmp_path / "page.png"
+    image.write_bytes(b"fake image")
+
+    off = stage1_fingerprint(image, AppConfig(fix_ocr_confusion=False))
+    on = stage1_fingerprint(image, AppConfig(fix_ocr_confusion=True))
+
+    assert off["processing"] == {"fix_ocr_confusion": False}
+    assert on["processing"] == {"fix_ocr_confusion": True}
+    assert off != on
+
+
+def test_raw_cache_applies_ocr_confusion_only_when_enabled(tmp_path):
+    image = tmp_path / "page.png"
+    image.write_bytes(b"fake image")
+
+    off = build_raw_cache_record({"success": True, "slide_no": 1, "raw_text": "x＝１"}, image, AppConfig())
+    on = build_raw_cache_record(
+        {"success": True, "slide_no": 1, "raw_text": "x＝１"},
+        image,
+        AppConfig(fix_ocr_confusion=True),
+    )
+
+    assert off["raw_text"] == "x＝１"
+    assert off["ocr_confusion"]["status"] == "disabled"
+    assert on["raw_text"] == "x=1"
+    assert on["ocr_confusion"]["status"] == "applied"
+    assert on["ocr_confusion"]["replacement_count"] == 2
 
 
 def test_raw_cache_without_blocks_does_not_hit(tmp_path):

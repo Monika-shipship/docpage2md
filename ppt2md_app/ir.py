@@ -11,7 +11,7 @@ from .renderer import (
 )
 from .table_quality import assess_table, is_probably_aligned_text_table
 
-PAGE_IR_SCHEMA_VERSION = 10
+PAGE_IR_SCHEMA_VERSION = 11
 
 SEMANTIC_ROLE_LABELS = {
     "definition": "定义",
@@ -33,10 +33,27 @@ def build_page_ir(raw_text: str, slide_no: int) -> Dict[str, Any]:
     return {
         "schema_version": PAGE_IR_SCHEMA_VERSION,
         "source_page": slide_no,
+        "page_image_ref": None,
         "raw_text": raw_text or "",
         "raw_text_sha256": _sha256_text(raw_text or ""),
         "blocks": blocks,
     }
+
+
+def attach_page_image_evidence(page_ir: Dict[str, Any], image_path: str) -> Dict[str, Any]:
+    """Attach page-level visual evidence without requiring true crop extraction."""
+    page_image_ref = str(image_path or "")
+    if not page_image_ref:
+        return page_ir
+    page_ir["page_image_ref"] = page_image_ref
+    for block in page_ir.get("blocks") or []:
+        block["page_image_ref"] = page_image_ref
+        if block.get("type") in {"figure_note", "table", "formula_block"}:
+            if not block.get("crop_ref"):
+                block["crop_ref"] = page_image_ref
+            if "crop_ref_is_page" not in block:
+                block["crop_ref_is_page"] = True
+    return page_ir
 
 
 def raw_text_to_blocks(raw_text: str, slide_no: int) -> List[Dict[str, Any]]:

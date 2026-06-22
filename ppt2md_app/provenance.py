@@ -2,7 +2,7 @@ import hashlib
 from typing import Any, Dict, Iterable
 
 
-PROVENANCE_SCHEMA_VERSION = 2
+PROVENANCE_SCHEMA_VERSION = 3
 
 
 def build_page_provenance(page_ir: Dict[str, Any]) -> Dict[str, Any]:
@@ -24,6 +24,7 @@ def summarize_provenance(entries: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     generated_description_count = 0
     refiner_op_count = 0
     renderer_template_count = 0
+    visual_evidence_count = 0
     for entry in entries:
         origin = entry.get("origin") or "unknown"
         block_type = entry.get("type") or "unknown"
@@ -35,12 +36,15 @@ def summarize_provenance(entries: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             refiner_op_count += 1
         if origin == "renderer_template":
             renderer_template_count += 1
+        if entry.get("page_image_ref") or entry.get("crop_ref"):
+            visual_evidence_count += 1
     return {
         "origin_counts": origin_counts,
         "type_counts": type_counts,
         "generated_description_count": generated_description_count,
         "refiner_op_count": refiner_op_count,
         "renderer_template_count": renderer_template_count,
+        "visual_evidence_count": visual_evidence_count,
     }
 
 
@@ -50,6 +54,7 @@ def merge_provenance_summaries(pages: Iterable[Dict[str, Any]]) -> Dict[str, Any
     generated_description_count = 0
     refiner_op_count = 0
     renderer_template_count = 0
+    visual_evidence_count = 0
     for page in pages:
         summary = page.get("provenance", {}).get("summary") or {}
         _add_counts(origin_counts, summary.get("origin_counts") or {})
@@ -57,12 +62,14 @@ def merge_provenance_summaries(pages: Iterable[Dict[str, Any]]) -> Dict[str, Any
         generated_description_count += int(summary.get("generated_description_count") or 0)
         refiner_op_count += int(summary.get("refiner_op_count") or 0)
         renderer_template_count += int(summary.get("renderer_template_count") or 0)
+        visual_evidence_count += int(summary.get("visual_evidence_count") or 0)
     return {
         "origin_counts": origin_counts,
         "type_counts": type_counts,
         "generated_description_count": generated_description_count,
         "refiner_op_count": refiner_op_count,
         "renderer_template_count": renderer_template_count,
+        "visual_evidence_count": visual_evidence_count,
     }
 
 
@@ -126,6 +133,9 @@ def _block_entry(block: Dict[str, Any], index: int) -> Dict[str, Any]:
         "source_page": block.get("source_page"),
         "confidence": block.get("confidence"),
         "bbox": block.get("bbox"),
+        "page_image_ref": block.get("page_image_ref"),
+        "crop_ref": block.get("crop_ref"),
+        "crop_ref_is_page": block.get("crop_ref_is_page"),
         "raw_text_sha256": evidence.get("raw_text_sha256") or _sha256_text(raw_text) if raw_text else None,
         "has_raw_text": bool(raw_text),
         "refiner_op": evidence.get("refiner_op"),

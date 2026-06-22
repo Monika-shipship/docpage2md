@@ -66,6 +66,8 @@ def page_ir_contract_errors(page_ir: Dict[str, Any], *, expected_slide_no: int |
         errors.append("raw_text_sha256_not_string")
     elif isinstance(raw_text, str) and page_ir.get("raw_text_sha256") != _sha256_text(raw_text):
         errors.append("raw_text_sha256_mismatch")
+    if "page_image_ref" in page_ir and page_ir.get("page_image_ref") is not None and not isinstance(page_ir.get("page_image_ref"), str):
+        errors.append("page_image_ref_not_string")
     blocks = page_ir.get("blocks")
     if not isinstance(blocks, list):
         errors.append("blocks_not_list")

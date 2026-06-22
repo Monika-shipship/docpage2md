@@ -28,6 +28,7 @@ def build_run_report(
                 "slide_no": slide_no,
                 "image_path": str(Path(image_path)),
                 "image_sha256": None,
+                "page_image_ref": None,
                 "stage1": _stage_state(),
                 "stage2": _stage_state(),
                 "validation": {"ok": None, "errors": [], "warnings": []},
@@ -112,6 +113,8 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "op_audit": {
             "total": sum(op_audit_status_counts.values()),
             "by_status": op_audit_status_counts,
+            "removed_spans": _op_audit_removed_span_count(pages),
+            "degraded": _op_audit_degraded_count(pages),
         },
         "block_counts": block_counts,
         "semantic_role_counts": _sum_semantic_role_counts(pages),
@@ -125,6 +128,11 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "markdown_source_counts": _markdown_source_counts(pages),
         "suspects": summarize_suspects(pages),
     }
+    report["cost"]["actual_tokens"] = _actual_token_usage(pages)
+    report["cost"]["note"] = (
+        "Actual token usage is recorded only when the provider wrapper returns usage; "
+        "unsupported providers remain null."
+    )
     if pages_ok == len(pages):
         report["status"] = "ok"
     elif pages_ok + fail_open_pages == len(pages) and fail_open_pages:
@@ -217,6 +225,9 @@ def _stage_state():
         "path": None,
         "elapsed_seconds": None,
         "sha256": None,
+        "usage": None,
+        "request_id": None,
+        "provider_latency": None,
         "error_code": None,
         "error_message": None,
         "warnings": [],
@@ -280,6 +291,85 @@ def _op_audit_status_counts(pages: list[Dict[str, Any]]) -> Dict[str, int]:
             status = str(audit.get("status") or "unknown")
             counts[status] = counts.get(status, 0) + 1
     return counts
+
+
+def _op_audit_removed_span_count(pages: list[Dict[str, Any]]) -> int:
+    total = 0
+    for audit in _iter_op_audits(pages):
+        total += len(audit.get("removed_spans") or [])
+    return total
+
+
+def _op_audit_degraded_count(pages: list[Dict[str, Any]]) -> int:
+    return sum(1 for audit in _iter_op_audits(pages) if audit.get("degraded"))
+
+
+def _iter_op_audits(pages: list[Dict[str, Any]]):
+    for page in pages:
+        audits = page.get("op_audit")
+        if not isinstance(audits, list):
+            audits = page.get("block_refiner", {}).get("op_audit") or []
+        for audit in audits:
+            if isinstance(audit, dict):
+                yield audit
+
+
+def _actual_token_usage(pages: list[Dict[str, Any]]) -> Dict[str, Any] | None:
+    stages = {}
+    total_input = 0
+    total_output = 0
+    total = 0
+    seen = False
+    for stage_name in ("stage1", "stage2"):
+        stage_usage = []
+        for page in pages:
+            usage = page.get(stage_name, {}).get("usage")
+            if not isinstance(usage, dict):
+                continue
+            normalized = _normalize_usage(usage)
+            if not normalized:
+                continue
+            seen = True
+            stage_usage.append({"slide_no": page.get("slide_no"), **normalized})
+            total_input += int(normalized.get("input_tokens") or 0)
+            total_output += int(normalized.get("output_tokens") or 0)
+            total += int(normalized.get("total_tokens") or 0)
+        stages[stage_name] = stage_usage
+    if not seen:
+        return None
+    return {
+        "input_tokens": total_input or None,
+        "output_tokens": total_output or None,
+        "total_tokens": total or None,
+        "by_stage": stages,
+    }
+
+
+def _normalize_usage(usage: Dict[str, Any]) -> Dict[str, int | None] | None:
+    input_tokens = _first_int(usage, "input_tokens", "prompt_tokens", "promptTokenCount")
+    output_tokens = _first_int(usage, "output_tokens", "completion_tokens", "completionTokenCount")
+    total_tokens = _first_int(usage, "total_tokens", "totalTokenCount")
+    if total_tokens is None and (input_tokens is not None or output_tokens is not None):
+        total_tokens = int(input_tokens or 0) + int(output_tokens or 0)
+    if input_tokens is None and output_tokens is None and total_tokens is None:
+        return None
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _first_int(source: Dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _formula_block_warnings(block: Dict[str, Any]) -> list[Dict[str, Any]]:

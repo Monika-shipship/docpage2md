@@ -4,8 +4,9 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .config import AppConfig
+from .confusion import apply_ocr_confusion_fixes
 from .invariant import page_ir_contract_errors
-from .ir import PAGE_IR_SCHEMA_VERSION, build_page_ir
+from .ir import PAGE_IR_SCHEMA_VERSION, attach_page_image_evidence, build_page_ir
 from .prompts import (
     PROMPT_STAGE_1_VERSION,
     PROMPT_STAGE_1_VISION,
@@ -20,7 +21,7 @@ from .versioning import PNG2MD_PIPELINE_VERSION
 
 RAW_CACHE_SCHEMA_VERSION = 1
 SLIDE_META_SCHEMA_VERSION = 2
-RUN_REPORT_SCHEMA_VERSION = 2
+RUN_REPORT_SCHEMA_VERSION = 3
 
 
 def now_iso() -> str:
@@ -48,6 +49,9 @@ def stage1_fingerprint(image_path: str | Path, config: AppConfig) -> Dict[str, A
         "pipeline_version": PNG2MD_PIPELINE_VERSION,
         "prompt_version": PROMPT_STAGE_1_VERSION,
         "prompt_sha256": sha256_text(PROMPT_STAGE_1_VISION),
+        "processing": {
+            "fix_ocr_confusion": bool(config.fix_ocr_confusion),
+        },
         "model": _model_identity(
             provider=config.vision_provider,
             model=config.model_vision,
@@ -82,10 +86,15 @@ def stage2_fingerprint(slide_no: int, raw_data_map: Dict[int, str], config: AppC
 
 
 def build_raw_cache_record(result: Dict[str, Any], image_path: str | Path, config: AppConfig) -> Dict[str, Any]:
-    raw_text = result.get("raw_text") or ""
+    original_raw_text = result.get("raw_text") or ""
+    raw_text, ocr_confusion = apply_ocr_confusion_fixes(
+        original_raw_text,
+        enabled=bool(config.fix_ocr_confusion),
+    )
     slide_no = int(result.get("slide_no") or 0)
     fingerprint = stage1_fingerprint(image_path, config)
-    block_refine_result = refine_page_ir(build_page_ir(raw_text, slide_no), slide_no=slide_no, target_raw=raw_text)
+    page_ir = attach_page_image_evidence(build_page_ir(raw_text, slide_no), str(Path(image_path)))
+    block_refine_result = refine_page_ir(page_ir, slide_no=slide_no, target_raw=raw_text)
     page_ir = block_refine_result.page_ir
     provenance = build_page_provenance(page_ir)
     return {
@@ -94,16 +103,20 @@ def build_raw_cache_record(result: Dict[str, Any], image_path: str | Path, confi
         "success": True,
         "slide_no": slide_no,
         "raw_text": raw_text,
+        "raw_text_original_sha256": sha256_text(original_raw_text),
+        "page_image_ref": str(Path(image_path)),
         "blocks": page_ir["blocks"],
         "page_ir": page_ir,
         "block_refiner": block_refine_result.to_dict(),
         "provenance": provenance,
+        "ocr_confusion": ocr_confusion,
         "raw_text_sha256": sha256_text(raw_text),
         "error": None,
         "metadata": {
             "created_at": now_iso(),
             "image_sha256": fingerprint["image_sha256"],
             "image_size_bytes": fingerprint["image_size_bytes"],
+            "page_image_ref": str(Path(image_path)),
             "pipeline_version": PNG2MD_PIPELINE_VERSION,
             "prompt": {
                 "stage": "stage1",
@@ -114,6 +127,11 @@ def build_raw_cache_record(result: Dict[str, Any], image_path: str | Path, confi
             "block_refiner_version": BLOCK_REFINER_VERSION,
             "provenance_schema_version": PROVENANCE_SCHEMA_VERSION,
             "model": fingerprint["model"],
+            "usage": result.get("usage"),
+            "request_id": result.get("request_id"),
+            "provider_latency": result.get("provider_latency"),
+            "processing": fingerprint.get("processing") or {},
+            "ocr_confusion": ocr_confusion,
         },
         "fingerprint": fingerprint,
     }
@@ -126,6 +144,7 @@ def build_slide_meta(
     raw_data_map: Dict[int, str],
     config: AppConfig,
     refiner: Dict[str, Any] | None = None,
+    provider_audit: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     fingerprint = stage2_fingerprint(slide_no, raw_data_map, config)
     return {
@@ -150,6 +169,7 @@ def build_slide_meta(
                 "sha256": fingerprint["prompt_sha256"],
             },
             "model": fingerprint["model"],
+            "provider": provider_audit or _empty_provider_audit(),
         },
         "fingerprint": fingerprint,
     }
@@ -165,6 +185,7 @@ def build_fail_open_slide_meta(
     code: str,
     message: str,
     fallback_source: str,
+    provider_audit: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     fingerprint = stage2_fingerprint(slide_no, raw_data_map, config)
     return {
@@ -194,6 +215,7 @@ def build_fail_open_slide_meta(
                 "sha256": fingerprint["prompt_sha256"],
             },
             "model": fingerprint["model"],
+            "provider": provider_audit or _empty_provider_audit(),
         },
         "fingerprint": fingerprint,
     }
@@ -234,6 +256,8 @@ def validate_raw_cache_record(
         return False, "invalid"
     page_ir = data.get("page_ir")
     if page_ir_contract_errors(page_ir, expected_slide_no=slide_no):
+        return False, "invalid"
+    if data.get("page_image_ref") != page_ir.get("page_image_ref"):
         return False, "invalid"
     if data.get("blocks") != page_ir.get("blocks"):
         return False, "invalid"
@@ -343,3 +367,11 @@ def _canonical_base_url(provider: str, base_url: str) -> str:
     if provider == "dashscope":
         return ""
     return (base_url or "").strip().rstrip("/")
+
+
+def _empty_provider_audit() -> Dict[str, Any]:
+    return {
+        "usage": None,
+        "request_id": None,
+        "provider_latency": None,
+    }

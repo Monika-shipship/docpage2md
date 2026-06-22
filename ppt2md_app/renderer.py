@@ -104,7 +104,7 @@ def _render_formula_block(block: Dict[str, Any], text: str) -> str:
     warnings = quality.get("warnings") if isinstance(quality, dict) else block.get("warnings")
     if _has_uncertain_marker(stripped) or _has_blocking_formula_warning(warnings):
         raw = block.get("raw_text") or block.get("text") or stripped
-        return _render_uncertain_formula(raw, warnings if isinstance(warnings, list) else [])
+        return _render_uncertain_formula(block, raw, warnings if isinstance(warnings, list) else [])
     if stripped.startswith("$$") and stripped.endswith("$$"):
         return stripped
     return f"$$\n{stripped}\n$$"
@@ -149,7 +149,8 @@ def _render_uncertain(text: str) -> str:
     return "> [!WARNING] 识别不确定\n" + "\n".join(f"> {line}" for line in stripped.splitlines())
 
 
-def _render_uncertain_formula(text: str, warnings: list | None = None) -> str:
+def _render_uncertain_formula(block: Dict[str, Any], text: str, warnings: list | None = None) -> str:
+    image = _formula_image_reference(block)
     rendered = ["> [!WARNING] 公式识别不确定", "> 原始识别："]
     rendered.extend(f"> {line}" for line in text.splitlines())
     warning_messages = []
@@ -162,7 +163,25 @@ def _render_uncertain_formula(text: str, warnings: list | None = None) -> str:
         rendered.append(">")
         rendered.append("> 质量警告：")
         rendered.extend(f"> - {message}" for message in warning_messages[:4])
-    return "\n".join(rendered)
+    body = "\n".join(rendered)
+    return f"{image}\n\n{body}" if image else body
+
+
+def _formula_image_reference(block: Dict[str, Any]) -> str:
+    path = (
+        block.get("formula_image_path")
+        or block.get("crop_path")
+        or block.get("crop_ref")
+        or block.get("image_ref")
+        or block.get("image_path")
+        or block.get("page_image_ref")
+        or ""
+    )
+    path = str(path).strip()
+    if not path:
+        return ""
+    alt = str(block.get("alt") or "formula").strip()
+    return f"![{alt}]({path})"
 
 
 def _has_blocking_formula_warning(warnings) -> bool:

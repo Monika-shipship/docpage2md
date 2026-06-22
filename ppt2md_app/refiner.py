@@ -292,13 +292,22 @@ def apply_block_op_checked(
         target_raw=target_raw,
     )
     before_ids = _block_ids(page_ir)
+    before_summaries = _block_summaries(page_ir)
     candidate = deepcopy(page_ir)
     changed = _apply_block_op(candidate, op)
+    after_ids = _block_ids(candidate)
+    after_summaries = _block_summaries(candidate)
     if not changed:
         return page_ir, False, {
             "reason": "no_change",
             "before_block_ids": before_ids,
             "after_block_ids": before_ids,
+            "before_blocks": before_summaries,
+            "after_blocks": before_summaries,
+            "removed_spans": [],
+            "removed_text_hashes": [],
+            "before_text_sha256": _target_text_sha256(before_summaries, op),
+            "after_text_sha256": _target_text_sha256(before_summaries, op),
             "validator_before": before_validation.to_dict(),
             "validator_after": before_validation.to_dict(),
         }
@@ -309,7 +318,13 @@ def apply_block_op_checked(
             "reason": "page_ir_contract_failed",
             "errors": contract_errors,
             "before_block_ids": before_ids,
-            "after_block_ids": _block_ids(candidate),
+            "after_block_ids": after_ids,
+            "before_blocks": before_summaries,
+            "after_blocks": after_summaries,
+            "removed_spans": _removed_spans(before_summaries, after_summaries),
+            "removed_text_hashes": _removed_text_hashes(before_summaries, after_summaries),
+            "before_text_sha256": _target_text_sha256(before_summaries, op),
+            "after_text_sha256": _target_text_sha256(after_summaries, op),
             "validator_before": before_validation.to_dict(),
         }
 
@@ -322,7 +337,13 @@ def apply_block_op_checked(
             "validator_before": before_validation.to_dict(),
             "validator_after": after_validation.to_dict(),
             "before_block_ids": before_ids,
-            "after_block_ids": _block_ids(candidate),
+            "after_block_ids": after_ids,
+            "before_blocks": before_summaries,
+            "after_blocks": after_summaries,
+            "removed_spans": _removed_spans(before_summaries, after_summaries),
+            "removed_text_hashes": _removed_text_hashes(before_summaries, after_summaries),
+            "before_text_sha256": _target_text_sha256(before_summaries, op),
+            "after_text_sha256": _target_text_sha256(after_summaries, op),
         }
 
     return candidate, True, {
@@ -330,7 +351,14 @@ def apply_block_op_checked(
         "validator_before": before_validation.to_dict(),
         "validator_after": after_validation.to_dict(),
         "before_block_ids": before_ids,
-        "after_block_ids": _block_ids(candidate),
+        "after_block_ids": after_ids,
+        "before_blocks": before_summaries,
+        "after_blocks": after_summaries,
+        "removed_spans": _removed_spans(before_summaries, after_summaries),
+        "removed_text_hashes": _removed_text_hashes(before_summaries, after_summaries),
+        "before_text_sha256": _target_text_sha256(before_summaries, op),
+        "after_text_sha256": _target_text_sha256(after_summaries, op),
+        "degraded": op_name == "mark_uncertain",
     }
 
 
@@ -526,6 +554,13 @@ def _block_op_audit(suspect: BlockSuspect, status: str, detail: Dict[str, Any]) 
         "target_block_ids": target_ids,
         "before_block_ids": detail.get("before_block_ids", []),
         "after_block_ids": detail.get("after_block_ids", []),
+        "before_blocks": detail.get("before_blocks", []),
+        "after_blocks": detail.get("after_blocks", []),
+        "before_text_sha256": detail.get("before_text_sha256"),
+        "after_text_sha256": detail.get("after_text_sha256"),
+        "removed_spans": detail.get("removed_spans", []),
+        "removed_text_hashes": detail.get("removed_text_hashes", []),
+        "degraded": bool(detail.get("degraded") or op.get("op") == "mark_uncertain"),
         "reason": detail.get("reason") or suspect.reason,
         "status": status,
         "validator_before": detail.get("validator_before"),
@@ -671,6 +706,66 @@ def _find_block_index(blocks: List[Dict[str, Any]], block_id: str | None) -> int
 
 def _block_ids(page_ir: Dict[str, Any]) -> list[str]:
     return [str(block.get("id")) for block in page_ir.get("blocks") or [] if block.get("id")]
+
+
+def _block_summaries(page_ir: Dict[str, Any]) -> list[Dict[str, Any]]:
+    summaries = []
+    for block in page_ir.get("blocks") or []:
+        text = block.get("text") or block.get("description") or block.get("raw_text") or ""
+        summaries.append(
+            {
+                "id": block.get("id"),
+                "type": block.get("type"),
+                "origin": block.get("origin"),
+                "confidence": block.get("confidence"),
+                "text_sha256": _sha256_text(text),
+                "text_preview": _text_preview(text),
+            }
+        )
+    return summaries
+
+
+def _removed_spans(before: list[Dict[str, Any]], after: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    after_ids = {item.get("id") for item in after}
+    return [
+        {
+            "block_id": item.get("id"),
+            "type": item.get("type"),
+            "text_sha256": item.get("text_sha256"),
+            "text_preview": item.get("text_preview"),
+        }
+        for item in before
+        if item.get("id") not in after_ids
+    ]
+
+
+def _removed_text_hashes(before: list[Dict[str, Any]], after: list[Dict[str, Any]]) -> list[str]:
+    return [
+        str(item.get("text_sha256"))
+        for item in _removed_spans(before, after)
+        if item.get("text_sha256")
+    ]
+
+
+def _target_text_sha256(summaries: list[Dict[str, Any]], op: Dict[str, Any]) -> str | None:
+    target_ids = [op.get("id"), op.get("a"), op.get("b")]
+    hashes = [item.get("text_sha256") for item in summaries if item.get("id") in target_ids and item.get("text_sha256")]
+    if not hashes:
+        return None
+    return _sha256_text("|".join(str(value) for value in hashes))
+
+
+def _text_preview(text: str, limit: int = 120) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
+
+
+def _sha256_text(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
 def _resolve_slide_no(page_ir: Dict[str, Any], slide_no: int | None) -> int:

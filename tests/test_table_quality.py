@@ -7,6 +7,8 @@ def test_reliable_markdown_table_passes_quality_gate():
 
     assert result.reliable
     assert result.to_dict()["schema_version"] == 1
+    assert result.to_dict()["garbled_score"] == 0.0
+    assert result.to_dict()["sparse_score"] == 0.0
     assert result.errors == []
     assert result.warnings == []
 
@@ -37,6 +39,7 @@ def test_garbled_markdown_table_is_unreliable():
 
     assert not result.reliable
     assert [issue.code for issue in result.warnings] == ["table_garbled_text"]
+    assert result.to_dict()["garbled_score"] >= 0.25
 
 
 def test_aligned_text_table_normalizes_to_markdown_table():
@@ -94,3 +97,11 @@ def test_unrecognized_table_is_unreliable():
 
     assert not result.reliable
     assert [issue.code for issue in result.errors] == ["table_unrecognized_format"]
+
+
+def test_sparse_table_reports_sparse_score():
+    result = assess_table_markdown("| A | B |\n| --- | --- |\n|  |  |")
+
+    assert not result.reliable
+    assert result.to_dict()["sparse_score"] == 1.0
+    assert [issue.code for issue in result.warnings] == ["table_body_empty"]

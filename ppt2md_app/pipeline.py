@@ -153,10 +153,13 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                     if valid:
                         raw_data_map[actual_slide_no] = data["raw_text"]
                         blocks_by_slide[actual_slide_no] = data.get("blocks") or []
+                        page["page_image_ref"] = data.get("page_image_ref") or data.get("page_ir", {}).get("page_image_ref")
+                        page["ocr_confusion"] = data.get("ocr_confusion")
                         page["quality"] = summarize_blocks(data.get("blocks") or [])
                         page["provenance"] = data.get("provenance") or page.get("provenance")
                         page["block_refiner"] = data.get("block_refiner") or page.get("block_refiner")
                         page["op_audit"] = (page.get("block_refiner") or {}).get("op_audit") or []
+                        _apply_stage_provider_audit(page, "stage1", (data.get("metadata") or {}))
                         page["stage1"].update(
                             {
                                 "status": "ok",
@@ -205,14 +208,17 @@ def _run_vision_stage(ppt_name, target_images, start_idx, temp_dir, task_id, msg
                         failed += 1
                         continue
 
-                    raw_data_map[slide_no] = raw_text
                     cache_record = build_raw_cache_record(result, img_path, config)
                     write_json(raw_file, cache_record)
+                    raw_data_map[slide_no] = cache_record.get("raw_text") or raw_text
                     blocks_by_slide[slide_no] = cache_record.get("blocks") or []
+                    page["page_image_ref"] = cache_record.get("page_image_ref") or cache_record.get("page_ir", {}).get("page_image_ref")
+                    page["ocr_confusion"] = cache_record.get("ocr_confusion")
                     page["quality"] = summarize_blocks(cache_record.get("blocks") or [])
                     page["provenance"] = cache_record.get("provenance") or page.get("provenance")
                     page["block_refiner"] = cache_record.get("block_refiner") or page.get("block_refiner")
                     page["op_audit"] = (page.get("block_refiner") or {}).get("op_audit") or []
+                    _apply_stage_provider_audit(page, "stage1", cache_record.get("metadata") or {})
                     page["stage1"].update(
                         {
                             "status": "ok",
@@ -308,6 +314,7 @@ def _run_brain_stage(
                     valid, cache_status = validate_slide_meta(meta, actual_slide_no, markdown, expected_fingerprint)
                     page["stage2"]["cache"] = cache_status
                     if valid:
+                        _apply_stage_provider_audit(page, "stage2", (meta.get("metadata") or {}).get("provider") or {})
                         validation = validate_slide_markdown(
                             markdown,
                             actual_slide_no,
@@ -360,6 +367,8 @@ def _run_brain_stage(
                 result = future.result()
                 if not isinstance(result, dict):
                     result = {"success": True, "slide_no": slide_no, "markdown": str(result), "raw_response": str(result)}
+                provider_audit = _provider_audit_from_result(result)
+                _apply_stage_provider_audit(page, "stage2", provider_audit)
 
                 if result.get("success"):
                     final_markdown = result.get("markdown") or ""
@@ -396,6 +405,7 @@ def _run_brain_stage(
                             page=page,
                             raw_response=result.get("raw_response"),
                             source_validation=validation.to_dict(),
+                            provider_audit=provider_audit,
                         ):
                             ok_slides.append(slide_no)
                             refresh_page_suspects(page, target_blocks_by_slide.get(slide_no))
@@ -424,6 +434,7 @@ def _run_brain_stage(
                         page=page,
                         raw_response=result.get("raw_response"),
                         source_validation=validation.to_dict(),
+                        provider_audit=provider_audit,
                     ):
                         ok_slides.append(slide_no)
                         refresh_page_suspects(page, target_blocks_by_slide.get(slide_no))
@@ -438,6 +449,7 @@ def _run_brain_stage(
                         raw_data_map,
                         config,
                         refiner=refine_result.to_dict(),
+                        provider_audit=provider_audit,
                     )
                     write_json(meta_path, meta)
                     page["stage2"].update(
@@ -470,6 +482,7 @@ def _run_brain_stage(
                         config=config,
                         page=page,
                         raw_response=result.get("raw_response"),
+                        provider_audit=provider_audit,
                     ):
                         ok_slides.append(slide_no)
                         refresh_page_suspects(page, target_blocks_by_slide.get(slide_no))
@@ -551,6 +564,7 @@ def _write_stage2_fail_open_markdown(
     page,
     raw_response=None,
     source_validation=None,
+    provider_audit=None,
 ) -> bool:
     fallback = _build_stage2_fallback_markdown(
         slide_no=slide_no,
@@ -576,6 +590,7 @@ def _write_stage2_fail_open_markdown(
         code=code,
         message=message,
         fallback_source="stage1_page_ir",
+        provider_audit=provider_audit,
     )
     write_text_atomic(output_path, markdown)
     write_json(meta_path, meta)
@@ -720,3 +735,20 @@ def _neighbor_raw_map(raw_data_map, slide_no):
         for page_no in range(slide_no - 2, slide_no + 3)
         if page_no != slide_no and page_no in raw_data_map
     }
+
+
+def _provider_audit_from_result(result) -> dict:
+    if not isinstance(result, dict):
+        return {"usage": None, "request_id": None, "provider_latency": None}
+    return {
+        "usage": result.get("usage"),
+        "request_id": result.get("request_id"),
+        "provider_latency": result.get("provider_latency"),
+    }
+
+
+def _apply_stage_provider_audit(page, stage: str, audit: dict | None):
+    audit = audit or {}
+    page[stage]["usage"] = audit.get("usage")
+    page[stage]["request_id"] = audit.get("request_id")
+    page[stage]["provider_latency"] = audit.get("provider_latency")
