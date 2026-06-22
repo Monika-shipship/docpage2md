@@ -1,4 +1,4 @@
-from ppt2md_app.ir import build_page_ir, render_page_ir_to_markdown
+from ppt2md_app.ir import PAGE_IR_SCHEMA_VERSION, build_page_ir, render_page_ir_to_markdown
 from ppt2md_app.refiner import (
     BLOCK_KNOWN_OPS,
     KNOWN_OPS,
@@ -104,7 +104,7 @@ def test_block_refiner_normalizes_formula_and_is_idempotent():
 
 def test_block_refiner_promotes_heading_and_marks_uncertain_without_markdown_patch():
     page_ir = {
-        "schema_version": 7,
+        "schema_version": PAGE_IR_SCHEMA_VERSION,
         "source_page": 3,
         "raw_text": "定义:\n\n右下角有 [?] 看不清。",
         "raw_text_sha256": "d5c1a1a38f821cf9d2d0f73ef5a19334ff1a3ec474e46c7b7002a3edada5a203",
@@ -156,7 +156,7 @@ def test_block_op_checked_rejects_contract_breaking_drop():
 
 def test_block_op_checked_rejects_unknown_block_origin():
     page_ir = {
-        "schema_version": 7,
+        "schema_version": PAGE_IR_SCHEMA_VERSION,
         "source_page": 6,
         "raw_text": "定义:\n\n正文。",
         "blocks": [
@@ -197,7 +197,7 @@ def test_block_op_checked_rejects_unknown_block_origin():
 
 def test_block_op_checked_rejects_unknown_block_type():
     page_ir = {
-        "schema_version": 7,
+        "schema_version": PAGE_IR_SCHEMA_VERSION,
         "source_page": 7,
         "raw_text": "标题:\n\n正文。",
         "blocks": [
@@ -427,3 +427,55 @@ def test_block_op_checked_rejects_cross_page_block_id_prefix():
     assert refined == page_ir
     assert detail["reason"] == "page_ir_contract_failed"
     assert "block_1_invalid_id" in detail["errors"]
+
+
+def test_block_op_checked_rejects_page_ir_missing_source_page():
+    page_ir = build_page_ir("普通正文\n\n后续正文。", 20)
+    del page_ir["source_page"]
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "promote_heading", "id": "p0020-b001"},
+        slide_no=20,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "page_ir_contract_failed"
+    assert "source_page_missing" in detail["errors"]
+
+
+def test_block_op_checked_rejects_invalid_source_page_value():
+    page_ir = build_page_ir("普通正文\n\n后续正文。", 21)
+    page_ir["source_page"] = "21"
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "promote_heading", "id": "p0021-b001"},
+        slide_no=21,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "page_ir_contract_failed"
+    assert "source_page_not_positive_int" in detail["errors"]
+
+
+def test_block_op_checked_rejects_source_page_slide_mismatch():
+    page_ir = build_page_ir("普通正文\n\n后续正文。", 22)
+    page_ir["source_page"] = 23
+    page_ir["blocks"][0]["source_page"] = 23
+    page_ir["blocks"][1]["source_page"] = 23
+    page_ir["blocks"][0]["id"] = "p0023-b001"
+    page_ir["blocks"][1]["id"] = "p0023-b002"
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "promote_heading", "id": "p0023-b001"},
+        slide_no=22,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "page_ir_contract_failed"
+    assert "source_page_mismatch" in detail["errors"]

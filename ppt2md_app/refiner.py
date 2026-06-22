@@ -315,7 +315,7 @@ def apply_block_op_checked(
     if op_name not in BLOCK_SAFE_OPS:
         return page_ir, False, {"reason": "unknown_or_unsafe_op"}
 
-    slide = slide_no or int(page_ir.get("source_page") or 0)
+    slide = _resolve_slide_no(page_ir, slide_no)
     before_validation = validate_slide_markdown(
         render_page_ir_to_markdown(page_ir, slide),
         slide,
@@ -327,7 +327,7 @@ def apply_block_op_checked(
     if not changed:
         return page_ir, False, {"reason": "no_change", "before_block_ids": before_ids, "after_block_ids": before_ids}
 
-    contract_errors = _page_ir_contract_errors(candidate)
+    contract_errors = _page_ir_contract_errors(candidate, expected_slide_no=slide if slide > 0 else None)
     if contract_errors:
         return page_ir, False, {
             "reason": "page_ir_contract_failed",
@@ -377,7 +377,7 @@ def refine_page_ir(
             item["dismissed"] = detail
             dismissed.append(item)
 
-    slide = slide_no or int(current.get("source_page") or 0)
+    slide = _resolve_slide_no(current, slide_no)
     validation = validate_slide_markdown(render_page_ir_to_markdown(current, slide), slide, target_raw=target_raw)
     return BlockRefineResult(current, applied, dismissed, validation.to_dict())
 
@@ -668,10 +668,17 @@ def _block_ids(page_ir: Dict[str, Any]) -> list[str]:
     return [str(block.get("id")) for block in page_ir.get("blocks") or [] if block.get("id")]
 
 
-def _page_ir_contract_errors(page_ir: Dict[str, Any]) -> list[str]:
+def _page_ir_contract_errors(page_ir: Dict[str, Any], *, expected_slide_no: int | None = None) -> list[str]:
     errors = []
     if not isinstance(page_ir, dict):
         return ["page_ir_not_dict"]
+    source_page = page_ir.get("source_page")
+    if "source_page" not in page_ir:
+        errors.append("source_page_missing")
+    elif not _valid_source_page(source_page):
+        errors.append("source_page_not_positive_int")
+    elif expected_slide_no is not None and source_page != expected_slide_no:
+        errors.append("source_page_mismatch")
     raw_text = page_ir.get("raw_text")
     if "raw_text" not in page_ir:
         errors.append("raw_text_missing")
@@ -685,7 +692,8 @@ def _page_ir_contract_errors(page_ir: Dict[str, Any]) -> list[str]:
         errors.append("raw_text_sha256_mismatch")
     blocks = page_ir.get("blocks")
     if not isinstance(blocks, list):
-        return ["blocks_not_list"]
+        errors.append("blocks_not_list")
+        return errors
     seen = set()
     for index, block in enumerate(blocks):
         block_id = block.get("id")
@@ -734,8 +742,22 @@ def _sha256_text(text: str) -> str:
 def _valid_block_id(value, source_page) -> bool:
     if not isinstance(value, str):
         return False
-    page = int(source_page or 0)
-    return bool(re.fullmatch(rf"p{page:04d}-b\d{{3}}", value))
+    if not _valid_source_page(source_page):
+        return False
+    return bool(re.fullmatch(rf"p{source_page:04d}-b\d{{3}}", value))
+
+
+def _valid_source_page(value) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value > 0
+
+
+def _resolve_slide_no(page_ir: Dict[str, Any], slide_no: int | None) -> int:
+    if slide_no is not None:
+        return slide_no
+    source_page = page_ir.get("source_page")
+    if _valid_source_page(source_page):
+        return source_page
+    return 0
 
 
 def _valid_bbox(value) -> bool:
