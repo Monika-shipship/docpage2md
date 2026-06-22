@@ -4,7 +4,7 @@ from .provenance import provenance_comment
 from .table_quality import assess_table, normalize_table_text
 
 
-RENDERER_VERSION = "markdown-first-renderer-2026-06-21"
+RENDERER_VERSION = "markdown-first-renderer-2026-06-22-semantic-sections"
 
 
 def render_page_ir_to_markdown(
@@ -55,6 +55,14 @@ def render_block(block: Dict[str, Any]) -> str:
     if not text and block.get("type") != "image_ref":
         return ""
 
+    rendered = _render_block_body(block, text)
+    if block.get("semantic_role") and block.get("semantic_role_source") == "section":
+        label = (block.get("semantic_role_label") or block.get("semantic_role") or "段落").strip()
+        return f"**{label}：**\n\n{rendered}" if rendered else f"**{label}：**"
+    return rendered
+
+
+def _render_block_body(block: Dict[str, Any], text: str) -> str:
     block_type = block.get("type")
     if block_type == "heading":
         return f"## {_strip_heading_marks(text)}"
@@ -167,6 +175,32 @@ def _strip_known_section_heading(text: str) -> str:
         or first.startswith("### uncertain")
         or first.startswith("### illegible")
         or first.startswith("### 不确定")
+        or first.startswith("### proof")
+        or first.startswith("### example")
+        or first.startswith("### exercise")
+        or first.startswith("### problem")
+        or first.startswith("### solution")
+        or first.startswith("### answer")
+        or first.startswith("### definition")
+        or first.startswith("### theorem")
+        or first.startswith("### lemma")
+        or first.startswith("### corollary")
+        or first.startswith("### proposition")
+        or first.startswith("### remark")
+        or first.startswith("### note")
+        or first.startswith("### observation")
+        or first.startswith("### 证明")
+        or first.startswith("### 例")
+        or first.startswith("### 练习")
+        or first.startswith("### 习题")
+        or first.startswith("### 解")
+        or first.startswith("### 定义")
+        or first.startswith("### 定理")
+        or first.startswith("### 引理")
+        or first.startswith("### 推论")
+        or first.startswith("### 命题")
+        or first.startswith("### 备注")
+        or first.startswith("### 注")
     ):
         lines = lines[1:]
     return "\n".join(line.strip() for line in lines).strip()

@@ -101,6 +101,7 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "block_refiner_changed_pages": sum(1 for page in pages if page.get("block_refiner", {}).get("changed")),
         "block_refiner_applied_ops": block_refiner_applied_ops,
         "block_counts": block_counts,
+        "semantic_role_counts": _sum_semantic_role_counts(pages),
         "provenance": provenance_summary,
         "uncertain_block_count": block_counts.get("uncertain", 0),
         "figure_count": block_counts.get("figure_note", 0),
@@ -147,6 +148,9 @@ def summarize_blocks(blocks: Iterable[Dict[str, Any]] | None) -> Dict[str, Any]:
     for block in blocks or []:
         block_type = block.get("type") or "unknown"
         summary["block_counts"][block_type] = summary["block_counts"].get(block_type, 0) + 1
+        role = block.get("semantic_role")
+        if role:
+            summary["semantic_role_counts"][role] = summary["semantic_role_counts"].get(role, 0) + 1
         if block_type == "uncertain":
             summary["uncertain_block_count"] += 1
         elif block_type == "figure_note":
@@ -209,6 +213,7 @@ def _stage_state():
 def _empty_quality_summary() -> Dict[str, Any]:
     return {
         "block_counts": {},
+        "semantic_role_counts": {},
         "uncertain_block_count": 0,
         "figure_count": 0,
         "figure_warning_count": 0,
@@ -228,6 +233,14 @@ def _sum_block_counts(pages: list[Dict[str, Any]]) -> Dict[str, int]:
     for page in pages:
         for block_type, count in (page.get("quality", {}).get("block_counts") or {}).items():
             counts[block_type] = counts.get(block_type, 0) + count
+    return counts
+
+
+def _sum_semantic_role_counts(pages: list[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for page in pages:
+        for role, count in (page.get("quality", {}).get("semantic_role_counts") or {}).items():
+            counts[role] = counts.get(role, 0) + count
     return counts
 
 

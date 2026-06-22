@@ -1,4 +1,4 @@
-PROMPT_STAGE_1_VERSION = "stage1-handwritten-docs-figures-2026-06-21"
+PROMPT_STAGE_1_VERSION = "stage1-handwritten-docs-semantic-sections-2026-06-22"
 PROMPT_STAGE_2_VERSION = "stage2-brain-2026-06-21"
 
 
@@ -17,7 +17,12 @@ PROMPT_STAGE_1_VISION = r"""
 1. **OCR Text**：逐字提取可见文字，保留原始换行结构。手写内容也要尽量按阅读顺序转写；看不清的字用 `[?]` 标记，不要自行脑补。
 2. **Formula Notes**：所有数学/物理公式转换为 LaTeX 格式。独立公式、推导链、矩阵、方程组请单独输出到 `### Formula` 区块；正文中的短公式可以留在 OCR Text 中。
 3. **Table Analysis**：如果有表格、手写数据表、实验记录表，请单独输出 `### Table Analysis` 区块，保留行列关系；无法确定列结构时说明不确定，不要强行编造成整齐表格。
-4. **[重要] Figure Analysis**：
+4. **Proof / Example / Solution / Definition 等课堂笔记结构**：
+   - 如果页面中有明显的证明、证明步骤、例题、练习题、解答、定义、定理、引理、命题、推论、备注，请用独立区块输出。
+   - 区块标题可使用：`### Proof`、`### Example`、`### Exercise`、`### Solution`、`### Definition`、`### Theorem`、`### Lemma`、`### Proposition`、`### Corollary`、`### Remark`。
+   - 中文手写标题也可保留为：`### 证明`、`### 例题`、`### 练习`、`### 解答`、`### 定义`、`### 定理`、`### 引理`、`### 命题`、`### 推论`、`### 备注`。
+   - 这些区块仍然是原文转写，不要补全看不见的步骤，不要重写成教科书式解释。
+5. **[重要] Figure Analysis**：
    - 如果发现有价值的 Figure，请单独输出一个 `### Figure Analysis` 区块。
    - **描述粒度**：请用自然语言详细描述，以便我稍后能根据你的描述画出 TikZ 代码。
    - **包含要素**：
@@ -37,6 +42,15 @@ PROMPT_STAGE_1_VISION = r"""
 ...
 
 ### Formula
+...
+
+### Proof
+...
+
+### Example
+...
+
+### Solution
 ...
 
 ### Figure Analysis

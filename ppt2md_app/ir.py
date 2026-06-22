@@ -11,7 +11,20 @@ from .renderer import (
 )
 from .table_quality import is_probably_aligned_text_table
 
-PAGE_IR_SCHEMA_VERSION = 5
+PAGE_IR_SCHEMA_VERSION = 6
+
+SEMANTIC_ROLE_LABELS = {
+    "definition": "定义",
+    "theorem": "定理",
+    "lemma": "引理",
+    "corollary": "推论",
+    "proposition": "命题",
+    "proof": "证明",
+    "example": "例题",
+    "exercise": "练习",
+    "solution": "解答",
+    "remark": "备注",
+}
 
 
 def build_page_ir(raw_text: str, slide_no: int) -> Dict[str, Any]:
@@ -33,8 +46,9 @@ def raw_text_to_blocks(raw_text: str, slide_no: int) -> List[Dict[str, Any]]:
     paragraphs = _split_paragraphs(text)
     blocks = []
     for paragraph in paragraphs:
-        block_type = _section_block_type(paragraph) or _infer_block_type(_strip_section_heading(paragraph))
+        section_role = _section_semantic_role(paragraph)
         block_text = _strip_section_heading(paragraph)
+        block_type = _section_block_type(paragraph) or _infer_block_type(block_text)
         if not block_text:
             continue
         block = {
@@ -47,6 +61,7 @@ def raw_text_to_blocks(raw_text: str, slide_no: int) -> List[Dict[str, Any]]:
             "evidence": {"raw_text": paragraph},
             "bbox": None,
         }
+        block.update(_semantic_block_fields(section_role, block_text))
         block.update(_extra_block_fields(block_type, block_text))
         blocks.append(block)
     return blocks
@@ -169,6 +184,7 @@ def _is_section_heading(line: str) -> bool:
         or lower.startswith("### 公式")
         or lower.startswith("### 表格")
         or lower.startswith("### 不确定")
+        or _semantic_role_from_section_heading(line) is not None
     )
 
 
@@ -185,11 +201,78 @@ def _section_block_type(text: str) -> str | None:
     return None
 
 
+def _section_semantic_role(text: str) -> str | None:
+    first = (text.strip().splitlines() or [""])[0].strip()
+    return _semantic_role_from_section_heading(first)
+
+
 def _strip_section_heading(text: str) -> str:
     lines = text.strip().splitlines()
     if lines and _is_section_heading(lines[0].strip()):
         lines = lines[1:]
     return "\n".join(line.strip() for line in lines).strip()
+
+
+def _semantic_block_fields(section_role: str | None, text: str) -> Dict[str, Any]:
+    role = section_role or _inline_semantic_role(text)
+    if not role:
+        return {}
+    return {
+        "semantic_role": role,
+        "semantic_role_label": SEMANTIC_ROLE_LABELS[role],
+        "semantic_role_source": "section" if section_role else "inline",
+    }
+
+
+def _semantic_role_from_section_heading(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped.startswith("#"):
+        return None
+    title = re.sub(r"^#{1,6}\s*", "", stripped).strip().lower().rstrip(":：")
+    role_prefixes = {
+        "definition": ("definition", "def.", "定义"),
+        "theorem": ("theorem", "定理"),
+        "lemma": ("lemma", "引理"),
+        "corollary": ("corollary", "推论"),
+        "proposition": ("proposition", "命题"),
+        "proof": ("proof", "proof steps", "证明", "证明过程"),
+        "example": ("example", "examples", "例题", "例子", "例"),
+        "exercise": ("exercise", "problem", "练习", "习题"),
+        "solution": ("solution", "answer", "解答", "解"),
+        "remark": ("remark", "note", "observation", "备注", "注"),
+    }
+    for role, prefixes in role_prefixes.items():
+        if any(_matches_role_prefix(title, prefix) for prefix in prefixes):
+            return role
+    return None
+
+
+def _matches_role_prefix(title: str, prefix: str) -> bool:
+    return bool(
+        title == prefix
+        or title.startswith(f"{prefix} ")
+        or re.match(rf"^{re.escape(prefix)}[\d一二三四五六七八九十.、:：-]", title)
+    )
+
+
+def _inline_semantic_role(text: str) -> str | None:
+    first = (text.strip().splitlines() or [""])[0].strip()
+    patterns = [
+        ("definition", r"^(定义|Definition)\s*[\d一二三四五六七八九十.、-]*\s*[:：]"),
+        ("theorem", r"^(定理|Theorem)\s*[\d一二三四五六七八九十.、-]*\s*[:：]"),
+        ("lemma", r"^(引理|Lemma)\s*[\d一二三四五六七八九十.、-]*\s*[:：]"),
+        ("corollary", r"^(推论|Corollary)\s*[\d一二三四五六七八九十.、-]*\s*[:：]"),
+        ("proposition", r"^(命题|Proposition)\s*[\d一二三四五六七八九十.、-]*\s*[:：]"),
+        ("proof", r"^(证明|证|Proof)\s*[:：]"),
+        ("example", r"^(例题|例子|例|Example)\s*[\d一二三四五六七八九十.、-]*\s*[:：]"),
+        ("exercise", r"^(练习|习题|Exercise|Problem)\s*[\d一二三四五六七八九十.、-]*\s*[:：]"),
+        ("solution", r"^(解答|解|Solution|Answer)\s*[:：]"),
+        ("remark", r"^(备注|注|Remark|Note|Observation)\s*[:：]"),
+    ]
+    for role, pattern in patterns:
+        if re.match(pattern, first, flags=re.IGNORECASE):
+            return role
+    return None
 
 
 def _looks_like_formula_block(text: str) -> bool:

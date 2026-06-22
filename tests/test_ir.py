@@ -1,12 +1,13 @@
 from pathlib import Path
 
 from ppt2md_app.ir import build_page_ir, render_blocks_to_markdown, render_page_ir_to_markdown, render_page_record_to_markdown
+from ppt2md_app.reporting import summarize_blocks
 
 
 def test_build_page_ir_creates_stable_blocks():
     ir = build_page_ir("标题:\n\n- a\n- b\n\n### Figure Analysis\n左侧是 A。\n", 3)
 
-    assert ir["schema_version"] == 5
+    assert ir["schema_version"] == 6
     assert [block["id"] for block in ir["blocks"]] == ["p0003-b001", "p0003-b002", "p0003-b003"]
     assert [block["type"] for block in ir["blocks"]] == ["heading", "list", "figure_note"]
     assert [block["text"] for block in ir["blocks"]] == ["标题:", "- a\n- b", "左侧是 A。"]
@@ -130,6 +131,50 @@ def test_handwritten_sections_become_renderable_block_types():
     ]
     assert ir["blocks"][0]["latex"] == "F = ma"
     assert ir["blocks"][0]["formula_quality"]["ok"] is True
+
+
+def test_semantic_sections_render_as_readable_markdown_labels():
+    ir = build_page_ir(
+        "### Definition\n"
+        "线性空间是对加法和数乘封闭的集合。\n\n"
+        "### Proof\n"
+        "由封闭性和结合律可得结论。\n\n"
+        "### Example\n"
+        "1. R^n 是线性空间。\n"
+        "2. 多项式集合也是线性空间。",
+        16,
+    )
+
+    assert [block["semantic_role"] for block in ir["blocks"]] == ["definition", "proof", "example"]
+    assert [block["semantic_role_source"] for block in ir["blocks"]] == ["section", "section", "section"]
+    assert [block["type"] for block in ir["blocks"]] == ["paragraph", "paragraph", "list"]
+    assert summarize_blocks(ir["blocks"])["semantic_role_counts"] == {"definition": 1, "proof": 1, "example": 1}
+    assert render_page_ir_to_markdown(ir) == (
+        "# Slide 16\n\n"
+        "**定义：**\n\n"
+        "线性空间是对加法和数乘封闭的集合。\n\n"
+        "**证明：**\n\n"
+        "由封闭性和结合律可得结论。\n\n"
+        "**例题：**\n\n"
+        "1. R^n 是线性空间。\n"
+        "2. 多项式集合也是线性空间。\n"
+    )
+
+
+def test_inline_semantic_role_keeps_original_markdown_text():
+    ir = build_page_ir("证明：由 $a=b$ 可得 $a+c=b+c$。", 17)
+
+    assert ir["blocks"][0]["semantic_role"] == "proof"
+    assert ir["blocks"][0]["semantic_role_source"] == "inline"
+    assert render_page_ir_to_markdown(ir) == "# Slide 17\n\n证明：由 $a=b$ 可得 $a+c=b+c$。\n"
+
+
+def test_compact_chinese_semantic_section_heading_is_recognized():
+    ir = build_page_ir("### 例1\n计算 $\\int_0^1 x dx$。", 18)
+
+    assert ir["blocks"][0]["semantic_role"] == "example"
+    assert ir["blocks"][0]["semantic_role_source"] == "section"
+    assert render_page_ir_to_markdown(ir) == "# Slide 18\n\n**例题：**\n\n计算 $\\int_0^1 x dx$。\n"
 
 
 def test_uncertain_formula_renders_as_warning_block():
