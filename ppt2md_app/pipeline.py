@@ -399,6 +399,23 @@ def _run_brain_stage(
                         _write_stage2_failure(ppt_root, slide_no, "validation_failed", message, validation=validation.to_dict())
                         failed += 1
                         continue
+                    coverage_fallback_message = _coverage_fallback_message(validation.to_dict())
+                    if coverage_fallback_message and _write_stage2_fail_open_markdown(
+                        ppt_root=ppt_root,
+                        slide_no=slide_no,
+                        code="ocr_coverage_low",
+                        message=coverage_fallback_message,
+                        raw_data_map=raw_data_map,
+                        target_blocks=target_blocks_by_slide.get(slide_no),
+                        config=config,
+                        page=page,
+                        raw_response=result.get("raw_response"),
+                        source_validation=validation.to_dict(),
+                    ):
+                        ok_slides.append(slide_no)
+                        refresh_page_suspects(page, target_blocks_by_slide.get(slide_no))
+                        msg_queue.put(("log", f"[{ppt_name}] P{slide_no} OCR 覆盖率偏低，已写入保守 Markdown fallback"))
+                        continue
 
                     write_text_atomic(output_path, final_markdown)
                     meta = build_slide_meta(
@@ -592,6 +609,15 @@ def _one_line_error(code: str, message: str) -> str:
     if len(text) > 180:
         text = text[:177].rstrip() + "..."
     return f"{code}: {text}" if text else str(code)
+
+
+def _coverage_fallback_message(validation: dict) -> str | None:
+    for issue in validation.get("warnings") or []:
+        if isinstance(issue, dict) and issue.get("code") == "ocr_coverage_low":
+            message = issue.get("message") or "最终 Markdown 对当前页 OCR 正文覆盖率偏低。"
+            evidence = issue.get("evidence")
+            return f"{message} {evidence}".strip()
+    return None
 
 
 def _neighbor_raw_map(raw_data_map, slide_no):

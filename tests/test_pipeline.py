@@ -126,6 +126,64 @@ def test_brain_stage_error_writes_markdown_fail_open_when_stage1_blocks_exist(mo
     assert page_reports[1]["stage2"]["fallback"] == "stage1_page_ir"
 
 
+def test_brain_stage_low_ocr_coverage_uses_markdown_fail_open(monkeypatch, tmp_path):
+    config = AppConfig(brain_batch_workers=1)
+    report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)
+    page_reports[1]["stage1"]["status"] = "ok"
+    raw_data_map = {
+        1: "热力学第一定律描述内能、热量和功之间的关系。孤立系统的总能量保持守恒，系统状态变化时需要同时考虑做功和吸热。"
+    }
+    target_blocks = {
+        1: [
+            {
+                "id": "p0001-b001",
+                "type": "paragraph",
+                "text": raw_data_map[1],
+                "source_page": 1,
+                "confidence": 0.8,
+                "origin": "vision_ocr",
+                "evidence": {"raw_text": raw_data_map[1]},
+                "bbox": None,
+            }
+        ]
+    }
+
+    monkeypatch.setattr(
+        pipeline,
+        "run_stage_2_brain_parallel",
+        lambda slide_no, raw_data_map, config: {
+            "success": True,
+            "slide_no": slide_no,
+            "markdown": "# Slide 1\n\n简短摘要。\n",
+            "raw_response": "# Slide 1\n\n简短摘要。\n",
+        },
+    )
+
+    ok_slides = pipeline._run_brain_stage(
+        "Deck",
+        1,
+        0,
+        tmp_path,
+        raw_data_map,
+        1,
+        DummyQueue(),
+        config,
+        page_reports,
+        target_blocks_by_slide=target_blocks,
+    )
+
+    assert ok_slides == [1]
+    markdown = (tmp_path / "Slide_01.md").read_text(encoding="utf-8")
+    meta = read_json(tmp_path / "Slide_01.meta.json")
+    assert "Stage 2 重组失败" in markdown
+    assert "热力学第一定律" in markdown
+    assert "简短摘要" not in markdown
+    assert meta["status"] == "fail_open"
+    assert meta["error"]["code"] == "ocr_coverage_low"
+    assert page_reports[1]["final"]["status"] == "fail_open"
+    assert page_reports[1]["stage2"]["error_code"] == "ocr_coverage_low"
+
+
 def test_brain_stage_records_checked_refiner_ops(monkeypatch, tmp_path):
     config = AppConfig(brain_batch_workers=1)
     report, page_reports = build_run_report("Deck", [str(tmp_path / "page.png")], 0, config)
@@ -185,8 +243,8 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
         lambda slide_no, raw_data_map, config: {
             "success": True,
             "slide_no": slide_no,
-            "markdown": "# Slide 1\n\n正文。\n",
-            "raw_response": "# Slide 1\n\n正文。\n",
+            "markdown": "# Slide 1\n\n热力学第一定律描述内能、热量和功之间的关系。孤立系统的总能量保持守恒。\n",
+            "raw_response": "# Slide 1\n\n热力学第一定律描述内能、热量和功之间的关系。孤立系统的总能量保持守恒。\n",
         },
     )
 
@@ -215,13 +273,12 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     assert report["summary"]["figure_warning_count"] == 1
     assert report["summary"]["formula_warning_count"] == 1
     assert report["summary"]["table_warning_count"] == 1
-    assert report["summary"]["ocr_coverage_warning_count"] == 1
-    assert report["summary"]["suspects"]["by_code"]["ocr_coverage_low"] == 1
+    assert report["summary"]["ocr_coverage_warning_count"] == 0
     assert report["summary"]["suspects"]["by_code"]["table_quality_warning"] == 1
     assert report["summary"]["suspects"]["by_code"]["latex_frac_missing_braces"] == 1
     assert report["summary"]["suspects"]["by_op"]["mark_uncertain"] >= 2
     assert report["summary"]["suspects"]["actionable_total"] >= 3
-    assert "ocr_coverage_low" in {issue["code"] for issue in report["pages"][0]["validation"]["warnings"]}
+    assert "ocr_coverage_low" not in {issue["code"] for issue in report["pages"][0]["validation"]["warnings"]}
     assert any(suspect.get("block_id") and suspect.get("op") for suspect in report["pages"][0]["suspects"])
     assert report["pages"][0]["stage1"]["blocks_count"] >= 1
     assert report["pages"][0]["block_refiner"]["changed"] is True
