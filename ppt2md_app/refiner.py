@@ -691,6 +691,10 @@ def _page_ir_contract_errors(page_ir: Dict[str, Any]) -> list[str]:
             errors.append(f"block_{index}_missing_text")
         if block.get("source_page") != page_ir.get("source_page"):
             errors.append(f"block_{index}_source_page_mismatch")
+        if "bbox" not in block:
+            errors.append(f"block_{index}_missing_bbox")
+        elif not _valid_bbox(block.get("bbox")):
+            errors.append(f"block_{index}_invalid_bbox")
         origin = block.get("origin")
         if not origin:
             errors.append(f"block_{index}_missing_origin")
@@ -703,6 +707,14 @@ def _page_ir_contract_errors(page_ir: Dict[str, Any]) -> list[str]:
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _valid_bbox(value) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, list) or len(value) != 4:
+        return False
+    return all(isinstance(item, (int, float)) for item in value)
 
 
 def _looks_like_body_text(text: str) -> bool:

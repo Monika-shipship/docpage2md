@@ -232,3 +232,35 @@ def test_block_op_checked_rejects_unknown_block_type():
     assert refined == page_ir
     assert detail["reason"] == "page_ir_contract_failed"
     assert "block_1_unknown_type" in detail["errors"]
+
+
+def test_block_op_checked_rejects_missing_bbox_field():
+    page_ir = build_page_ir("普通正文\n\n后续正文。", 8)
+    del page_ir["blocks"][1]["bbox"]
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "promote_heading", "id": "p0008-b001"},
+        slide_no=8,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "page_ir_contract_failed"
+    assert "block_1_missing_bbox" in detail["errors"]
+
+
+def test_block_op_checked_rejects_invalid_bbox_shape():
+    page_ir = build_page_ir("普通正文\n\n后续正文。", 9)
+    page_ir["blocks"][1]["bbox"] = [0, 1, 2]
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "promote_heading", "id": "p0009-b001"},
+        slide_no=9,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "page_ir_contract_failed"
+    assert "block_1_invalid_bbox" in detail["errors"]
