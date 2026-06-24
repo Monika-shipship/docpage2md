@@ -1,8 +1,8 @@
 import pytest
 
-from ppt2md_app.config import AppConfig
-from ppt2md_app.model_catalog import ROLE_BRAIN, ROLE_VISION
-from ppt2md_app.third_party_models import (
+from docpage2md_app.config import AppConfig
+from docpage2md_app.model_catalog import ROLE_BRAIN, ROLE_VISION
+from docpage2md_app.third_party_models import (
     delete_third_party_model,
     filter_registry_models,
     load_third_party_models,

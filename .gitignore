@@ -1,4 +1,4 @@
-# Image files
+# Generated image files
 *.png
 *.jpg
 *.jpeg
@@ -7,18 +7,43 @@
 *.gif
 *.tiff
 *.ico
+!tests/fixtures/**/images/*.jpg
+!tests/fixtures/**/images/*.jpeg
+!tests/fixtures/**/images/*.png
+!tests/fixtures/**/*.png
+!tests/fixtures/**/*.jpg
+!tests/fixtures/**/*.jpeg
 
-# Output and Input directories (inferred from project structure)
-ppt_images/
+# Runtime outputs and scratch directories
+doc_pages/
+doc_pages_*/
+input_docs/
 markdown_output/
 markdown_output_*/
+markdown_output_model_smoke/
+markdown_output_smoke/
 log/
 latex_output/
+test_tmp/
+tmp/
 session_*.json
 .cache/
 FULL_PRESENTATION.md
 *_FULL.md
 Raw_*.json
+*.error.json
+*.meta.json
+
+# Private local source documents and real MinerU artifacts
+tests/*.pdf
+tests/*.doc
+tests/*.docx
+tests/*.ppt
+tests/*.pptx
+tests/*.xls
+tests/*.xlsx
+tests/test-mineru/
+tests/test-PaddleOCR/
 
 # Local secrets and machine-specific settings
 .env
@@ -29,10 +54,12 @@ Raw_*.json
 *.p12
 *.local.json
 
-# Local reference/scratch files
-参考价格文档/
-
 # Python cache files
 __pycache__/
 *.py[cod]
 .claude/
+__MACOSX/
+.DS_Store
+
+# Large optional vendor assets copied from API docs
+docs/deepseek-api/deepseek_v3_tokenizer*/

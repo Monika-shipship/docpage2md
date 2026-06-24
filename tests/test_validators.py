@@ -1,6 +1,6 @@
-from ppt2md_app.ir import build_page_ir
-from ppt2md_app.renderer import render_page_ir_to_markdown
-from ppt2md_app.validators import is_api_error_text, validate_slide_markdown
+from docpage2md_app.ir import build_page_ir
+from docpage2md_app.renderer import render_page_ir_to_markdown
+from docpage2md_app.validators import is_api_error_text, validate_slide_markdown
 
 
 def test_valid_slide_markdown_passes():
@@ -123,7 +123,7 @@ def test_figure_analysis_without_note_warns():
 
 def test_chinese_figure_note_satisfies_figure_analysis():
     result = validate_slide_markdown(
-        "# Slide 1\n\n> [!NOTE] 图示说明\n> 图中左侧是 A。\n",
+        "# Slide 1\n\n<details>\n<summary>图示识别内容</summary>\n\n- 说明：图中左侧是 A。\n\n</details>\n",
         1,
         target_raw="### Figure Analysis\n图中左侧是 A。",
     )
@@ -134,7 +134,7 @@ def test_chinese_figure_note_satisfies_figure_analysis():
 
 def test_figure_note_satisfies_figure_analysis():
     result = validate_slide_markdown(
-        "# Slide 1\n\n> [!NOTE] 图示说明\n> 图中左侧区域被遮挡。\n",
+        "# Slide 1\n\n<details>\n<summary>图示识别内容</summary>\n\n- 说明：图中左侧区域被遮挡。\n\n</details>\n",
         1,
         target_raw="### Figure Analysis\n图中左侧区域被遮挡。",
     )
@@ -191,7 +191,7 @@ def test_present_target_figure_block_satisfies_block_coverage():
     ]
 
     result = validate_slide_markdown(
-        "# Slide 1\n\n> [!NOTE] 图示说明\n> 坐标图中横轴为 t，纵轴为 v，曲线逐渐上升。\n",
+        "# Slide 1\n\n<details>\n<summary>图示识别内容</summary>\n\n- 说明：坐标图中横轴为 t，纵轴为 v，曲线逐渐上升。\n\n</details>\n",
         1,
         target_blocks=blocks,
     )

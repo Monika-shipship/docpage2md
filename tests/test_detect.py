@@ -1,5 +1,5 @@
-from ppt2md_app.detect import detect_page_suspects, summarize_suspects
-from ppt2md_app.ir import build_page_ir
+from docpage2md_app.detect import detect_page_suspects, summarize_suspects
+from docpage2md_app.ir import build_page_ir
 
 
 def test_detect_page_suspects_from_validation_quality_and_stage_state():

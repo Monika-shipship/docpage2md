@@ -1,4 +1,4 @@
-from ppt2md_app.cli import main
+from docpage2md_app.cli import main
 
 
 if __name__ == "__main__":

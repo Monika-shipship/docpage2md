@@ -1,5 +1,5 @@
-from ppt2md_app.invariant import page_ir_contract_errors, valid_block_id, valid_source_page
-from ppt2md_app.ir import build_page_ir
+from docpage2md_app.invariant import page_ir_contract_errors, valid_block_id, valid_source_page
+from docpage2md_app.ir import build_page_ir
 
 
 def test_page_ir_contract_accepts_generated_ir():

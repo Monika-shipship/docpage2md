@@ -1,30 +1,154 @@
 # DocPage2MD
 
-把一组文档页图片批量转换成结构化 Markdown 笔记。
+把 PDF、Office 文档、图片或旧版文档页图片目录转换成结构化 Markdown 笔记。
 
-`DocPage2MD` 是 `Document Page to Markdown` 的缩写。这里的 `DocPage` 指“文档页图片”，不是网页页面：PDF 每页导出的 PNG/JPG、扫描页、论文页截图、PPT 幻灯片导出的图片、直接截取的教材页图片都属于这一类。项目早期叫 `PPT2MD` / `png2md`，但实际输入大多数是 `.png` 等图片文件；为了兼容 PDF 中有文本层和无文本层两种情况，当前流程统一先按“文档页图片”处理，再转换成 Markdown。
+`DocPage2MD` 是 `Document Page to Markdown` 的缩写。项目当前主路径是通过 MinerU 精准解析 API 直接处理 PDF、图片、Doc/Docx、Ppt/PPTx、Xls/Xlsx 等多种格式，拿到 layout/json/crop 后再进入 DocPage2MD 的 Markdown-first 渲染、校验和 Brain 精修流程。PDF 尤其是手写矢量笔记 PDF，是 MinerU 路线的核心输入。
 
-历史兼容说明：旧入口 `ppt2md.py`、旧包名 `ppt2md_app`、默认输入目录 `ppt_images` 暂时保留，避免破坏已有脚本和本地任务目录。新的推荐入口是 `docpage2md.py`。
+当前正式入口是 `docpage2md.py`，正式包名是 `docpage2md_app`，默认图片目录兼容入口是 `doc_pages/`。
 
-它不是直接读取 `.pptx` 或 `.pdf` 文件，而是读取图片目录，例如：
+当前有两条入口：
+
+- `mineru_only` / `hybrid`：直接处理 PDF、Office 文档、图片，或读取已经下载/解压的 MinerU artifact 目录。这是新主路径。
+- `vision_only`：读取旧版图片目录，例如：
 
 ```text
-ppt_images/
+doc_pages/
 └── 我的课件/
     ├── slide_01.png
     ├── slide_02.png
     └── ...
 ```
 
-然后输出：
+## 最快上手
+
+如果你只是想把一个 PDF 转成 Markdown，推荐按下面做。
+
+1. 把 PDF 放在你顺手的位置。可以放在项目外，也可以放在项目里的 `input_docs/`。`input_docs/` 已经被 Git 忽略，适合临时放自己的 PDF、Word、PPT、图片等私人文件。
+
+```text
+input_docs/
+└── 我的手写笔记.pdf
+```
+
+2. 打开 PowerShell，进入项目目录。
+
+```powershell
+cd D:\Repos\lab-python\DocPage2MD
+```
+
+3. 转前 5 页先试效果。
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-file ".\input_docs\我的手写笔记.pdf" --page-ranges 1-5
+```
+
+4. 如果只想用 MinerU 快速转，不调用后续视觉/Brain 精修：
+
+```powershell
+python docpage2md.py --engine-mode mineru_only --input-file ".\input_docs\我的手写笔记.pdf" --page-ranges 1-5
+```
+
+5. 转完后看输出目录：
 
 ```text
 markdown_output/
-└── 我的课件/
+└── 我的手写笔记/
     ├── Slide_01.md
     ├── Slide_02.md
-    ├── temp_raw_vision/
-    └── 我的课件_FULL.md
+    ├── 我的手写笔记_FULL.md
+    ├── run_report.json
+    ├── assets/
+    ├── ir/
+    └── mineru_raw/
+```
+
+最常用的文件是 `Slide_XX.md` 和 `{文档名}_FULL.md`。`run_report.json`、`ir/`、`mineru_raw/` 是排错和审计用的。
+
+## 输入文件放哪
+
+单个 PDF、Word、PPT、Excel 或图片**不要求放在固定目录**。你可以直接传绝对路径：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-file "D:\Notes\我的手写笔记.pdf" --page-ranges 1-10
+```
+
+也可以放进项目里的 `input_docs/`，这样命令短一点：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-file ".\input_docs\我的手写笔记.pdf" --page-ranges 1-10
+```
+
+推荐习惯：
+
+- 私人待处理文件：放 `input_docs/`，不会进 Git。
+- 公开测试样本：放 `tests/fixtures/`，并确认内容可公开。
+- 私有测试样本：不要提交；`tests/` 根目录下的 PDF/Office 文件默认会被 Git 忽略。
+- 已经由 MinerU 客户端/API 解压的结果：用 `--mineru-artifact-dir` 指向那个目录。
+- 旧版图片页目录：只在 `vision_only` 时放 `doc_pages/任务名/`。
+
+## 如何选择文件
+
+当前还没有真正的图形界面文件选择器，也没有文件浏览 GUI。可用方式有三种：
+
+1. 直接指定一个文件：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-file "D:\Notes\我的手写笔记.pdf"
+```
+
+2. 指定多个文件：
+
+```powershell
+python docpage2md.py --engine-mode mineru_only --input-files "D:\Docs\a.pdf" "D:\Docs\b.pptx" "D:\Docs\c.docx"
+```
+
+3. 指定一个文件夹，让程序筛选支持的文件：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-folder "D:\Docs\待转录" --recursive
+```
+
+支持的多格式文件包括：
+
+- `.pdf`
+- `.png` / `.jpg` / `.jpeg` / `.webp` / `.bmp` / `.gif`
+- `.doc` / `.docx`
+- `.ppt` / `.pptx`
+- `.xls` / `.xlsx`
+- `.html` / `.htm`
+
+Windows 上最快的选文件办法：
+
+- 在资源管理器里选中文件，`Shift + 右键`，选择“复制为路径”。
+- 把路径粘贴到 `--input-file` 后面。
+- 如果路径外面带双引号，可以直接保留。
+
+直接运行：
+
+```powershell
+python docpage2md.py
+```
+
+会进入交互式模式，让你选择文档类型、处理模式、模型档位和输入来源。但它目前是终端交互，不是 GUI 文件选择器。
+
+计划中的 GUI 可以做成两层：
+
+- 短期：终端里列出候选文件，让用户输入编号选择。
+- 后续：真正的桌面/网页 GUI，支持拖拽 PDF、选择页码范围、选择模式和模型档位。
+
+输出目录结构如下：
+
+```text
+markdown_output/
+└── 我的文档/
+    ├── Slide_01.md
+    ├── Slide_02.md
+    ├── 我的文档_FULL.md
+    ├── run_report.json
+    ├── assets/
+    │   └── crops/
+    ├── ir/
+    └── mineru_raw/
 ```
 
 ## 从 0 开始
@@ -44,7 +168,7 @@ python --version
 打开 PowerShell，进入本项目目录：
 
 ```powershell
-cd C:\Projects\png2md
+cd D:\Repos\lab-python\DocPage2MD
 ```
 
 如果你的项目放在其他位置，请把上面的路径替换成你自己的项目文件夹路径。
@@ -61,40 +185,108 @@ pip install -U -r requirements.txt
 - `rich`：终端 UI
 - `Pillow`：读取图片尺寸，用于成本估算
 
-### 4. 设置 API Key
+### 4. 设置 API Key / Token
 
-默认配置使用阿里云 DashScope 做 Step 1 视觉识别，所以新手建议先准备一个 `DASHSCOPE_API_KEY`。
+如果要直接处理 PDF、PPTX、Docx 等多格式文档，请先准备 MinerU token，并写入环境变量 `MINERU_API_TOKEN`。获取地址：<https://mineru.net/apiManage/token>。
+
+如果要使用 docpage2md 的视觉模型和 Brain 精修，还需要：
+
+- 阿里云百炼 / DashScope：`DASHSCOPE_API_KEY`，获取地址：<https://bailian.console.aliyun.com/cn-beijing?tab=model#/api-key>
+- DeepSeek：`DEEPSEEK_API_KEY`，获取地址：<https://platform.deepseek.com/api_keys>
+
+Windows PowerShell 长期设置，推荐：
+
+```powershell
+[Environment]::SetEnvironmentVariable("MINERU_API_TOKEN", "你的 MinerU Token", "User")
+[Environment]::SetEnvironmentVariable("DASHSCOPE_API_KEY", "sk-你的阿里云Key", "User")
+[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-你的DeepSeekKey", "User")
+```
+
+CMD 长期设置：
+
+```cmd
+setx MINERU_API_TOKEN "你的 MinerU Token"
+setx DASHSCOPE_API_KEY "sk-你的阿里云Key"
+setx DEEPSEEK_API_KEY "sk-你的DeepSeekKey"
+```
+
+Linux / macOS 临时设置：
+
+```bash
+export MINERU_API_TOKEN="你的 MinerU Token"
+export DASHSCOPE_API_KEY="sk-你的阿里云Key"
+export DEEPSEEK_API_KEY="sk-你的DeepSeekKey"
+```
 
 临时设置，只对当前 PowerShell 窗口有效：
 
 ```powershell
+$env:MINERU_API_TOKEN="你的 MinerU Token"
 $env:DASHSCOPE_API_KEY="sk-你的阿里云Key"
-```
-
-长期设置，推荐：
-
-```powershell
-[Environment]::SetEnvironmentVariable("DASHSCOPE_API_KEY", "sk-你的阿里云Key", "User")
-```
-
-如果 Step 2 选择 DeepSeek，还需要 `DEEPSEEK_API_KEY`：
-
-```powershell
-[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-你的DeepSeekKey", "User")
+$env:DEEPSEEK_API_KEY="sk-你的DeepSeekKey"
 ```
 
 设置后重新打开 PowerShell 更稳妥。
 
 如果你使用 One API、OpenRouter、LiteLLM、自建转发等 OpenAI 兼容服务，也可以先不手动设置。运行程序后在模型选择界面输入 `c`，选择 `openai_compatible`，程序会提示你填写 Base URL、模型 ID、环境变量名，并可把 Key 保存到当前 Windows 用户环境变量。
 
-本项目不会把 API Key 写入仓库文件。模型设置只保存环境变量名，例如 `DASHSCOPE_API_KEY`，不会保存密钥值。
+本项目不会把 API Key / Token 写入仓库文件。模型设置、报告和缓存只保存环境变量名，例如 `MINERU_API_TOKEN`、`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`，不会保存密钥值。
 
-### 5. 准备图片
+### 5. 准备输入
 
-在默认输入目录 `ppt_images` 下新建一个文件夹，文件夹名就是任务名。这个目录名来自早期 `PPT2MD` 阶段，目前仍作为兼容默认值使用：
+新主路径可以直接给 MinerU 一个 PDF、PPTX、Docx、Excel 或图片文件，也可以给已经下载/解压好的 MinerU 输出目录。
+
+文件可以放任意位置。为了方便管理，建议在项目根目录新建 `input_docs/`，把待处理 PDF、Word、PPT、图片临时放进去。这个目录已被 `.gitignore` 忽略，不会误提交。
 
 ```text
-ppt_images/
+input_docs/
+├── 我的手写笔记.pdf
+├── 论文.pdf
+└── 课件.pptx
+```
+
+如果你已经有 MinerU 客户端/API 输出目录，可以直接使用：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --mineru-artifact-dir ".\tests\fixtures\mineru_public\minimal_artifact"
+```
+
+如果要让程序调用 MinerU API 处理本地 PDF：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-file ".\我的手写笔记.pdf" --page-ranges 1-10
+```
+
+也可以传绝对路径：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-file "D:\Notes\我的手写笔记.pdf" --page-ranges 1-10
+```
+
+如果要批量处理一个文件夹里的 PDF、PPTX、Docx、Excel 或图片：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-folder ".\待处理文档" --recursive
+```
+
+程序会按后缀筛选 MinerU 支持的文件，不会要求你先把 PDF/PPT 拆成图片。
+
+如果要精确指定多个文件：
+
+```powershell
+python docpage2md.py --engine-mode mineru_only --input-files ".\论文.pdf" ".\课件.pptx" ".\题目截图.png"
+```
+
+如果要处理远程 URL：
+
+```powershell
+python docpage2md.py --engine-mode mineru_only --mineru-url "https://example.com/paper.pdf"
+```
+
+旧版兼容路径仍然支持图片目录。在默认输入目录 `doc_pages` 下新建一个文件夹，文件夹名就是任务名：
+
+```text
+doc_pages/
 └── 3.2点群/
     ├── 001.png
     ├── 002.png
@@ -111,7 +303,7 @@ ppt_images/
 
 文件名建议带数字，程序会自然排序。
 
-建议使用 PDF-XChange Editor 导出 PDF 文件的图片，这样会自带数字排序。
+只有选择 `vision_only` 旧流程时，才需要自己把 PDF/PPT 导出成图片。新主路径会优先交给 MinerU 处理原文件。
 
 ### 6. 启动
 
@@ -125,23 +317,25 @@ python docpage2md.py
 python docpage2md.py -n my_session -o .\markdown_output
 ```
 
-程序会先检查 `ppt_images` 是否存在，再让你选择模型，最后选择要处理的图片文件夹和页码范围。
+如果传入 `--mineru-artifact-dir`、`--input-file`、`--input-files`、`--input-folder` 或 `--mineru-url`，程序会直接走 MinerU 多格式路线。没有传这些参数时，程序会进入交互式选择：默认推荐手写笔记 `hybrid`，也可以手动切到论文 PDF 的 `mineru_only`、截图小题的 `vision_only` 或自定义模式。旧版图片目录只是 `vision_only` 的兼容入口，不是项目的新主路径。
 
 ## 使用流程
 
-启动后大致会经历这些步骤：
+MinerU 多格式路线大致会经历这些步骤：
 
 1. 加载模型目录
-2. 选择 Step 1 视觉模型
-3. 选择 Step 2 Brain 模型
-4. 扫描 `ppt_images`
-5. 选择文档页图片任务
-6. 选择页码范围
-7. 显示成本预估
-8. 确认开始
-9. 生成单页 Markdown 和汇总 Markdown
+2. 读取 MinerU artifact，或通过 MinerU API 提交 PDF / Office / 图片文件
+3. 下载并解压 MinerU zip，读取 layout/json/crop 图片
+4. 转换为 docpage2md 的 PageIR / BlockIR
+5. 复制 crop 到输出目录 `assets/crops/`
+6. 渲染干净的 `Slide_XX.md` 和 `{doc_name}_FULL.md`
+7. 写入 `run_report.json`、`ir/` 和 `mineru_raw/`
 
-页码范围支持：
+`run_report.json` 会记录每页的 `content_inventory`：每个 MinerU/IR block 是否已经渲染、降级、合并、替换、删除或未渲染。正文 Markdown 不会输出这些诊断文字；如果需要排查遗漏，优先看 report。
+
+旧版 `vision_only` 图片目录流程仍会经历：选择视觉模型、选择 Brain 模型、扫描 `doc_pages`、选择页码范围、成本预估、生成 Markdown。
+
+旧版图片目录页码范围支持：
 
 ```text
 回车 / all    全部
@@ -150,9 +344,18 @@ python docpage2md.py -n my_session -o .\markdown_output
 8             只处理第 8 页
 ```
 
-## 生成原理：从图片到 Markdown
+## 生成原理：从文档到 Markdown
 
-完整说明见 [PNG 到 Markdown 的生成原理](docs/architecture/png-to-markdown-pipeline.md)。README 这里只放短版。
+完整说明见 [文档到 Markdown 的生成原理](docs/architecture/docpage-to-markdown-pipeline.md)。README 这里只放短版。
+
+相关设计文档：
+
+- [Hybrid MinerU + docpage2md 架构](docs/architecture/hybrid-mineru-docpage2md.md)
+- [模型管理器架构](docs/architecture/model-manager.md)
+- [Markdown 输出契约](docs/architecture/markdown-output-contract.md)
+- [MinerU API 配置](docs/architecture/mineru-api-setup.md)
+- [当前接手状态](docs/maintenance/current-status.md)
+- [Changelog](docs/changelog.md)
 
 当前流程不是让模型直接“看图写 Markdown”后就保存，而是分成识别、结构化、重组、校验和保守回退几层：
 
@@ -245,7 +448,7 @@ target_image_ref_block_missing
 
 1. Step 1 对同一个文档页图片任务的所有目标图片用 `ThreadPoolExecutor` 并发调用视觉模型。
 2. 等 Step 1 全部完成或命中缓存后，Step 2 再对所有目标页并发调用 Brain 模型。
-3. 多个文档页图片任务之间还可以用进程池并行，但默认 `MAX_PPT_WORKERS = 1`，这个历史常量名暂时保留；默认值为 1 是为了避免同时处理多个大任务导致 API 限流。
+3. 多个文档页图片任务之间还可以用进程池并行，但默认 `DEFAULT_MAX_DOCPAGE_WORKERS = 1`；默认值为 1 是为了避免同时处理多个大任务导致 API 限流。
 
 这样设计是为了让 Step 2 能看到完整的前后页 Raw Data。
 
@@ -484,9 +687,43 @@ echo $env:DEEPSEEK_API_KEY
 
 因为 Step 2 需要前后各 2 页 Raw Data。如果边识别边重组，后文窗口可能不完整，会降低符号一致性和上下文判断质量。
 
-### 能不能直接处理 PPTX
+### 能不能直接处理 PDF、PPTX、Docx
 
-当前不能。请先把 PPT 导出为图片，再放入 `ppt_images/任务名/`。
+可以。新主路径通过 MinerU 精准解析 API 处理 PDF、图片、Doc/Docx、Ppt/PPTx、Xls/Xlsx 等格式，并把 MinerU 输出的 layout/json/crop 图片转换成最终 Markdown。
+
+示例：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-file ".\我的讲义.pdf" --page-ranges 1-20
+python docpage2md.py --engine-mode mineru_only --input-file ".\课件.pptx"
+```
+
+只有在选择 `vision_only` 旧流程时，才需要先把 PPT/PDF 导出成图片并放入 `doc_pages/任务名/`。
+
+### 单个 PDF 应该放在哪里
+
+没有强制位置。推荐两种：
+
+- 临时私人文件：放 `input_docs/`，这个目录不会进 Git。
+- 任意本地路径：用 `--input-file "完整路径"` 指定。
+
+示例：
+
+```powershell
+python docpage2md.py --engine-mode hybrid --input-file ".\input_docs\我的手写笔记.pdf" --page-ranges 1-10
+python docpage2md.py --engine-mode hybrid --input-file "D:\Notes\我的手写笔记.pdf" --page-ranges 1-10
+```
+
+### 有没有方便筛选文件的 GUI
+
+当前没有图形文件选择器。现在最方便的是：
+
+- 单文件用 `--input-file`。
+- 多文件用 `--input-files`。
+- 整个文件夹用 `--input-folder`，程序自动筛选 PDF、Office、图片和 HTML。
+- 直接运行 `python docpage2md.py` 可以进入终端交互式选择，但不是 GUI。
+
+后续可以把“列出文件夹内候选文件并输入编号选择”作为最近一步改进，再考虑真正的拖拽式桌面/网页 GUI。
 
 ### 为什么日志里显示失败，但最终还有 Markdown
 
@@ -497,8 +734,7 @@ echo $env:DEEPSEEK_API_KEY
 ```text
 ProjectRoot/
 ├── docpage2md.py
-├── ppt2md.py
-├── ppt2md_app/
+├── docpage2md_app/
 │   ├── aliyun_catalog.py
 │   ├── cli.py
 │   ├── config.py
@@ -511,9 +747,11 @@ ProjectRoot/
 │   ├── pipeline.py
 │   ├── prompts.py
 │   └── session.py
-├── ppt_images/
-├── markdown_output/
-├── log/
+├── input_docs/      # 可选，本地私人输入文件；不会进 Git
+├── doc_pages/
+├── markdown_output/ # 本地输出；不会进 Git，不应自动删除
+├── latex_output/    # 可选 LaTeX 输出；不会进 Git，不应自动删除
+├── log/             # 本地日志；不会进 Git，可做轮转
 ├── .cache/
 └── requirements.txt
 ```

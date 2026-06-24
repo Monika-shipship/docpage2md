@@ -1,4 +1,4 @@
-from ppt2md_app.artifacts import (
+from docpage2md_app.artifacts import (
     build_fail_open_slide_meta,
     build_raw_cache_record,
     build_slide_meta,
@@ -7,7 +7,7 @@ from ppt2md_app.artifacts import (
     validate_raw_cache_record,
     validate_slide_meta,
 )
-from ppt2md_app.config import AppConfig
+from docpage2md_app.config import AppConfig
 
 
 def test_legacy_raw_cache_does_not_hit(tmp_path):

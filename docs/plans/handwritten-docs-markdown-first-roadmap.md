@@ -1,4 +1,4 @@
-# png2md 下一阶段改进计划：面向手写笔记的 Markdown-first 文档识别
+# docpage2md 下一阶段改进计划：面向 MinerU 多格式输入的 Markdown-first 文档识别
 
 ## 1. 核心约束
 
@@ -13,15 +13,17 @@
 
 ## 2. 项目定位修正
 
-当前项目不应只按“PPT 截图转 Markdown”优化，而应按“通用文档页图片转 Markdown”优化，重点输入包括：
+当前项目不应再按“PPT 截图转 Markdown”或“先导出页面图片再识别”来定位，而应按“MinerU 多格式文档输入 -> Markdown-first 输出”来优化。PDF，特别是手写矢量笔记 PDF，是新主路径的核心输入。重点输入包括：
 
-- 手写课堂笔记
+- 手写课堂笔记 PDF
+- 论文 PDF
+- PDF、PPTX、Docx、Excel 等由 MinerU 直接解析的原文件
 - 扫描讲义
-- PDF/PPT 导出的页面图片
 - 含大量数学/物理公式的页面
 - 手绘示意图、流程图、坐标图、结构图
 - 表格、半结构化列表、实验记录表
 - 中英文混排、符号密集页面
+- 旧版 PNG/JPG 页面图片目录，但它只作为 `vision_only` 兼容路径
 
 这意味着后续质量目标不是“排版像 PPT”，而是：
 
@@ -35,7 +37,7 @@
 
 ### 3.1 Markdown 是最终派生产物
 
-mineru-refine 的 Markdown 来自结构化 item 渲染，而不是让 LLM 自由写最终文档。png2md 后续也应逐步迁移到：
+mineru-refine 的 Markdown 来自结构化 item 渲染，而不是让 LLM 自由写最终文档。docpage2md 后续也应逐步迁移到：
 
 ```text
 image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
@@ -66,7 +68,7 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
 
 ### 3.3 分层保真
 
-不能把 mineru 的 “no new char” 机械套到 png2md，因为 png2md 输入是图片，视觉描述本来会生成文本。应分层：
+不能把 mineru 的 “no new char” 机械套到 docpage2md，因为 docpage2md 输入是图片，视觉描述本来会生成文本。应分层：
 
 - OCR 文本：不应无来源新增正文；允许空白清理、少量白名单 OCR 纠错
 - 公式：允许视觉转 LaTeX，但必须保留 raw/evidence，做 delimiter 和基本语法检查
@@ -82,9 +84,9 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
 
 涉及模块：
 
-- `ppt2md_app/ir.py`
-- 新增或拆分 `ppt2md_app/renderer.py`
-- `ppt2md_app/validators.py`
+- `docpage2md_app/ir.py`
+- 新增或拆分 `docpage2md_app/renderer.py`
+- `docpage2md_app/validators.py`
 - `tests/test_ir.py`
 
 任务：
@@ -128,9 +130,9 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
 
 涉及模块：
 
-- `ppt2md_app/ir.py`
-- `ppt2md_app/artifacts.py`
-- `ppt2md_app/prompts.py`
+- `docpage2md_app/ir.py`
+- `docpage2md_app/artifacts.py`
+- `docpage2md_app/prompts.py`
 - `tests/test_ir.py`
 
 任务：
@@ -170,9 +172,9 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
 
 涉及模块：
 
-- `ppt2md_app/validators.py`
-- `ppt2md_app/renderer.py`
-- `ppt2md_app/reporting.py`
+- `docpage2md_app/validators.py`
+- `docpage2md_app/renderer.py`
+- `docpage2md_app/reporting.py`
 - `tests/test_validators.py`
 
 任务：
@@ -205,10 +207,10 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
 
 涉及模块：
 
-- `ppt2md_app/ir.py`
-- `ppt2md_app/renderer.py`
-- `ppt2md_app/prompts.py`
-- `ppt2md_app/reporting.py`
+- `docpage2md_app/ir.py`
+- `docpage2md_app/renderer.py`
+- `docpage2md_app/prompts.py`
+- `docpage2md_app/reporting.py`
 
 任务：
 
@@ -239,10 +241,10 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
 
 涉及模块：
 
-- `ppt2md_app/ir.py`
-- `ppt2md_app/renderer.py`
-- `ppt2md_app/validators.py`
-- 新增 `ppt2md_app/table_quality.py`
+- `docpage2md_app/ir.py`
+- `docpage2md_app/renderer.py`
+- `docpage2md_app/validators.py`
+- 新增 `docpage2md_app/table_quality.py`
 
 任务：
 
@@ -277,9 +279,9 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
 
 涉及模块：
 
-- `ppt2md_app/refiner.py`
-- `ppt2md_app/ir.py`
-- `ppt2md_app/renderer.py`
+- `docpage2md_app/refiner.py`
+- `docpage2md_app/ir.py`
+- `docpage2md_app/renderer.py`
 - `tests/test_refiner.py`
 
 任务：
@@ -316,9 +318,9 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
 
 涉及模块：
 
-- `ppt2md_app/reporting.py`
-- `ppt2md_app/artifacts.py`
-- `ppt2md_app/ir.py`
+- `docpage2md_app/reporting.py`
+- `docpage2md_app/artifacts.py`
+- `docpage2md_app/ir.py`
 
 任务：
 
@@ -357,7 +359,7 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
 
 优先实现 M1 + M2 的一小步：
 
-1. 新增 `ppt2md_app/renderer.py`，把 Markdown renderer 从 `ir.py` 中拆出来。
+1. 新增 `docpage2md_app/renderer.py`，把 Markdown renderer 从 `ir.py` 中拆出来。
 2. 扩展 BlockIR 类型：`formula_block`、`figure_note`、`table`、`uncertain`。
 3. 更新 Stage 1 prompt，明确手写笔记、公式、手绘图、表格的分区输出。
 4. 加 fixtures：
@@ -366,4 +368,3 @@ image -> Vision OCR/understanding -> Page IR -> renderer -> Markdown
    - 简单表格
    - 不确定/看不清区域
 5. 保持最终输出仍为 `Slide_XX.md` 和 `{doc_name}_FULL.md`。
-

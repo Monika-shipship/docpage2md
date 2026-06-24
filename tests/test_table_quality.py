@@ -1,5 +1,5 @@
-from ppt2md_app.reporting import summarize_blocks
-from ppt2md_app.table_quality import assess_table, assess_table_markdown, normalize_table_text
+from docpage2md_app.reporting import summarize_blocks
+from docpage2md_app.table_quality import assess_table, assess_table_markdown, normalize_table_text
 
 
 def test_reliable_markdown_table_passes_quality_gate():

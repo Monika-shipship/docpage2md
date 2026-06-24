@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180" role="img" aria-label="Public fixture diagram">
+  <rect width="320" height="180" fill="#ffffff"/>
+  <rect x="24" y="24" width="272" height="132" fill="#f7f7f7" stroke="#333333" stroke-width="2"/>
+  <circle cx="96" cy="90" r="26" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="96" y="96" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" fill="#111111">A</text>
+  <path d="M128 90 H212" stroke="#111111" stroke-width="3" marker-end="url(#arrow)"/>
+  <circle cx="236" cy="90" r="26" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
+  <text x="236" y="96" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" fill="#111111">B</text>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#111111"/>
+    </marker>
+  </defs>
+</svg>

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from ppt2md_app.eval import load_eval_case, load_eval_cases, run_offline_eval
+from docpage2md_app.eval import load_eval_case, load_eval_cases, run_offline_eval
 
 
 def test_eval_loader_reads_fixture_cases():

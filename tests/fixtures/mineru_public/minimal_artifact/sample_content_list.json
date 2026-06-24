@@ -1,0 +1,49 @@
+[
+  [
+    {
+      "type": "title",
+      "content": {
+        "title_content": [
+          {
+            "type": "text",
+            "content": "Sample Document"
+          }
+        ]
+      },
+      "bbox": [50, 40, 420, 90],
+      "page_idx": 0
+    },
+    {
+      "type": "paragraph",
+      "content": {
+        "paragraph_content": [
+          {
+            "type": "text",
+            "content": "This is a public fixture paragraph."
+          }
+        ]
+      },
+      "bbox": [50, 120, 520, 170],
+      "page_idx": 0
+    },
+    {
+      "type": "equation_interline",
+      "content": {
+        "math_content": "E = mc^2"
+      },
+      "bbox": [50, 200, 360, 250],
+      "page_idx": 0
+    },
+    {
+      "type": "image",
+      "content": {
+        "content": "A simple public fixture diagram with label A.",
+        "image_source": {
+          "path": "/sample_fig.svg"
+        }
+      },
+      "bbox": [50, 300, 360, 520],
+      "page_idx": 0
+    }
+  ]
+]

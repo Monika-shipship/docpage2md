@@ -1,6 +1,6 @@
-from ppt2md_app.ir import build_page_ir
-from ppt2md_app.provenance import build_page_provenance, merge_provenance_summaries
-from ppt2md_app.refiner import refine_page_ir
+from docpage2md_app.ir import build_page_ir
+from docpage2md_app.provenance import build_page_provenance, merge_provenance_summaries
+from docpage2md_app.refiner import refine_page_ir
 
 
 def test_build_page_provenance_tracks_origins_and_generated_descriptions():

@@ -1,5 +1,5 @@
-from ppt2md_app.config import AppConfig
-from ppt2md_app.reporting import build_run_report, finalize_run_report
+from docpage2md_app.config import AppConfig
+from docpage2md_app.reporting import build_run_report, finalize_run_report
 
 
 def test_finalize_report_summarizes_usage_and_op_audit(tmp_path):

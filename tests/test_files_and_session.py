@@ -1,5 +1,5 @@
-from ppt2md_app.files import merge_markdowns, natural_sort_key, read_json, write_json
-from ppt2md_app.session import parse_range_string
+from docpage2md_app.files import merge_markdowns, natural_sort_key, read_json, write_json
+from docpage2md_app.session import parse_range_string
 
 
 def test_parse_range_string():

@@ -1,4 +1,4 @@
-from ppt2md_app.formula_quality import assess_formula_text, normalize_formula_text, normalize_markdown_formula_blocks
+from docpage2md_app.formula_quality import assess_formula_text, normalize_formula_text, normalize_markdown_formula_blocks
 
 
 def test_formula_quality_normalizes_display_delimiters():

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ppt2md_app.ir import (
+from docpage2md_app.ir import (
     PAGE_IR_SCHEMA_VERSION,
     attach_page_image_evidence,
     build_page_ir,
@@ -8,7 +8,7 @@ from ppt2md_app.ir import (
     render_page_ir_to_markdown,
     render_page_record_to_markdown,
 )
-from ppt2md_app.reporting import summarize_blocks
+from docpage2md_app.reporting import summarize_blocks
 
 
 def test_build_page_ir_creates_stable_blocks():
@@ -51,9 +51,13 @@ def test_render_page_ir_to_markdown_is_deterministic():
         "# Slide 2\n\n"
         "## 标题\n\n"
         "正文 $E=mc^2$\n\n"
-        "> [!NOTE] 图示说明\n"
-        "> 左侧是 A。\n"
-        "> 右侧是 B。\n"
+        "<details>\n"
+        "<summary>图示识别内容</summary>\n\n"
+        "- 说明：\n"
+        "  - 左侧是 A。\n"
+        "  - 右侧是 B。\n"
+        "- 可见标签：A，B\n\n"
+        "</details>\n"
     )
 
 
@@ -71,10 +75,10 @@ def test_renderer_provenance_comments_are_opt_in():
     default_markdown = render_page_ir_to_markdown(ir)
     debug_markdown = render_page_ir_to_markdown(ir, include_provenance_comments=True)
 
-    assert "png2md-provenance" not in default_markdown
-    assert "<!-- png2md-provenance id=p0012-template-slide-heading type=renderer_template origin=renderer_template source_page=12" in debug_markdown
-    assert "<!-- png2md-provenance id=p0012-b001 type=heading origin=vision_ocr source_page=12" in debug_markdown
-    assert "<!-- png2md-provenance id=p0012-b002 type=paragraph origin=vision_ocr source_page=12" in debug_markdown
+    assert "docpage2md-provenance" not in default_markdown
+    assert "<!-- docpage2md-provenance id=p0012-template-slide-heading type=renderer_template origin=renderer_template source_page=12" in debug_markdown
+    assert "<!-- docpage2md-provenance id=p0012-b001 type=heading origin=vision_ocr source_page=12" in debug_markdown
+    assert "<!-- docpage2md-provenance id=p0012-b002 type=paragraph origin=vision_ocr source_page=12" in debug_markdown
 
 
 def test_figure_analysis_extracts_structured_fields():
@@ -142,7 +146,12 @@ def test_unrecognizable_figure_renders_clean_text_without_warning_block():
     assert ir["blocks"][0]["confidence"] == 0.25
     assert markdown == (
         "# Slide 10\n\n"
-        "图示被遮挡，无法确定节点和箭头方向。\n"
+        "<details>\n"
+        "<summary>图示识别内容</summary>\n\n"
+        "- 说明：图示被遮挡，无法确定节点和箭头方向。\n"
+        "- 主要关系：图示被遮挡，无法确定节点和箭头方向。\n"
+        "- 不确定点：图示不可可靠识别。\n\n"
+        "</details>\n"
     )
 
 
@@ -163,9 +172,24 @@ def test_figure_with_image_path_renders_markdown_image_reference():
     assert markdown == (
         "# Slide 11\n\n"
         "![page 1 figure 1](assets/figures/page-1-figure-1.png)\n\n"
-        "> [!NOTE] 图示说明\n"
-        "> 坐标图：横轴为 t，纵轴为 v。\n"
+        "<details>\n"
+        "<summary>图示识别内容</summary>\n\n"
+        "- 说明：坐标图：横轴为 t，纵轴为 v。\n\n"
+        "</details>\n"
     )
+
+
+def test_image_ref_uses_crop_ref_and_missing_path_stays_silent():
+    markdown = render_blocks_to_markdown(
+        [
+            {"type": "image_ref", "crop_ref": "assets/crops/page-1-img.jpg", "alt": "crop"},
+            {"type": "image_ref"},
+        ],
+        12,
+    )
+
+    assert markdown == "# Slide 12\n\n![crop](assets/crops/page-1-img.jpg)\n"
+    assert "图片引用缺少路径" not in markdown
 
 
 def test_handwritten_sections_become_renderable_block_types():

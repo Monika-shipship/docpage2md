@@ -1,4 +1,4 @@
-from ppt2md_app.coverage import assess_ocr_coverage
+from docpage2md_app.coverage import assess_ocr_coverage
 
 
 def test_ocr_coverage_passes_when_markdown_keeps_ocr_text():
@@ -57,7 +57,7 @@ def test_ocr_coverage_ignores_renderer_and_admonition_template_text():
         }
     ]
     markdown = (
-        "<!-- png2md-provenance id=p0001-template-slide-heading type=renderer_template -->\n"
+        "<!-- docpage2md-provenance id=p0001-template-slide-heading type=renderer_template -->\n"
         "# Slide 1\n\n"
         "> [!WARNING] Stage 2 重组失败，已使用 Stage 1 确定性 Markdown fallback。\n"
         "> 原始识别：\n"

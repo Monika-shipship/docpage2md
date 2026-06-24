@@ -1,5 +1,5 @@
-from ppt2md_app.ir import PAGE_IR_SCHEMA_VERSION, build_page_ir, render_page_ir_to_markdown
-from ppt2md_app.refiner import (
+from docpage2md_app.ir import PAGE_IR_SCHEMA_VERSION, build_page_ir, render_page_ir_to_markdown
+from docpage2md_app.refiner import (
     BLOCK_KNOWN_OPS,
     KNOWN_OPS,
     SAFE_OPS,
@@ -132,6 +132,51 @@ def test_block_refiner_normalizes_formula_and_is_idempotent():
     assert render_page_ir_to_markdown(first.page_ir) == "# Slide 2\n\n$$\nE = mc^2\n$$\n"
     assert second.changed is False
     assert second.applied_ops == []
+
+
+def test_apply_block_op_checked_replaces_text_span_with_brain_audit():
+    page_ir = build_page_ir("配分函教为 Z。", 2)
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {
+            "op": "replace_text_span_checked",
+            "id": "p0002-b001",
+            "old_text": "配分函教",
+            "new_text": "配分函数",
+            "field": "text",
+            "reason": "上下文显示为配分函数。",
+        },
+        slide_no=2,
+    )
+
+    assert applied is True
+    assert refined["blocks"][0]["text"] == "配分函数为 Z。"
+    assert refined["blocks"][0]["origin"] == "brain_refine"
+    assert refined["blocks"][0]["source_engine"] == "brain"
+    assert refined["blocks"][0]["evidence"]["brain_op"] == "replace_text_span_checked"
+    assert detail["before_text_sha256"]
+    assert detail["after_text_sha256"]
+
+
+def test_apply_block_op_checked_rejects_unsafe_large_text_growth():
+    page_ir = build_page_ir("A", 2)
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {
+            "op": "replace_text_span_checked",
+            "id": "p0002-b001",
+            "old_text": "A",
+            "new_text": "A" * 200,
+            "field": "text",
+        },
+        slide_no=2,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "no_change"
 
 
 def test_block_refiner_moves_formula_tag_outside_aligned_environment():

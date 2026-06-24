@@ -1,4 +1,4 @@
-from ppt2md_app.confusion import apply_ocr_confusion_fixes
+from docpage2md_app.confusion import apply_ocr_confusion_fixes
 
 
 def test_ocr_confusion_is_disabled_by_default():

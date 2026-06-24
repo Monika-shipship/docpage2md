@@ -1,9 +1,9 @@
-from ppt2md_app.config import AppConfig
-from ppt2md_app.artifacts import build_slide_meta
-from ppt2md_app.files import read_json, write_json
-from ppt2md_app.ir import build_page_ir
-from ppt2md_app.reporting import build_run_report
-from ppt2md_app import pipeline
+from docpage2md_app.config import AppConfig
+from docpage2md_app.artifacts import build_slide_meta
+from docpage2md_app.files import read_json, write_json
+from docpage2md_app.ir import build_page_ir
+from docpage2md_app.reporting import build_run_report
+from docpage2md_app import pipeline
 
 
 class DummyQueue:
@@ -46,7 +46,7 @@ def test_vision_stage_rejects_legacy_cache_and_rewrites_v1(monkeypatch, tmp_path
 
     calls = {"count": 0}
 
-    def fake_stage1(img_path, slide_no, ppt_name, msg_queue, config):
+    def fake_stage1(img_path, slide_no, doc_name, msg_queue, config):
         calls["count"] += 1
         return {"success": True, "slide_no": slide_no, "raw_text": "fresh raw"}
 
@@ -259,7 +259,7 @@ def test_brain_stage_missing_figure_note_uses_markdown_fail_open(monkeypatch, tm
     assert ok_slides == [1]
     assert meta["status"] == "fail_open"
     assert meta["error"]["code"] == "figure_note_missing"
-    assert "> [!NOTE] 图示说明" in markdown
+    assert "<summary>图示识别内容</summary>" in markdown
     assert "左侧是 A，右侧是 B" in markdown
 
 
@@ -299,7 +299,7 @@ def test_brain_stage_missing_target_figure_block_uses_page_ir_fallback(monkeypat
     assert ok_slides == [1]
     assert meta["status"] == "fail_open"
     assert meta["error"]["code"] in {"figure_note_missing", "target_figure_block_missing"}
-    assert "> [!NOTE] 图示说明" in markdown
+    assert "<summary>图示识别内容</summary>" in markdown
     assert "坐标图中横轴为 t，纵轴为 v，曲线逐渐上升" in markdown
 
 
@@ -759,7 +759,7 @@ def test_brain_stage_records_checked_refiner_ops(monkeypatch, tmp_path):
     assert meta["refiner"]["applied_ops"][0]["op"] == "fix_heading"
 
 
-def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tmp_path):
+def test_process_single_docpage_task_writes_report_and_full_markdown(monkeypatch, tmp_path):
     image = tmp_path / "page.png"
     image.write_bytes(b"fake image")
     output = tmp_path / "out"
@@ -769,7 +769,7 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     monkeypatch.setattr(
         pipeline,
         "run_stage_1_vision",
-        lambda img_path, slide_no, ppt_name, msg_queue, config: {
+        lambda img_path, slide_no, doc_name, msg_queue, config: {
             "success": True,
             "slide_no": slide_no,
             "raw_text": (
@@ -802,8 +802,10 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
                 "| --- | --- |\n"
                 "| 1 | 2 | 3 |\n"
                 "```\n\n"
-                "> [!NOTE] 图示说明\n"
-                "> 图示被遮挡，无法确定节点和箭头方向。\n"
+                "<details>\n"
+                "<summary>图示识别内容</summary>\n\n"
+                "- 说明：图示被遮挡，无法确定节点和箭头方向。\n\n"
+                "</details>\n"
             ),
             "raw_response": (
                 "# Slide 1\n\n"
@@ -814,13 +816,15 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
                 "| --- | --- |\n"
                 "| 1 | 2 | 3 |\n"
                 "```\n\n"
-                "> [!NOTE] 图示说明\n"
-                "> 图示被遮挡，无法确定节点和箭头方向。\n"
+                "<details>\n"
+                "<summary>图示识别内容</summary>\n\n"
+                "- 说明：图示被遮挡，无法确定节点和箭头方向。\n\n"
+                "</details>\n"
             ),
         },
     )
 
-    result = pipeline.process_single_ppt_task(
+    result = pipeline.process_single_docpage_task(
         "Deck",
         {"images": [str(image)], "range_start": 0, "range_end": 1, "task_id": 1},
         DummyQueue(),
@@ -875,7 +879,7 @@ def test_process_single_ppt_task_writes_report_and_full_markdown(monkeypatch, tm
     assert "# Slide 1" in full_markdown
 
 
-def test_process_single_ppt_task_rejects_dirty_diagnostic_markdown(monkeypatch, tmp_path):
+def test_process_single_docpage_task_rejects_dirty_diagnostic_markdown(monkeypatch, tmp_path):
     image = tmp_path / "page.png"
     image.write_bytes(b"fake image")
     output = tmp_path / "out"
@@ -890,7 +894,7 @@ def test_process_single_ppt_task_rejects_dirty_diagnostic_markdown(monkeypatch, 
     monkeypatch.setattr(
         pipeline,
         "run_stage_1_vision",
-        lambda img_path, slide_no, ppt_name, msg_queue, config: {
+        lambda img_path, slide_no, doc_name, msg_queue, config: {
             "success": True,
             "slide_no": slide_no,
             "raw_text": raw_text,
@@ -917,7 +921,7 @@ def test_process_single_ppt_task_rejects_dirty_diagnostic_markdown(monkeypatch, 
         },
     )
 
-    result = pipeline.process_single_ppt_task(
+    result = pipeline.process_single_docpage_task(
         "Deck",
         {"images": [str(image)], "range_start": 0, "range_end": 1, "task_id": 1},
         DummyQueue(),
@@ -944,7 +948,7 @@ def test_process_single_ppt_task_rejects_dirty_diagnostic_markdown(monkeypatch, 
     assert "> [!WARNING] 公式识别不确定" in error["raw_response"]
 
 
-def test_process_single_ppt_task_reports_fail_open_markdown(monkeypatch, tmp_path):
+def test_process_single_docpage_task_reports_fail_open_markdown(monkeypatch, tmp_path):
     image = tmp_path / "page.png"
     image.write_bytes(b"fake image")
     output = tmp_path / "out"
@@ -955,7 +959,7 @@ def test_process_single_ppt_task_reports_fail_open_markdown(monkeypatch, tmp_pat
     monkeypatch.setattr(
         pipeline,
         "run_stage_1_vision",
-        lambda img_path, slide_no, ppt_name, msg_queue, config: {
+        lambda img_path, slide_no, doc_name, msg_queue, config: {
             "success": True,
             "slide_no": slide_no,
             "raw_text": raw_text,
@@ -973,7 +977,7 @@ def test_process_single_ppt_task_reports_fail_open_markdown(monkeypatch, tmp_pat
         },
     )
 
-    result = pipeline.process_single_ppt_task(
+    result = pipeline.process_single_docpage_task(
         "Deck",
         {"images": [str(image)], "range_start": 0, "range_end": 1, "task_id": 1},
         DummyQueue(),

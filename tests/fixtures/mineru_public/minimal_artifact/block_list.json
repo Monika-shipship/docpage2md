@@ -1,0 +1,40 @@
+{
+  "pdfData": [
+    [
+      {
+        "id": "blk-title-1",
+        "type": "title",
+        "text": "# Sample Document",
+        "bbox": [50, 40, 420, 90],
+        "page_idx": 0,
+        "page_size": [600, 800]
+      },
+      {
+        "id": "blk-text-1",
+        "type": "text",
+        "text": "This is a public fixture paragraph.",
+        "bbox": [50, 120, 520, 170],
+        "page_idx": 0,
+        "page_size": [600, 800]
+      },
+      {
+        "id": "blk-formula-1",
+        "type": "interline_equation",
+        "text": "E = mc^2",
+        "img_path": "/sample_formula.svg",
+        "bbox": [50, 200, 360, 250],
+        "page_idx": 0,
+        "page_size": [600, 800]
+      },
+      {
+        "id": "blk-image-1",
+        "type": "image",
+        "description": "A simple public fixture diagram with label A.",
+        "img_path": "/sample_fig.svg",
+        "bbox": [50, 300, 360, 520],
+        "page_idx": 0,
+        "page_size": [600, 800]
+      }
+    ]
+  ]
+}
