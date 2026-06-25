@@ -26,11 +26,12 @@ PaddleOCR 已作为 DocPage2MD 的正式可选解析引擎接入。它和 MinerU
 - PaddleOCR API client 对提交、轮询和结果下载的 `429/503/504` 与网络错误按配置重试。
 - 远程 URL 输入在可读取 `Content-Length` 时会阻止超过 200MB 的文件；未知大小会记录日志并继续提交。
 - 离线测试覆盖 adapter、坏 JSONL、空页、client fake HTTP、pending/running/done、429/503/504 重试、结果下载重试、pipeline 渲染和 chunk merge。
+- 已通过 Tkinter GUI 代码路径用 `tests/群论笔记4.1.pdf` 全量跑通 `paddleocr_only` 和 `paddleocr_hybrid`，输出分别在 `markdown_output/gui_paddleocr_real_verify_only/gui_paddleocr_4_1_only` 与 `markdown_output/gui_paddleocr_real_verify_hybrid/gui_paddleocr_4_1_hybrid`。
+- 同一 PDF 的基础耗时对比已记录：`mineru_only` 约 `16.4s`，`mineru_hybrid` 约 `113.9s`，`paddleocr_only` 约 `19.1s`，`paddleocr_hybrid` 约 `106.0s`。
 
 仍需真实验收/优化：
 
-- 通过 GUI 跑 ignored `tests/test-PaddleOCR/` 中样本的 `paddleocr_only` 与 `paddleocr_hybrid` 全量验收，并记录 GUI 进度/日志表现。
-- 与同一文件的 `mineru_only` / `mineru_hybrid` 对比速度、公式质量、表格质量和图片切分质量。
+- 与同一文件的 `mineru_only` / `mineru_hybrid` 继续做公式质量、表格质量和图片切分质量对比。
 - 根据更多真实失败码继续补充更细的错误提示。
 - 根据真实返回字段继续完善 PaddleOCR artifact 解析。
 
@@ -181,6 +182,197 @@ Adapter 任务：
 - 把 PaddleOCR Markdown 拆为 PageIR blocks，而不是直接拼到最终 Markdown。
 - 保留 bbox、置信度、类别、页面图片和裁剪图引用。
 - 对公式、表格、图示说明继续走 DocPage2MD 的 Markdown contract 和 validator。
+
+## 后续重点：MinerU + PaddleOCR 双引擎融合
+
+当前 `mineru_hybrid` 和 `paddleocr_hybrid` 是两条可选解析路径：同一文件要么以 MinerU 为前置解析，要么以 PaddleOCR 为前置解析。用户引入 PaddleOCR 的更高阶目标不是简单替代 MinerU，而是把两者共同输出作为候选证据，融合后得到更准确的 Markdown。
+
+建议新增一个独立工作流，例如：
+
+```text
+dual_hybrid
+mineru_paddleocr_fusion
+```
+
+GUI 上显示为：
+
+```text
+MinerU + PaddleOCR 双引擎融合精修
+```
+
+### 核心原则
+
+- 同一个 PDF 的页码天然对齐，页级对齐由程序确定。
+- block 不保证一一对应，不能强行按 block index 对齐。
+- MinerU 和 PaddleOCR 任一方独有的内容都应默认保留为候选证据，不能因为另一方没有识别到就删除。
+- AI 可以做裁决与融合，但程序必须负责候选打包、结果应用和校验。
+- 最终 Markdown 仍必须通过现有 contract：公式 LaTeX 化、无裸 Unicode 数学符号、无 API Key、无 traceback、无 reasoning、无 validator 诊断文本。
+
+### 推荐流程
+
+```text
+same PDF
+  -> MinerU parse -> mineru_document_ir.json + mineru_raw/
+  -> PaddleOCR parse -> paddleocr_document_ir.json + paddleocr_raw/
+  -> page-level alignment by page number
+  -> candidate grouping inside each page
+  -> Brain decides choose / merge / keep-both / mark-uncertain
+  -> program applies checked ops into fused_document_ir.json
+  -> renderer + validator
+  -> optional region/full-page visual recovery
+  -> Slide_XX.md + *_FULL.md + run_report.json
+```
+
+建议输出目录：
+
+```text
+mineru_raw/
+paddleocr_raw/
+assets/
+  mineru/
+  paddleocr/
+ir/
+  mineru_document_ir.json
+  paddleocr_document_ir.json
+  fused_document_ir.json
+run_report.json
+process.log
+Slide_XX.md
+{doc_name}_FULL.md
+```
+
+### block 粗分组，而不是强行对齐
+
+每页先构建一个候选池：
+
+```text
+page 4
+  MinerU blocks: M1, M2, M3...
+  PaddleOCR blocks: P1, P2, P3...
+```
+
+程序只做低风险粗分组：
+
+- bbox 重叠度高的归为同组。
+- 文本相似度高的归为同组。
+- 垂直位置接近、类型相近的归为同组。
+- 疑似 caption 与图片区域靠近时归为同组。
+- 无法匹配的 block 单独成组，标为 `unmatched_from_mineru` 或 `unmatched_from_paddleocr`。
+
+候选组示例：
+
+```json
+{
+  "group_id": "p0004-g003",
+  "type_hint": "formula",
+  "candidates": [
+    {"source": "mineru", "block_id": "M7", "text": "...", "bbox": [120, 310, 500, 360]},
+    {"source": "paddleocr", "block_id": "P5", "text": "...", "bbox": [118, 308, 505, 365]}
+  ],
+  "warnings": ["mineru_has_raw_unicode_math", "paddleocr_latex_balanced"]
+}
+```
+
+### AI 的职责边界
+
+不建议让 AI 自己从整页原始 JSON 中自由寻找所有对应关系。更稳的方式是：程序给出候选组，AI 在组内或相邻组内裁决。
+
+AI 输出应是结构化操作，而不是直接重写整页 Markdown：
+
+```json
+{
+  "ops": [
+    {
+      "action": "choose_block",
+      "target_group": "p0004-g003",
+      "source": "paddleocr",
+      "reason": "PaddleOCR 候选是完整 LaTeX，MinerU 候选含裸 Unicode 符号。"
+    },
+    {
+      "action": "merge_blocks",
+      "target_group": "p0004-g006",
+      "sources": ["mineru:M9", "paddleocr:P12"],
+      "text": "..."
+    },
+    {
+      "action": "keep_both",
+      "target_group": "p0004-g008",
+      "reason": "一方是图像区域，一方是图注文本，二者互补。"
+    }
+  ]
+}
+```
+
+程序只接受白名单操作，并在应用后重新运行 validator。若 AI 给出的操作降低覆盖率、破坏 LaTeX、丢失图片引用或引入诊断文本，应拒绝该操作并保留原候选。
+
+### 漏公式、漏图片和图片拆分的处理
+
+漏公式：
+
+- 如果一方有 `formula_block`，另一方没有，先单独保留为候选组。
+- 如果公式被识别成普通 text，程序用公式检测器标记 suspect，再交给 AI 裁决。
+- 选择标准包括：LaTeX 是否平衡、是否含裸 Unicode 数学符号、formula validator 警告数量、与上下文是否一致。
+
+漏图片：
+
+- 图片和图示区域不能只依赖 OCR 文本。
+- 同页保留 MinerU crop、PaddleOCR `markdown.images`、`outputImages`、`inputImage` 和 page image 作为候选 evidence。
+- 如果只有一边有图片，默认保留，不因另一边缺失而删除。
+
+图片被拆太多：
+
+- 程序用 bbox 几何规则识别碎片：多个小图距离很近、位于同一大区域、周围无独立标题时，标记为 `possible_fragmented_figure`。
+- 若另一边给出完整图，则把完整图和碎片组放入同一候选组。
+- AI 决定保留整体图、保留多个局部图，或整体图加局部说明。
+
+核心策略：宁可多保留并在 `run_report.json` 记录不确定，也不要误删。
+
+### figure 描述上下文必须加强
+
+生成 figure 描述时，不能只给 crop 图片。建议 Vision/Brain 的 figure prompt 至少包含：
+
+- 当前页标题或小节标题。
+- 图前后 1-2 个文本 block。
+- 图附近公式。
+- caption 或疑似 caption。
+- 图像 bbox、来源引擎和 block 类型。
+- 如果启用双引擎融合，提供另一引擎在同一区域的候选文本、候选图像或候选 caption。
+- 文档类型，例如“手写群论笔记”“论文 PDF”“复杂公式图表 PPT”。
+
+推荐上下文包：
+
+```json
+{
+  "page": 4,
+  "document_type": "手写群论笔记",
+  "figure_block": {
+    "id": "p0004-b006",
+    "source": "mineru",
+    "bbox": [120, 300, 580, 720],
+    "nearby_text_before": ["令 G 为群，考虑其在集合 X 上的作用。"],
+    "nearby_text_after": ["因此轨道分解给出等价类。"],
+    "nearby_formulas": ["G \\curvearrowright X", "Gx = \\{gx: g \\in G\\}"],
+    "caption_candidates": ["图示：群作用下的轨道"],
+    "other_engine_candidates": [
+      {"source": "paddleocr", "text": "...", "image_ref": "assets/paddleocr/..."}
+    ]
+  }
+}
+```
+
+模型输出应是结构化 JSON，例如：
+
+```json
+{
+  "description": "...",
+  "labels": ["G", "X", "orbit"],
+  "relations": ["箭头表示群元素作用"],
+  "latex": ["G \\curvearrowright X"],
+  "uncertainties": []
+}
+```
+
+这些 figure 描述最后仍应渲染为 Typora 兼容且默认关闭的 `<details>` 块。
 
 ## CLI 与 GUI 交互
 

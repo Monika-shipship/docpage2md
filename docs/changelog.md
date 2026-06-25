@@ -70,6 +70,7 @@
 - 官方模型/价格缓存新增 provider 级刷新状态：
   - `refresh.provider_status` 记录每个 Provider 的状态、来源 URL、模型数量和失败原因。
   - OpenAI-compatible 继续只发现 `/models`，价格保持 `user_required`，不自动猜测。
+- 修复 Tkinter GUI 自动化/关闭时可能残留 `_drain_output_queue` after 回调并打印 Tcl 噪声的问题。
 - 继续加强最终 Markdown 的数学符号规范化：
   - 单个裸 Unicode 数学符号会包成 LaTeX inline math。
   - `G→S`、`k→g→?` 这类箭头表达式会作为完整公式片段处理，避免生成重叠 `$...$`。
@@ -79,7 +80,7 @@
 
 - `python docpage2md.py --help`：通过。
 - `python -m docpage2md_app --help`：通过。
-- `python -m pytest -q`：283 passed。
+- `python -m pytest -q`：284 passed。
 - `git diff --check`：无 whitespace error，仅有 CRLF 提示。
 - Tkinter GUI 构建 smoke 通过：`DocPage2MdGui()` 能创建、刷新 idle tasks 并销毁。
 - 聚焦 GUI/CLI/MinerU/secrets 测试：54 passed。
@@ -92,12 +93,16 @@
   - `run_report.json`：`status=ok`，`engine_mode=hybrid`，`pages_ok=11/11`。
   - 49 个 crop Vision block 全部成功；Brain 11 页并行完成。
   - 最终用户 Markdown 未发现 API Key、Python traceback、`reasoning_content`、validator 诊断文本、`<details open>` 或 `> [!NOTE]`。
-- 使用真实 `tests/群论笔记4.1.pdf` 对 PaddleOCR 主路径做全量 `paddleocr_hybrid` 验证：
-  - 输出目录：`markdown_output/paddleocr_real_verify_4_1_hybrid_fixed/paddleocr_4_1_hybrid_fixed`。
-  - 11 页全量，layout `PaddleOCR-VL-1.6`，Vision `qwen3-vl-plus`，Brain `deepseek-v4-flash`。
-  - `run_report.json`：`status=ok`，`engine_mode=paddleocr_hybrid`，最终页 `ok=11/11`。
-  - Brain 阶段没有线程失败，也没有 `could not convert string to float`。
+- 使用真实 `tests/群论笔记4.1.pdf` 通过 Tkinter GUI 路径做 PaddleOCR 双模式验收：
+  - `paddleocr_only` 输出目录：`markdown_output/gui_paddleocr_real_verify_only/gui_paddleocr_4_1_only`，11 页全量，`status=ok`，最终页 `ok=11/11`，约 `19.1s`。
+  - `paddleocr_hybrid` 输出目录：`markdown_output/gui_paddleocr_real_verify_hybrid/gui_paddleocr_4_1_hybrid`，11 页全量，`status=ok`，最终页 `ok=11/11`，Brain `partial=11/11`，约 `106.0s`。
+  - 两个输出都包含 `paddleocr_raw/`、`ir/`、`assets/`、`Slide_XX.md`、`*_FULL.md`、`run_report.json` 和中文 `process.log`。
   - 最终用户 Markdown 未发现 API Key、Python traceback、validator 文本、模型思考过程或置信度转换错误。
+- 同一 PDF 主路径耗时对比已记录：
+  - `mineru_only`：约 `16.4s`。
+  - `mineru_hybrid` / `hybrid`：约 `113.9s`。
+  - `paddleocr_only`：约 `19.1s`。
+  - `paddleocr_hybrid`：约 `106.0s`。
 
 ## 2026-06-24
 

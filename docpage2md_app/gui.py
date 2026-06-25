@@ -1516,6 +1516,7 @@ class DocPage2MdGui:
         self.process: subprocess.Popen[str] | None = None
         self.reader_thread: threading.Thread | None = None
         self.progress_tracker = GuiProgressTracker()
+        self._drain_after_id: str | None = None
         self.log_window = None
         self.log_window_text = None
         self.log_buffer: list[str] = []
@@ -1590,11 +1591,27 @@ class DocPage2MdGui:
         self._refresh_command_preview()
         self._refresh_runtime_summary()
         self._refresh_cost_estimate(silent=True)
-        self.root.after(100, self._drain_output_queue)
+        self._drain_after_id = self.root.after(100, self._drain_output_queue)
 
     def run(self) -> int:
-        self.root.mainloop()
+        try:
+            self.root.mainloop()
+        finally:
+            self.destroy()
         return 0
+
+    def destroy(self) -> None:
+        if self._drain_after_id:
+            try:
+                self.root.after_cancel(self._drain_after_id)
+            except self.tk.TclError:
+                pass
+            self._drain_after_id = None
+        try:
+            if self.root.winfo_exists():
+                self.root.destroy()
+        except self.tk.TclError:
+            pass
 
     def _build_ui(self) -> None:
         tk = self.tk
@@ -3023,7 +3040,11 @@ class DocPage2MdGui:
                     self.cost_summary_text.set(str(payload))
         except queue.Empty:
             pass
-        self.root.after(100, self._drain_output_queue)
+        try:
+            if self.root.winfo_exists():
+                self._drain_after_id = self.root.after(100, self._drain_output_queue)
+        except self.tk.TclError:
+            self._drain_after_id = None
 
     def _on_process_done(self, return_code: int) -> None:
         self.run_button.configure(state="normal")

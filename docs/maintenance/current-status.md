@@ -143,7 +143,7 @@ python docpage2md.py --engine-mode hybrid --model-profile cheap --input-file ".\
 
 - `python docpage2md.py --help`: passed.
 - `python -m docpage2md_app --help`: passed.
-- `python -m pytest -q`: 283 passed.
+- `python -m pytest -q`: 284 passed.
 - `git diff --check`: passed, with only CRLF conversion warnings.
 - GUI construction smoke passed: `DocPage2MdGui()` can construct, update idle tasks and destroy cleanly after the input table/provider/cost redesign.
 - `python -m pytest tests/test_cli.py tests/test_gui.py tests/test_hybrid_enrichment.py tests/test_mineru_pipeline.py tests/test_files_and_session.py tests/test_run_logger.py -q`: 41 passed during GUI/log/performance work.
@@ -165,14 +165,20 @@ python docpage2md.py --engine-mode hybrid --model-profile cheap --input-file ".\
   - `run_report.json`: `status=ok`, `engine_mode=hybrid`, `pages_ok=11/11`.
   - Parallelism confirmed in Chinese `process.log`: crop Vision 49 blocks in about 14.0s, Brain 11 pages in about 109.8s, total about 124.2s.
   - Final Markdown uses default-closed `<details>` blocks and passed the no-key/no-traceback/no-reasoning/no-validator-diagnostics checks.
-- Latest PaddleOCR real verification:
+- Latest PaddleOCR GUI real verification:
   - Source: `tests/群论笔记4.1.pdf`.
-  - Output: `markdown_output/paddleocr_real_verify_4_1_hybrid_fixed/paddleocr_4_1_hybrid_fixed`.
-  - Full 11 pages, `paddleocr_hybrid + balanced`, layout model `PaddleOCR-VL-1.6`, Vision `qwen3-vl-plus`, Brain `deepseek-v4-flash`.
-  - `run_report.json`: `status=ok`, `engine_mode=paddleocr_hybrid`, final pages `ok=11/11`, Brain pages `partial=11/11`.
-  - No Brain thread failures and no `could not convert string to float` confidence error after numeric confidence normalization.
-  - Real process log total about `124.9s`: PaddleOCR submit/parse about `1.4s`, artifact download/cache about `21.3s`, Brain enrichment about `102.0s`, render/report about `0.1s`.
-  - Final Markdown passed the no-key/no-traceback/no-confidence-error/no-validator-text/no-reasoning checks.
+  - GUI path was driven through `DocPage2MdGui._options()` / `_validate_before_run()` / `_start_process()` and its subprocess command preview.
+  - `paddleocr_only` output: `markdown_output/gui_paddleocr_real_verify_only/gui_paddleocr_4_1_only`.
+    - Full 11 pages, `status=ok`, `engine_mode=paddleocr_only`, layout model `PaddleOCR-VL-1.6`, final pages `ok=11/11`, Brain `skipped=11/11`, total about `19.1s`.
+  - `paddleocr_hybrid` output: `markdown_output/gui_paddleocr_real_verify_hybrid/gui_paddleocr_4_1_hybrid`.
+    - Full 11 pages, `status=ok`, `engine_mode=paddleocr_hybrid`, layout model `PaddleOCR-VL-1.6`, Vision `qwen3-vl-plus`, Brain `deepseek-v4-flash`, final pages `ok=11/11`, Brain `partial=11/11`, total about `106.0s`.
+  - Both outputs contain `paddleocr_raw/`, `ir/`, `assets/`, `Slide_XX.md`, `*_FULL.md`, `run_report.json` and Chinese `process.log`.
+  - Final Markdown for both modes passed no-key/no-traceback/no-confidence-error/no-validator-text/no-reasoning checks.
+- Same-file parser comparison for `tests/群论笔记4.1.pdf`:
+  - `mineru_only`: `markdown_output/mineru_real_compare_4_1_only/mineru_4_1_only_compare`, 11 pages, `status=ok`, final pages `ok=11/11`, about `16.4s`.
+  - `mineru_hybrid` / legacy `hybrid`: `markdown_output/gui_parallel_full_verify/群论笔记4.1`, 11 pages, `status=ok`, final pages `ok=11/11`, about `113.9s`.
+  - `paddleocr_only`: `markdown_output/gui_paddleocr_real_verify_only/gui_paddleocr_4_1_only`, 11 pages, `status=ok`, final pages `ok=11/11`, about `19.1s`.
+  - `paddleocr_hybrid`: `markdown_output/gui_paddleocr_real_verify_hybrid/gui_paddleocr_4_1_hybrid`, 11 pages, `status=ok`, final pages `ok=11/11`, about `106.0s`.
 - `群论笔记4.1.pdf` performance from existing full log: total about 114s in `gui_parallel_full_verify`, and about 108s in the later direct run. Breakdown from the later direct run: MinerU about 6.1s, crop Vision 49 blocks about 27.2s, Brain 11 pages about 75.0s, render/report about 0.1s. Bottleneck is Brain provider latency and long-tail page complexity, not missing page-level parallelism.
 - New `process.log` output is translated to Chinese by `RunLogger`; old logs generated before this change remain English.
 - Brain prompt context now keeps full detail for the target page and compresses neighboring pages, reducing the measured `群论笔记4.1` Brain prompt characters by about 25% before another real API rerun.

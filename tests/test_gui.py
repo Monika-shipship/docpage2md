@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from docpage2md_app.gui import (
+    DocPage2MdGui,
     describe_input_files,
     effective_mineru_model_version,
     GuiProgressTracker,
@@ -462,3 +463,18 @@ def test_progress_tracker_finish_sets_complete_percent():
     assert snapshot.percent == 100
     assert snapshot.stage == "完成"
     assert snapshot.eta == "剩余 00:00"
+
+
+def test_gui_constructs_and_destroy_cancels_after_callbacks():
+    try:
+        app = DocPage2MdGui()
+    except Exception as exc:
+        if exc.__class__.__name__ == "TclError":
+            pytest.skip(f"Tkinter display unavailable: {exc}")
+        raise
+    try:
+        app.root.withdraw()
+        app.root.update_idletasks()
+    finally:
+        app.destroy()
+    assert app._drain_after_id is None
