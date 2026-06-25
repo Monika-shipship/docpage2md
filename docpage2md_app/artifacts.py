@@ -81,6 +81,8 @@ def stage2_fingerprint(slide_no: int, raw_data_map: Dict[int, str], config: AppC
             base_url=config.brain_base_url,
             api_key_env=config.brain_api_key_env,
             thinking_budget=config.thinking_budget_brain,
+            thinking_mode=config.brain_thinking,
+            reasoning_effort=config.brain_reasoning_effort,
         ),
     }
 
@@ -319,6 +321,8 @@ def report_model_identity(config: AppConfig) -> Dict[str, Any]:
             base_url=config.brain_base_url,
             api_key_env=config.brain_api_key_env,
             thinking_budget=config.thinking_budget_brain,
+            thinking_mode=config.brain_thinking,
+            reasoning_effort=config.brain_reasoning_effort,
             input_price_per_million=config.brain_input_price_per_million,
             output_price_per_million=config.brain_output_price_per_million,
         ),
@@ -345,6 +349,8 @@ def _model_identity(
     base_url: str,
     api_key_env: str,
     thinking_budget: int,
+    thinking_mode: str | None = None,
+    reasoning_effort: str | None = None,
     input_price_per_million=None,
     output_price_per_million=None,
 ) -> Dict[str, Any]:
@@ -355,6 +361,11 @@ def _model_identity(
         "api_key_env": api_key_env,
         "thinking_budget": thinking_budget,
     }
+    if thinking_mode:
+        identity["thinking"] = {
+            "mode": thinking_mode,
+            "reasoning_effort": reasoning_effort if thinking_mode == "enabled" else None,
+        }
     if input_price_per_million is not None or output_price_per_million is not None:
         identity["pricing"] = {
             "input_per_million": input_price_per_million,

@@ -218,6 +218,10 @@ def _initial_report(
                 "model": config.model_brain,
                 "base_url": config.brain_base_url,
                 "api_key_env": config.brain_api_key_env,
+                "thinking": {
+                    "mode": config.brain_thinking,
+                    "reasoning_effort": config.brain_reasoning_effort if config.brain_thinking == "enabled" else None,
+                },
             },
         },
         "prompts": {},

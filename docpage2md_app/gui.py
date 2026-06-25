@@ -36,6 +36,9 @@ from .input_inspection import (
 from .log_translate import (
     CROP_VISION_START_RE,
     DOCUMENT_READY_RE,
+    HYBRID_BRAIN_LATENCY_SUMMARY_RE,
+    HYBRID_BRAIN_LATENCY_WARNING_RE,
+    HYBRID_PAGE_BRAIN_DONE_RE,
     HYBRID_PAGE_BRAIN_START_RE,
     HYBRID_PAGE_REFINER_DONE_RE,
     HYBRID_PAGE_START_RE,
@@ -53,6 +56,10 @@ from .log_translate import (
     ZH_PADDLEOCR_RUNNING_RE,
     ZH_CROP_VISION_START_RE,
     ZH_DOCUMENT_READY_RE,
+    ZH_HYBRID_BRAIN_LATENCY_SUMMARY_RE,
+    ZH_HYBRID_BRAIN_LATENCY_WARNING_RE,
+    ZH_HYBRID_PAGE_BRAIN_DONE_RE,
+    ZH_HYBRID_PAGE_BRAIN_DONE_ELAPSED_RE,
     ZH_HYBRID_PAGE_BRAIN_START_RE,
     ZH_HYBRID_PAGE_REFINER_DONE_RE,
     ZH_HYBRID_PAGE_START_RE,
@@ -143,6 +150,20 @@ MODEL_PROFILE_DESCRIPTIONS = {
     "accurate": "更强模型组合，适合复杂公式、图表和版式；成本、耗时都更高。",
     "manual": "完全使用模型管理页当前选中的 Vision/Brain，不再自动跟随档位。",
 }
+
+CONCURRENCY_PRESETS = {
+    "保守 3/3（稳，适合排查长尾）": (3, 3),
+    "均衡 6/6（推荐对照）": (6, 6),
+    "高并发 12/12": (12, 12),
+    "极速 60/60（默认）": (60, 60),
+    "自定义": None,
+}
+
+BRAIN_THINKING_LABELS = {
+    "disabled": "快速：关闭思考（推荐）",
+    "enabled": "高质量：开启思考",
+}
+BRAIN_THINKING_LABEL_TO_KEY = {label: key for key, label in BRAIN_THINKING_LABELS.items()}
 
 SOURCE_LABELS = {
     "input_file": "本地单个文件",
@@ -250,6 +271,8 @@ class GuiRunOptions:
     recursive: bool = False
     vision_workers: int | str = AppConfig().vision_batch_workers
     brain_workers: int | str = AppConfig().brain_batch_workers
+    brain_thinking: str = AppConfig().brain_thinking
+    brain_reasoning_effort: str = AppConfig().brain_reasoning_effort
     vision: SelectedModel | None = None
     brain: SelectedModel | None = None
     extra_args: list[str] = field(default_factory=list)
@@ -458,7 +481,24 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
     )
     vision_workers = _positive_worker_count(options.vision_workers, "Vision 并发数")
     brain_workers = _positive_worker_count(options.brain_workers, "Brain 并发数")
-    argv.extend(["--vision-workers", str(vision_workers), "--brain-workers", str(brain_workers)])
+    brain_thinking = BRAIN_THINKING_LABEL_TO_KEY.get(options.brain_thinking, options.brain_thinking or AppConfig().brain_thinking)
+    if brain_thinking not in {"enabled", "disabled"}:
+        raise ValueError("Brain 思考模式必须是 enabled 或 disabled。")
+    brain_reasoning_effort = (options.brain_reasoning_effort or AppConfig().brain_reasoning_effort).strip() or AppConfig().brain_reasoning_effort
+    if brain_reasoning_effort not in {"high", "max"}:
+        raise ValueError("Brain 思考强度必须是 high 或 max。")
+    argv.extend(
+        [
+            "--vision-workers",
+            str(vision_workers),
+            "--brain-workers",
+            str(brain_workers),
+            "--brain-thinking",
+            brain_thinking,
+            "--brain-reasoning-effort",
+            brain_reasoning_effort,
+        ]
+    )
 
     if options.vision:
         argv.extend(
@@ -747,6 +787,9 @@ def selected_config_from_options(options: GuiRunOptions, base_config: AppConfig 
         paddleocr_visualize=options.paddleocr_visualize,
         vision_batch_workers=_positive_worker_count(options.vision_workers, "Vision 并发数"),
         brain_batch_workers=_positive_worker_count(options.brain_workers, "Brain 并发数"),
+        brain_thinking=BRAIN_THINKING_LABEL_TO_KEY.get(options.brain_thinking, options.brain_thinking or AppConfig().brain_thinking),
+        brain_reasoning_effort=(options.brain_reasoning_effort or AppConfig().brain_reasoning_effort).strip()
+        or AppConfig().brain_reasoning_effort,
     )
     if options.vision:
         config = replace(
@@ -1198,14 +1241,39 @@ class GuiProgressTracker:
         elif match := (HYBRID_PAGE_BRAIN_START_RE.search(message) or ZH_HYBRID_PAGE_BRAIN_START_RE.search(message)):
             slide = int(match.group(1))
             total = self.current_pages_total or "?"
+            self.page_started_elapsed.setdefault(slide, elapsed)
             self.stage = f"第 {slide}/{total} 页 Brain"
             self.detail = "上下文精修中"
+        elif match := (
+            HYBRID_PAGE_BRAIN_DONE_RE.search(message)
+            or ZH_HYBRID_PAGE_BRAIN_DONE_ELAPSED_RE.search(message)
+            or ZH_HYBRID_PAGE_BRAIN_DONE_RE.search(message)
+        ):
+            slide = int(match.group(1))
+            self._complete_page(slide, elapsed)
+            total = self.current_pages_total or "?"
+            if match.re is HYBRID_PAGE_BRAIN_DONE_RE:
+                elapsed_value = match.group(6)
+            elif match.re is ZH_HYBRID_PAGE_BRAIN_DONE_ELAPSED_RE:
+                elapsed_value = match.group(2)
+            else:
+                elapsed_value = None
+            elapsed_text = f"，耗时 {elapsed_value} 秒" if elapsed_value else ""
+            self.stage = f"第 {slide}/{total} 页 Brain 完成"
+            self.detail = f"Brain 精修完成{elapsed_text}"
         elif match := (HYBRID_PAGE_REFINER_DONE_RE.search(message) or ZH_HYBRID_PAGE_REFINER_DONE_RE.search(message)):
             slide = int(match.group(1))
             self._complete_page(slide, elapsed)
             total = self.current_pages_total or "?"
             self.stage = f"第 {slide}/{total} 页完成"
             self.detail = self._document_detail()
+        elif match := (HYBRID_BRAIN_LATENCY_SUMMARY_RE.search(message) or ZH_HYBRID_BRAIN_LATENCY_SUMMARY_RE.search(message)):
+            self.stage = "Brain 耗时分析"
+            tail_ratio = match.group(6) if match.re is HYBRID_BRAIN_LATENCY_SUMMARY_RE else match.group(5)
+            self.detail = f"p50 {match.group(2)}秒，p90 {match.group(3)}秒，最慢 {match.group(4)}秒，长尾系数 {tail_ratio}"
+        elif HYBRID_BRAIN_LATENCY_WARNING_RE.search(message) or ZH_HYBRID_BRAIN_LATENCY_WARNING_RE.search(message):
+            self.stage = "Brain 长尾提示"
+            self.detail = "建议用 Brain 并发 6 或 3 做同文件对照。"
         elif match := (PAGE_RENDERED_RE.search(message) or ZH_PAGE_RENDERED_RE.search(message)):
             slide = int(match.group(1))
             status = match.group(2)
@@ -1535,6 +1603,7 @@ class DocPage2MdGui:
         self.log_window_text = None
         self.log_buffer: list[str] = []
         self._syncing_models = False
+        self._syncing_concurrency = False
 
         default_vision, default_brain = default_model_selection("balanced", self.base_config)
         self.document_type = tk.StringVar(value=DOCUMENT_PRESETS["handwritten_notes"][0])
@@ -1568,8 +1637,11 @@ class DocPage2MdGui:
         self.show_mineru_advanced = tk.BooleanVar(value=False)
         self.show_paddleocr_advanced = tk.BooleanVar(value=False)
         self.recursive = tk.BooleanVar(value=False)
+        self.concurrency_preset = tk.StringVar(value="极速 60/60（默认）")
         self.vision_workers = tk.StringVar(value=str(self.base_config.vision_batch_workers))
         self.brain_workers = tk.StringVar(value=str(self.base_config.brain_batch_workers))
+        self.brain_thinking = tk.StringVar(value=BRAIN_THINKING_LABELS.get(self.base_config.brain_thinking, BRAIN_THINKING_LABELS["disabled"]))
+        self.brain_reasoning_effort = tk.StringVar(value=self.base_config.brain_reasoning_effort)
         self.vision_provider = tk.StringVar(value=default_vision.provider)
         self.vision_model = tk.StringVar(value=default_vision.model)
         self.vision_base_url = tk.StringVar(value=default_vision.base_url)
@@ -1875,13 +1947,49 @@ class DocPage2MdGui:
         ttk.Checkbutton(self.paddleocr_advanced_frame, text="表格识别", variable=self.paddleocr_table_recognition).grid(row=2, column=2, sticky="w", pady=3)
         ttk.Checkbutton(self.paddleocr_advanced_frame, text="保存可视化图", variable=self.paddleocr_visualize).grid(row=2, column=3, sticky="w", pady=3)
 
-        ttk.Label(out, text="Vision 并发").grid(row=7, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Entry(out, textvariable=self.vision_workers, width=10).grid(row=7, column=1, sticky="w", pady=4)
-        ttk.Label(out, text="Brain 并发").grid(row=8, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Entry(out, textvariable=self.brain_workers, width=10).grid(row=8, column=1, sticky="w", pady=4)
-        ttk.Label(out, text="默认 60/60；MinerU 返回后裁剪块和页面会并行精修。", wraplength=460).grid(
-            row=9, column=0, columnspan=3, sticky="w", pady=(4, 0)
+        concurrency = ttk.LabelFrame(out, text="并发", padding=8)
+        concurrency.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        concurrency.columnconfigure(1, weight=1)
+        ttk.Label(concurrency, text="档位").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Combobox(
+            concurrency,
+            textvariable=self.concurrency_preset,
+            values=list(CONCURRENCY_PRESETS),
+            state="readonly",
+        ).grid(row=0, column=1, columnspan=3, sticky="ew", pady=3)
+        self._help_button(concurrency, "concurrency").grid(row=0, column=4, padx=(6, 0), pady=3)
+        ttk.Label(concurrency, text="Vision").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(concurrency, textvariable=self.vision_workers, width=8).grid(row=1, column=1, sticky="w", pady=3)
+        ttk.Label(concurrency, text="Brain").grid(row=1, column=2, sticky="w", padx=(14, 8), pady=3)
+        ttk.Entry(concurrency, textvariable=self.brain_workers, width=8).grid(row=1, column=3, sticky="w", pady=3)
+        ttk.Label(concurrency, text="Brain 模式").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Combobox(
+            concurrency,
+            textvariable=self.brain_thinking,
+            values=list(BRAIN_THINKING_LABELS.values()),
+            state="readonly",
+            width=22,
+        ).grid(row=2, column=1, sticky="w", pady=3)
+        ttk.Label(concurrency, text="强度").grid(row=2, column=2, sticky="w", padx=(14, 8), pady=3)
+        ttk.Combobox(
+            concurrency,
+            textvariable=self.brain_reasoning_effort,
+            values=["high", "max"],
+            state="readonly",
+            width=8,
+        ).grid(row=2, column=3, sticky="w", pady=3)
+        self.concurrency_hint_label = ttk.Label(
+            concurrency,
+            text="极速 60/60 保留原来的高并发；默认关闭 Brain 思考以降低延迟，需要疑难页再开启高质量模式。",
+            wraplength=420,
+            justify="left",
         )
+        self.concurrency_hint_label.grid(row=3, column=0, columnspan=5, sticky="ew", pady=(4, 0))
+
+        def _resize_concurrency_hint(event) -> None:
+            self.concurrency_hint_label.configure(wraplength=max(260, event.width - 16))
+
+        concurrency.bind("<Configure>", _resize_concurrency_hint)
         self._toggle_mineru_advanced()
         self._toggle_paddleocr_advanced()
 
@@ -2188,6 +2296,15 @@ class DocPage2MdGui:
                 "高=已有 artifact，可按真实 crop 和 prompt 估算。\n"
                 "中=本地 PDF/图片，可读页数/尺寸，但不知道 MinerU 真实 crop。\n"
                 "低=URL、Office 或页数未知。"
+            ),
+            "concurrency": (
+                "并发控制的是 DocPage2MD 精修阶段，不影响 MinerU/PaddleOCR 平台解析额度。\n\n"
+                "Vision 并发：同时识别多少个裁剪图、公式图、表格图。\n"
+                "Brain 并发：同时精修多少页 Markdown 结构。当前 Brain 任务粒度是“每页一个请求”，所以实际 Brain 并发=min(页数, Brain worker 上限)。11 页 PDF 最多只有 11 个 Brain 请求，不会用满 100/200。\n\n"
+                "Brain 模式：默认“快速：关闭思考”。它会关闭 DeepSeek/DashScope Brain 的深度思考参数，适合 JSON/Markdown 结构修正，通常能减少长尾耗时和输出 token。遇到疑难公式、复杂推理页时，可改为“高质量：开启思考”。\n\n"
+                "极速 60/60：保留原来的高并发能力，任务数少时实际并发=min(页数或块数, 60)。如果想真正用满 100/200，需要后续把 Brain 拆成更细粒度的小任务，而不是只调 worker 数。\n"
+                "均衡 6/6、保守 3/3：适合排查服务端排队、网络抖动或 DeepSeek 长尾。\n\n"
+                "如果日志出现“Brain 出现明显长尾”，说明最慢页明显慢于中位页。此时高并发不一定最快，建议用同一个 PDF 分别跑 60、12、6、3，对比 process.log 里的 Brain p50/p90/max。"
             ),
         }
         messagebox.showinfo("说明", help_texts.get(topic, "暂无说明。"))
@@ -2575,8 +2692,11 @@ class DocPage2MdGui:
             self.paddleocr_table_recognition,
             self.paddleocr_visualize,
             self.recursive,
+            self.concurrency_preset,
             self.vision_workers,
             self.brain_workers,
+            self.brain_thinking,
+            self.brain_reasoning_effort,
             self.vision_provider,
             self.vision_model,
             self.vision_base_url,
@@ -2592,6 +2712,9 @@ class DocPage2MdGui:
         self.source_value.trace_add("write", lambda *_args: self._sync_input_table_from_source_value())
         self.page_ranges.trace_add("write", lambda *_args: self._refresh_input_table())
         self.model_profile.trace_add("write", lambda *_args: self._on_profile_changed())
+        self.concurrency_preset.trace_add("write", lambda *_args: self._apply_concurrency_preset())
+        self.vision_workers.trace_add("write", lambda *_args: self._sync_concurrency_preset_from_workers())
+        self.brain_workers.trace_add("write", lambda *_args: self._sync_concurrency_preset_from_workers())
         for var in (
             self.vision_provider,
             self.vision_model,
@@ -2614,6 +2737,39 @@ class DocPage2MdGui:
         if profile in {"cheap", "balanced", "accurate"} and not self._syncing_models:
             self._set_models_from_profile(profile)
         self._refresh_model_status()
+
+    def _apply_concurrency_preset(self) -> None:
+        if self._syncing_concurrency:
+            return
+        preset = CONCURRENCY_PRESETS.get(self.concurrency_preset.get())
+        if preset is None:
+            return
+        self._syncing_concurrency = True
+        try:
+            vision_workers, brain_workers = preset
+            self.vision_workers.set(str(vision_workers))
+            self.brain_workers.set(str(brain_workers))
+        finally:
+            self._syncing_concurrency = False
+        self._refresh_runtime_summary()
+
+    def _sync_concurrency_preset_from_workers(self) -> None:
+        if self._syncing_concurrency:
+            return
+        current = (self.vision_workers.get().strip(), self.brain_workers.get().strip())
+        matched_label = None
+        for label, preset in CONCURRENCY_PRESETS.items():
+            if preset and current == (str(preset[0]), str(preset[1])):
+                matched_label = label
+                break
+        target = matched_label or "自定义"
+        if self.concurrency_preset.get() == target:
+            return
+        self._syncing_concurrency = True
+        try:
+            self.concurrency_preset.set(target)
+        finally:
+            self._syncing_concurrency = False
 
     def _mark_manual_model_selection(self) -> None:
         if self._syncing_models:
@@ -2913,6 +3069,8 @@ class DocPage2MdGui:
             recursive=self.recursive.get(),
             vision_workers=self.vision_workers.get(),
             brain_workers=self.brain_workers.get(),
+            brain_thinking=self.brain_thinking.get(),
+            brain_reasoning_effort=self.brain_reasoning_effort.get(),
             vision=SelectedModel(
                 self.vision_provider.get(),
                 self.vision_model.get(),
@@ -2986,7 +3144,9 @@ class DocPage2MdGui:
             "文档类型只设置推荐值，可手动覆盖模式、档位和模型。\n"
             f"当前：{DOCUMENT_PRESETS.get(document_key, DOCUMENT_PRESETS['custom'])[0]} / "
             f"{ENGINE_MODE_LABELS.get(mode_key, mode_key)} / {LAYOUT_ENGINE_LABELS.get(layout, layout)} / "
-            f"{REFINE_MODE_LABELS.get(refine, refine)} / {MODEL_PROFILE_LABELS.get(profile_key, profile_key)} / {parser_model}"
+            f"{REFINE_MODE_LABELS.get(refine, refine)} / {MODEL_PROFILE_LABELS.get(profile_key, profile_key)} / {parser_model}\n"
+            f"并发：{self.concurrency_preset.get()}，Vision={self.vision_workers.get() or '?'}，Brain={self.brain_workers.get() or '?'}，"
+            f"Brain模式={self.brain_thinking.get()}"
         )
 
     def _refresh_cost_estimate(self, silent: bool = False) -> None:

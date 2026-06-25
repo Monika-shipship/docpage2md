@@ -1,4 +1,6 @@
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 from docpage2md_app import cli
 from docpage2md_app.files import write_json
@@ -81,6 +83,24 @@ def test_cli_build_config_exposes_dual_hybrid_workflow(tmp_path):
     assert config.engine_mode == "dual_hybrid"
     assert config.layout_engine == "dual"
     assert config.refine_mode == "docpage2md"
+
+
+def test_cli_build_config_exposes_brain_thinking_options(tmp_path):
+    args = cli.parse_args(
+        [
+            "--brain-thinking",
+            "enabled",
+            "--brain-reasoning-effort",
+            "max",
+            "--output",
+            str(tmp_path),
+        ]
+    )
+
+    config = cli.build_config(args)
+
+    assert config.brain_thinking == "enabled"
+    assert config.brain_reasoning_effort == "max"
 
 
 def test_cli_build_config_exposes_mineru_advanced_options(tmp_path):
@@ -376,6 +396,61 @@ def test_cli_dual_rejects_pdf_that_needs_chunking(tmp_path):
         assert "暂不自动分段" in str(exc)
     else:
         raise AssertionError("Expected dual hybrid oversized PDF to fail")
+
+
+def test_cli_dual_prepares_mineru_and_paddleocr_artifacts_in_parallel(monkeypatch, tmp_path):
+    pdf = tmp_path / "notes.pdf"
+    pdf.write_bytes(b"%PDF")
+    args = cli.parse_args(["--engine-mode", "dual_hybrid", "--input-file", str(pdf), "--output", str(tmp_path / "out")])
+    config = cli.build_config(args)
+    mineru_artifact = tmp_path / "mineru_artifact"
+    paddle_artifact = tmp_path / "paddle_artifact"
+
+    mineru_started = threading.Event()
+    paddle_started = threading.Event()
+
+    class FakeMinerUClient:
+        def submit_local_files(self, files, *, page_ranges=None):
+            assert files == [pdf]
+            assert page_ranges is None
+            mineru_started.set()
+            if not paddle_started.wait(timeout=1):
+                raise AssertionError("PaddleOCR stage did not start while MinerU was submitting")
+            return "batch-1"
+
+        def wait_for_batch_results(self, batch_id, *, expected_count):
+            assert batch_id == "batch-1"
+            assert expected_count == 1
+            return [SimpleNamespace(task_id="task-1", full_zip_url="https://example.com/mineru.zip")]
+
+    class FakePaddleOCRClient:
+        def submit_local_file(self, path, *, page_ranges=None):
+            assert path == pdf
+            assert page_ranges is None
+            paddle_started.set()
+            if not mineru_started.wait(timeout=1):
+                raise AssertionError("MinerU stage did not start while PaddleOCR was submitting")
+            return "job-1"
+
+        def wait_for_job(self, job_id):
+            assert job_id == "job-1"
+            return SimpleNamespace(job_id="job-1", trace_id="trace-1")
+
+    monkeypatch.setattr(cli, "_download_mineru_artifact_only", lambda *_args, **_kwargs: mineru_artifact)
+    monkeypatch.setattr(cli, "_download_paddleocr_artifact_only", lambda *_args, **_kwargs: paddle_artifact)
+
+    result = cli._prepare_dual_artifacts_for_source(
+        FakeMinerUClient(),
+        FakePaddleOCRClient(),
+        config=config,
+        args=args,
+        source=pdf,
+        progress=None,
+    )
+
+    assert result == (mineru_artifact, paddle_artifact)
+    assert mineru_started.is_set()
+    assert paddle_started.is_set()
 
 
 def test_interactive_default_starts_with_hybrid_mineru_pdf(monkeypatch):

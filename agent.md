@@ -69,6 +69,7 @@ Dual engine implementation notes:
 - Fusion uses candidate groups and whitelist actions only: `choose_block`, `merge_blocks`, `keep_both`, `mark_uncertain`, `attach_image`, `replace_formula`, `convert_text_to_formula`, `convert_text_to_figure_note`.
 - `dual_ir` is a compatibility wrapper; new behavior should go through `fusion.py`.
 - Keep existing hybrid parallelism intact after fusion. Do not let Brain freely rewrite full Markdown.
+- Dual local file mode now runs the MinerU and PaddleOCR parser submissions/waits concurrently for the same source file. Keep this parallel parser prep; it cuts front-loaded dual parser wait from roughly `MinerU + PaddleOCR` to roughly `max(MinerU, PaddleOCR)` before fusion.
 
 ## Parallelism
 
@@ -78,8 +79,20 @@ Hybrid parallelism is required behavior:
 - Crop Vision runs all eligible crop blocks in one thread pool, default `vision_batch_workers = 60`.
 - Brain runs all pages in one thread pool after crop Vision completes, default `brain_batch_workers = 60`.
 - Actual worker count is `min(job_count, configured_workers)`.
+- Brain defaults to fast non-thinking mode (`brain_thinking=disabled`) for JSON ops / Markdown structure refinement. Users can enable high-quality thinking for difficult pages through the GUI or `--brain-thinking enabled`.
 
 Do not serialize page Brain calls unless explicitly debugging a provider limit. If provider throttling becomes a problem, expose throttling as a user setting instead of removing parallelism.
+
+Current GUI exposes concurrency presets:
+
+- `保守 3/3`
+- `均衡 6/6`
+- `高并发 12/12`
+- `极速 60/60`
+- `自定义`
+
+The processor logs Brain per-page elapsed time plus p50/p90/max and a long-tail warning. If a real run is slow with no 429/retry, first compare the same PDF with Brain workers `60`, `12`, `6` and `3` before changing the core pipeline.
+New Brain logs include actual worker count, configured worker limit and fast/high-quality thinking mode, so `actual=11, limit=60` on an 11-page PDF is expected and does not mean parallelism was removed.
 
 ## Latest Real Performance Finding
 
@@ -128,6 +141,26 @@ Latest dual engine real verification:
   - Vision `qwen3-vl-plus`, Brain `deepseek-v4-flash`.
   - The duplicated `(2)结合律：` line from the first real probe is fixed in final Markdown.
   - Final Markdown scan found no token, traceback, reasoning content, provider raw error or validator text.
+- Latest GUI dual full smoke: `markdown_output/gui_full_pdf_smoke` processed `群论笔记3.1.pdf` and `群论笔记4.1.pdf` in `dual_hybrid` sequentially by file.
+  - Total wall time in `dual_batch/process.log`: about `347.2s`.
+  - `群论笔记3.1`: parser prep about `53.5s`, crop Vision `70` blocks about `38.9s`, Brain `13` pages about `124.1s`, total document phase about `164.0s`.
+  - `群论笔记4.1`: crop Vision `47` blocks about `12.8s`, Brain `11` pages about `91.6s`, total document phase after parser prep about `105.2s`.
+  - `群论笔记4.1` Brain page durations were roughly min `34.9s`, median `52.6s`, max `91.6s`; `群论笔记3.1` was roughly min `25.1s`, median `58.9s`, max `124.1s`.
+  - Bottlenecks are Brain long-tail latency and dual parser/PaddleOCR artifact download, not missing page-level Brain parallelism. High Brain concurrency may still increase provider-side tail latency, so use the new GUI presets for A/B runs.
+  - Follow-up optimization implemented after this run: same-file dual parser prep now runs MinerU and PaddleOCR concurrently.
+- Controlled artifact rerun for `群论笔记4.1` with `dual_hybrid`, Vision workers `60`, Brain workers `6`:
+  - Output: `markdown_output/concurrency_ab_4_1_brain6/dual_4_1_brain6`.
+  - No parser upload/parse was repeated; reused the latest MinerU/PaddleOCR artifacts.
+  - Crop Vision `47` blocks about `9.8s`.
+  - Brain `11` pages with workers `6`: total about `94.7s`, p50 `39.2s`, p90 `50.8s`, max `53.6s`, tail ratio `1.37`.
+  - Compared with workers `11`, lower Brain concurrency reduced the slowest single-page tail substantially but did not reduce total Brain wall time in this run because pages ran in two waves. Do not blindly lower defaults; use presets for per-provider A/B tests.
+- Controlled artifact rerun for `群论笔记4.1` after disabling Brain thinking by default:
+  - Output: `markdown_output/concurrency_ab_4_1_fast_brain/dual_4_1_fast_brain`.
+  - Same existing MinerU/PaddleOCR artifacts, `dual_hybrid`, balanced profile, Vision workers `60`, Brain workers `60`.
+  - Actual Brain workers were `11` because the PDF has 11 pages; configured limit remained `60`.
+  - Crop Vision `47` blocks about `20.9s`.
+  - Brain `11` pages in fast mode: total about `12.2s`, p50 `8.4s`, p90 `11.9s`, max `12.1s`, tail ratio `1.45`.
+  - Compared with the earlier thinking-enabled run (`91.6s` Brain total), the main bottleneck was DeepSeek Brain thinking latency, not missing thread parallelism.
 
 ## Logging
 
@@ -266,7 +299,7 @@ Most recent regression on 2026-06-25:
 
 - `python docpage2md.py --help`: passed.
 - `python -m docpage2md_app --help`: passed.
-- `python -m pytest -q`: `300 passed`.
+- `python -m pytest -q`: `301 passed`.
 - `git diff --check`: passed, with only CRLF conversion warnings.
 
 Focused smoke used during GUI/log work:

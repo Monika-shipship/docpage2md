@@ -50,6 +50,7 @@ def test_gui_builds_single_file_hybrid_command(tmp_path):
     assert argv[argv.index("--mineru-language") + 1] == "ch"
     assert argv[argv.index("--vision-workers") + 1] == "60"
     assert argv[argv.index("--brain-workers") + 1] == "60"
+    assert argv[argv.index("--brain-thinking") + 1] == "disabled"
     assert argv[-2:] == [
         "--input-file",
         str(pdf),
@@ -204,6 +205,40 @@ def test_gui_adds_worker_override_args(tmp_path):
 
     assert argv[argv.index("--vision-workers") + 1] == "70"
     assert argv[argv.index("--brain-workers") + 1] == "65"
+    assert argv[argv.index("--brain-thinking") + 1] == "disabled"
+
+
+def test_gui_adds_brain_thinking_override_args(tmp_path):
+    options = GuiRunOptions(
+        source_value="https://example.com/notes.pdf",
+        source_kind="mineru_url",
+        output_folder=str(tmp_path / "out"),
+        brain_thinking="高质量：开启思考",
+        brain_reasoning_effort="max",
+    )
+
+    argv = build_cli_argv(options)
+
+    assert argv[argv.index("--brain-thinking") + 1] == "enabled"
+    assert argv[argv.index("--brain-reasoning-effort") + 1] == "max"
+
+
+def test_gui_concurrency_preset_updates_worker_entries():
+    try:
+        app = DocPage2MdGui()
+    except Exception as exc:
+        pytest.skip(f"Tkinter unavailable: {exc}")
+    try:
+        app.concurrency_preset.set("均衡 6/6（推荐对照）")
+        app.root.update_idletasks()
+        assert app.vision_workers.get() == "6"
+        assert app.brain_workers.get() == "6"
+
+        app.brain_workers.set("5")
+        app.root.update_idletasks()
+        assert app.concurrency_preset.get() == "自定义"
+    finally:
+        app.destroy()
 
 
 def test_gui_adds_mineru_advanced_args(tmp_path):
@@ -471,6 +506,27 @@ def test_progress_tracker_updates_from_chinese_log_lines(tmp_path):
     assert snapshot.percent == pytest.approx(50.0)
     assert snapshot.stage == "第 1/2 页完成"
     assert snapshot.eta.startswith("剩余 ")
+
+
+def test_progress_tracker_updates_from_brain_batch_done_lines(tmp_path):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF\n1 0 obj << /Type /Page >>\n2 0 obj << /Type /Page >>")
+    tracker = GuiProgressTracker()
+    tracker.reset(GuiRunOptions(source_kind="input_file", source_value=str(pdf), output_folder=str(tmp_path / "out")))
+
+    tracker.observe_line("2026-06-24 18:44:04 +   10.0s | DocumentIR ready: pages=2, blocks=10")
+    tracker.observe_line("2026-06-24 18:44:05 +   11.0s | Hybrid page 1 Brain start: context_pages=3")
+    snapshot = tracker.observe_line(
+        "2026-06-24 18:44:30 +   36.0s | Hybrid page 1 Brain done: status=ok, ops_requested=3, applied=3, rejected=0, elapsed=25.0s"
+    )
+
+    assert snapshot.percent == pytest.approx(50.0)
+    assert snapshot.stage == "第 1/2 页 Brain 完成"
+    assert "耗时 25.0 秒" in snapshot.detail
+
+    snapshot = tracker.observe_line("2026-06-24 18:44:31 +   37.0s | Brain 耗时分布：页数=2，p50=25.0秒，p90=30.0秒，最慢=30.0秒，最慢页=第2页 30.0s，长尾系数=1.20")
+    assert snapshot.stage == "Brain 耗时分析"
+    assert "p90 30.0秒" in snapshot.detail
 
 
 def test_progress_tracker_finish_sets_complete_percent():

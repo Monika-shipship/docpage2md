@@ -1,4 +1,5 @@
 import datetime
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -11,6 +12,7 @@ class RunLogger:
         self.log_path = Path(log_path) if log_path else None
         self.echo = echo
         self.started = time.monotonic()
+        self._lock = threading.Lock()
         if self.log_path:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             if reset:
@@ -21,11 +23,12 @@ class RunLogger:
 
     def info(self, message: str) -> None:
         text = self._format(translate_progress_message(message))
-        if self.echo:
-            print(text, flush=True)
-        if self.log_path:
-            with self.log_path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(text + "\n")
+        with self._lock:
+            if self.echo:
+                print(text, flush=True)
+            if self.log_path:
+                with self.log_path.open("a", encoding="utf-8", newline="\n") as handle:
+                    handle.write(text + "\n")
 
     def child(self, log_path: str | Path | None = None) -> "RunLogger":
         return RunLogger(log_path or self.log_path, echo=self.echo, reset=False)

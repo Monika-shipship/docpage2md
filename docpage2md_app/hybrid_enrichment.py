@@ -220,8 +220,15 @@ def _run_document_brain_refinement(
 ) -> dict[int, dict[str, Any]]:
     if not pages:
         return {}
-    workers = _worker_count(config.brain_batch_workers, len(pages))
-    safe_progress(progress, f"Hybrid Brain batch start: pages={len(pages)}, workers={workers}")
+    requested_workers = max(1, int(config.brain_batch_workers or 1))
+    workers = _worker_count(requested_workers, len(pages))
+    safe_progress(
+        progress,
+        (
+            f"Hybrid Brain batch start: pages={len(pages)}, workers={workers}, "
+            f"requested_workers={requested_workers}, thinking={config.brain_thinking}"
+        ),
+    )
     started = time.monotonic()
     reports_by_slide: dict[int, dict[str, Any]] = {}
     page_jobs = []
@@ -278,6 +285,7 @@ def _run_document_brain_refinement(
         statuses[status] = statuses.get(status, 0) + 1
     status_text = ";".join(f"{key}:{value}" for key, value in sorted(statuses.items())) or "none"
     safe_progress(progress, f"Hybrid Brain batch done: pages={len(pages)}, statuses={status_text}, elapsed={elapsed:.1f}s")
+    _log_brain_latency_summary(reports_by_slide, progress=progress)
     return reports_by_slide
 
 
@@ -292,13 +300,17 @@ def _run_single_brain_refinement_job(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     context_window = _context_window(pages, page_index)
     safe_progress(progress, f"Hybrid page {slide_no} Brain start: context_pages={len(context_window)}")
+    brain_started = time.monotonic()
     page_after_brain, brain_report = _run_brain_ops(page_ir, context_window, config, brain_backend)
+    brain_elapsed = time.monotonic() - brain_started
+    brain_report["elapsed_seconds"] = round(brain_elapsed, 3)
     safe_progress(
         progress,
         (
             f"Hybrid page {slide_no} Brain done: status={brain_report.get('status')}, "
             f"ops_requested={brain_report.get('ops_requested')}, "
-            f"applied={brain_report.get('ops_applied')}, rejected={brain_report.get('ops_rejected')}"
+            f"applied={brain_report.get('ops_applied')}, rejected={brain_report.get('ops_rejected')}, "
+            f"elapsed={brain_elapsed:.1f}s"
         ),
     )
 
@@ -318,6 +330,46 @@ def _run_single_brain_refinement_job(
         "brain": brain_report,
         "block_refiner": block_refine_result.to_dict(),
     }
+
+
+def _log_brain_latency_summary(reports_by_slide: dict[int, dict[str, Any]], *, progress: ProgressCallback | None = None) -> None:
+    samples: list[tuple[int, float]] = []
+    for slide_no, report in sorted(reports_by_slide.items()):
+        elapsed = (report.get("brain") or {}).get("elapsed_seconds")
+        if isinstance(elapsed, (int, float)) and elapsed >= 0:
+            samples.append((slide_no, float(elapsed)))
+    if not samples:
+        return
+    values = sorted(value for _slide_no, value in samples)
+    p50 = _percentile_nearest(values, 0.50)
+    p90 = _percentile_nearest(values, 0.90)
+    max_elapsed = values[-1]
+    slowest = sorted(samples, key=lambda item: item[1], reverse=True)[:3]
+    slowest_text = ";".join(f"{slide}:{elapsed:.1f}s" for slide, elapsed in slowest)
+    tail_ratio = max_elapsed / max(0.1, p50)
+    safe_progress(
+        progress,
+        (
+            f"Hybrid Brain latency summary: pages={len(samples)}, p50={p50:.1f}s, "
+            f"p90={p90:.1f}s, max={max_elapsed:.1f}s, slowest={slowest_text}, "
+            f"tail_ratio={tail_ratio:.2f}"
+        ),
+    )
+    if len(samples) >= 4 and tail_ratio >= 1.7:
+        safe_progress(
+            progress,
+            (
+                f"Hybrid Brain latency warning: tail_ratio={tail_ratio:.2f}, "
+                "advice=try_brain_workers_3_6_12"
+            ),
+        )
+
+
+def _percentile_nearest(sorted_values: list[float], percentile: float) -> float:
+    if not sorted_values:
+        return 0.0
+    index = round((len(sorted_values) - 1) * percentile)
+    return sorted_values[max(0, min(len(sorted_values) - 1, index))]
 
 
 def _empty_vision_report() -> dict[str, Any]:

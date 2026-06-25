@@ -6,7 +6,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import replace
 from multiprocessing import Manager
 from pathlib import Path
@@ -80,6 +80,18 @@ def parse_args(argv=None):
     parser.add_argument("--brain-api-key-env", type=str, default=None, help="非交互覆盖 Brain API Key 环境变量名")
     parser.add_argument("--vision-workers", type=int, default=None, help="Vision/crop Vision 并发数，默认使用配置值")
     parser.add_argument("--brain-workers", type=int, default=None, help="Brain/refiner 页级并发数，默认使用配置值")
+    parser.add_argument(
+        "--brain-thinking",
+        choices=["enabled", "disabled"],
+        default=None,
+        help="Brain 是否开启模型思考模式；默认 disabled 以降低延迟",
+    )
+    parser.add_argument(
+        "--brain-reasoning-effort",
+        choices=["high", "max"],
+        default=None,
+        help="Brain 思考模式强度；仅 --brain-thinking enabled 时生效",
+    )
     parser.add_argument("--input-file", type=str, default=None, help="通过 MinerU API 解析的本地 PDF/Office/图片文件")
     parser.add_argument(
         "--input-files",
@@ -220,6 +232,8 @@ def build_config(args):
         verify_sleep=args.verify_sleep,
         vision_batch_workers=vision_workers,
         brain_batch_workers=brain_workers,
+        brain_thinking=args.brain_thinking or AppConfig().brain_thinking,
+        brain_reasoning_effort=args.brain_reasoning_effort or AppConfig().brain_reasoning_effort,
         list_models=args.list_models,
         list_all_models=args.list_all_models,
         refresh_models=args.refresh_models or args.refresh_prices or bool(args.import_pricing_md),
@@ -1072,33 +1086,13 @@ def _run_dual_cli(args, config: AppConfig) -> int:
         for source in local_files:
             _validate_paddleocr_size(source)
             output_doc_name = doc_name if len(local_files) == 1 else None
-            safe_progress(run_logger, f"Dual parser submit start: source={source.name}")
-
-            safe_progress(run_logger, f"Dual MinerU submit: {source.name}")
-            batch_id = mineru_client.submit_local_files([source], page_ranges=args.page_ranges)
-            safe_progress(run_logger, f"Dual MinerU batch submitted: batch_id={batch_id}")
-            mineru_result = mineru_client.wait_for_batch_results(batch_id, expected_count=1)[0]
-            mineru_artifact = _download_mineru_artifact_only(
+            safe_progress(run_logger, f"Dual parser submit start: source={source.name}, mode=parallel")
+            mineru_artifact, paddle_artifact = _prepare_dual_artifacts_for_source(
                 mineru_client,
-                mineru_result,
-                source=str(source),
-                config=config,
-                args=args,
-                task_ref={"task_id": mineru_result.task_id, "batch_id": batch_id},
-                progress=run_logger,
-            )
-
-            safe_progress(run_logger, f"Dual PaddleOCR submit: {source.name}")
-            job_id = paddle_client.submit_local_file(source, page_ranges=args.page_ranges)
-            safe_progress(run_logger, f"Dual PaddleOCR job submitted: job_id={job_id}")
-            paddle_status = paddle_client.wait_for_job(job_id)
-            paddle_artifact = _download_paddleocr_artifact_only(
                 paddle_client,
-                paddle_status,
-                source=str(source),
                 config=config,
                 args=args,
-                page_ranges=args.page_ranges,
+                source=source,
                 progress=run_logger,
             )
 
@@ -1119,6 +1113,60 @@ def _run_dual_cli(args, config: AppConfig) -> int:
         safe_progress(run_logger, f"Dual hybrid failed: {exc}")
         print(f"双引擎融合失败：{exc}")
         return 1
+
+
+def _prepare_dual_artifacts_for_source(
+    mineru_client,
+    paddle_client,
+    *,
+    config: AppConfig,
+    args,
+    source: Path,
+    progress=None,
+) -> tuple[Path, Path]:
+    """Run MinerU and PaddleOCR parser stages concurrently for one dual-hybrid source."""
+
+    source_path = Path(source)
+
+    def _mineru_stage() -> Path:
+        safe_progress(progress, f"Dual MinerU submit: {source_path.name}")
+        batch_id = mineru_client.submit_local_files([source_path], page_ranges=args.page_ranges)
+        safe_progress(progress, f"Dual MinerU batch submitted: batch_id={batch_id}")
+        mineru_result = mineru_client.wait_for_batch_results(batch_id, expected_count=1)[0]
+        return _download_mineru_artifact_only(
+            mineru_client,
+            mineru_result,
+            source=str(source_path),
+            config=config,
+            args=args,
+            task_ref={"task_id": mineru_result.task_id, "batch_id": batch_id},
+            progress=progress,
+        )
+
+    def _paddleocr_stage() -> Path:
+        safe_progress(progress, f"Dual PaddleOCR submit: {source_path.name}")
+        job_id = paddle_client.submit_local_file(source_path, page_ranges=args.page_ranges)
+        safe_progress(progress, f"Dual PaddleOCR job submitted: job_id={job_id}")
+        paddle_status = paddle_client.wait_for_job(job_id)
+        return _download_paddleocr_artifact_only(
+            paddle_client,
+            paddle_status,
+            source=str(source_path),
+            config=config,
+            args=args,
+            page_ranges=args.page_ranges,
+            progress=progress,
+        )
+
+    started = time.monotonic()
+    safe_progress(progress, f"Dual parser parallel stages start: source={source_path.name}")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        mineru_future = executor.submit(_mineru_stage)
+        paddle_future = executor.submit(_paddleocr_stage)
+        mineru_artifact = mineru_future.result()
+        paddle_artifact = paddle_future.result()
+    safe_progress(progress, f"Dual parser parallel stages done: source={source_path.name}, elapsed={time.monotonic() - started:.1f}s")
+    return mineru_artifact, paddle_artifact
 
 
 def _auto_split_paddleocr_plans_for_local_files(local_files: list[Path], args, config: AppConfig, *, progress=None) -> dict[Path, list]:

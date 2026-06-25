@@ -116,6 +116,7 @@ def call_aliyun_openai_chat(
     stream: bool = True,
     thinking_budget: int = 0,
     enable_thinking: bool = False,
+    reasoning_effort: str = "high",
     timeout: int = 900,
 ):
     """通过 OpenAI 兼容接口调用纯文本 Chat 模型。
@@ -132,7 +133,7 @@ def call_aliyun_openai_chat(
 
     if enable_thinking and thinking_budget and thinking_budget > 0:
         payload["thinking"] = {"type": "enabled"}
-        payload["reasoning_effort"] = "medium"
+        payload["reasoning_effort"] = reasoning_effort if reasoning_effort in {"high", "max"} else "high"
 
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
@@ -647,12 +648,13 @@ def _strip_inline_diagnostic_parentheticals(text: str) -> str:
 def _run_dashscope_brain(filled_prompt, config: AppConfig):
     """DashScope 原生文本 API（默认稳定路径）。"""
     try:
+        enable_thinking = config.brain_thinking == "enabled"
         responses = Generation.call(
             model=config.model_brain,
             messages=[{"role": "user", "content": filled_prompt}],
             result_format="message",
-            enable_thinking=True,
-            thinking_budget=config.thinking_budget_brain,
+            enable_thinking=enable_thinking,
+            thinking_budget=config.thinking_budget_brain if enable_thinking else 0,
             stream=True,
             incremental_output=True,
         )
@@ -689,13 +691,14 @@ def _run_openai_compatible_brain(filled_prompt, config: AppConfig):
 
     payload = _unpack_model_payload(
         call_aliyun_openai_chat(
-        model_id=config.model_brain,
-        messages=[{"role": "user", "content": filled_prompt}],
-        api_key=api_key,
-        base_url=config.brain_base_url,
-        stream=True,
-        thinking_budget=config.thinking_budget_brain,
-        enable_thinking=(config.brain_provider == "dashscope_openai"),
+            model_id=config.model_brain,
+            messages=[{"role": "user", "content": filled_prompt}],
+            api_key=api_key,
+            base_url=config.brain_base_url,
+            stream=True,
+            thinking_budget=config.thinking_budget_brain,
+            enable_thinking=(config.brain_provider == "dashscope_openai" and config.brain_thinking == "enabled"),
+            reasoning_effort=config.brain_reasoning_effort,
         )
     )
     content = payload["content"]
@@ -717,10 +720,11 @@ def _run_deepseek_brain(filled_prompt, config: AppConfig):
     payload = {
         "model": config.model_brain,
         "messages": [{"role": "user", "content": filled_prompt}],
-        "thinking": {"type": "enabled"},
-        "reasoning_effort": "high",
+        "thinking": {"type": config.brain_thinking if config.brain_thinking in {"enabled", "disabled"} else "disabled"},
         "stream": True,
     }
+    if payload["thinking"]["type"] == "enabled":
+        payload["reasoning_effort"] = config.brain_reasoning_effort if config.brain_reasoning_effort in {"high", "max"} else "high"
     request = urllib.request.Request(
         f"{config.brain_base_url.rstrip('/')}/chat/completions",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

@@ -1,3 +1,6 @@
+import json
+from dataclasses import replace
+
 from docpage2md_app.config import AppConfig
 from docpage2md_app import models
 
@@ -61,3 +64,64 @@ def test_stage2_carries_provider_usage_when_available(monkeypatch):
     assert result["usage"] == {"prompt_tokens": 10, "completion_tokens": 3}
     assert result["request_id"] == "req-1"
     assert result["provider_latency"] == 1.25
+
+
+class _FakeDeepSeekStreamResponse:
+    headers = {"x-request-id": "req-test"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def __iter__(self):
+        return iter(
+            [
+                b'data: {"choices":[{"delta":{"content":"ok"}}]}\n',
+                b"data: [DONE]\n",
+            ]
+        )
+
+
+def test_deepseek_brain_disables_thinking_by_default(monkeypatch):
+    captured = {}
+    config = replace(AppConfig(), brain_provider="deepseek", brain_thinking="disabled")
+    monkeypatch.setattr(models, "get_env_value", lambda _name: "secret")
+    monkeypatch.setattr(models, "get_deepseek_api_key", lambda: "secret")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeDeepSeekStreamResponse()
+
+    monkeypatch.setattr(models.urllib.request, "urlopen", fake_urlopen)
+
+    result = models._run_deepseek_brain("prompt", config)
+
+    assert result["content"] == "ok"
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in captured["payload"]
+
+
+def test_deepseek_brain_can_enable_thinking_with_effort(monkeypatch):
+    captured = {}
+    config = replace(
+        AppConfig(),
+        brain_provider="deepseek",
+        brain_thinking="enabled",
+        brain_reasoning_effort="max",
+    )
+    monkeypatch.setattr(models, "get_env_value", lambda _name: "secret")
+    monkeypatch.setattr(models, "get_deepseek_api_key", lambda: "secret")
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeDeepSeekStreamResponse()
+
+    monkeypatch.setattr(models.urllib.request, "urlopen", fake_urlopen)
+
+    result = models._run_deepseek_brain("prompt", config)
+
+    assert result["content"] == "ok"
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
+    assert captured["payload"]["reasoning_effort"] == "max"

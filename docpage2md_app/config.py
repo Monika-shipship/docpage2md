@@ -28,6 +28,8 @@ DEFAULT_BRAIN_BATCH_WORKERS = 60
 
 DEFAULT_THINKING_BUDGET_VISION = 2048
 DEFAULT_THINKING_BUDGET_BRAIN = 2048
+DEFAULT_BRAIN_THINKING = "disabled"
+DEFAULT_BRAIN_REASONING_EFFORT = "high"
 
 # API retry / backoff
 DEFAULT_API_MAX_RETRIES = 3
@@ -102,6 +104,8 @@ class AppConfig:
     brain_batch_workers: int = DEFAULT_BRAIN_BATCH_WORKERS
     thinking_budget_vision: int = DEFAULT_THINKING_BUDGET_VISION
     thinking_budget_brain: int = DEFAULT_THINKING_BUDGET_BRAIN
+    brain_thinking: str = DEFAULT_BRAIN_THINKING
+    brain_reasoning_effort: str = DEFAULT_BRAIN_REASONING_EFFORT
     # API retry
     api_max_retries: int = DEFAULT_API_MAX_RETRIES
     api_retry_base_sleep: float = DEFAULT_API_RETRY_BASE_SLEEP

@@ -4,6 +4,21 @@
 
 ### Added
 
+- 新增 Brain 并发长尾诊断：
+  - 每页 Brain 精修报告记录 `elapsed_seconds`。
+  - `process.log` 现在会写出 Brain p50/p90/max、最慢页和长尾系数。
+  - 当最慢页明显慢于中位页时，日志会用中文提示尝试 Brain 并发 `6` 或 `3` 做同文件对照。
+- GUI “输出与并发”区新增并发预设：
+  - `保守 3/3`
+  - `均衡 6/6`
+  - `高并发 12/12`
+  - `极速 60/60`
+  - `自定义`
+  - 保留原来的 Vision/Brain 数字输入，预设只负责快速填值，不移除高并发能力。
+- 新增 Brain 快速/高质量模式：
+  - CLI 增加 `--brain-thinking enabled|disabled` 和 `--brain-reasoning-effort high|max`。
+  - GUI “并发”区增加 `Brain 模式`，默认 `快速：关闭思考（推荐）`，疑难页可手动改为 `高质量：开启思考`。
+  - `run_report.json` / fingerprint 会记录 Brain thinking mode，日志会显示实际并发、配置上限和当前模式。
 - 升级 `dual_hybrid` 双引擎融合层：
   - 新增 `docpage2md_app/fusion.py` 和 `docpage2md_app/fusion_prompt.py`。
   - 同页 MinerU/PaddleOCR block 会先按 bbox 重叠、文本相似度、垂直位置、类型相似度和图注/图片邻近关系构建候选组。
@@ -71,6 +86,14 @@
 
 ### Changed
 
+- 加速 `dual_hybrid` 本地单文件前置解析：
+  - 同一输入文件的 MinerU 和 PaddleOCR 提交、等待、artifact 下载现在并行执行。
+  - 解析前置等待从约 `MinerU + PaddleOCR` 降为约 `max(MinerU, PaddleOCR)`，后续融合、crop Vision 和 Brain 精修流程不变。
+  - `RunLogger` 增加线程锁，避免双解析并行时日志行交错。
+- 默认 Brain 精修关闭 DeepSeek/DashScope 思考模式：
+  - 过去 balanced Brain 请求会进入高延迟思考路径，11 页文档容易被 provider 长尾拖到 90 秒以上。
+  - 新默认更适合 JSON ops / Markdown 结构修正；用户仍可在 CLI/GUI 中开启高质量思考。
+- GUI 进度条现在能从 Brain 批处理完成日志推进页进度，并在状态区显示 Brain p50/p90/max 长尾摘要。
 - 修复 Windows 受限目录中的写入兼容性：`write_text_atomic()` 在目录允许创建但拒绝 rename/delete 时，会降级为直接写入，并尽量清理临时文件，避免 MinerU cache/report 写入中断。
 - 修复 PaddleOCR `paddleocr_hybrid` 的置信度兼容问题：
   - PaddleOCR adapter 现在把 `block.confidence` 写为 `0.0-1.0` 浮点数。
@@ -99,7 +122,7 @@
 
 - `python docpage2md.py --help`：通过。
 - `python -m docpage2md_app --help`：通过。
-- `python -m pytest -q`：300 passed。
+- `python -m pytest -q`：307 passed。
 - `git diff --check`：无 whitespace error，仅有 CRLF 提示。
 - Tkinter GUI 构建 smoke 通过：`DocPage2MdGui()` 能创建、刷新 idle tasks 并销毁；运行页滚动容器、成本表横向滚动和命令预览横向滚动存在。
 - 聚焦 GUI/CLI/MinerU/secrets 测试：54 passed。
@@ -122,6 +145,24 @@
   - 双引擎真实页 1 输出：`markdown_output/dual_real_probe_20260625/dual_real_probe_page1`，`status=ok`，`engine_mode=dual_hybrid`，历史策略为 `mineru_primary_paddleocr_evidence`。
   - 修复重复标题后，用真实 artifact 复跑输出：`markdown_output/dual_real_artifact_rerun_20260625/dual_real_artifact_rerun_page1`，`status=ok`，1/1 页，layout model `vlm+PaddleOCR-VL-1.6`，Vision `qwen3-vl-plus`，Brain `deepseek-v4-flash`。
   - 最终用户 Markdown 未发现 API Key、Python traceback、provider 原始错误、validator 诊断文本或模型思考过程。
+- 使用最新 GUI `dual_hybrid` 全量 smoke 分析耗时：
+  - 输出目录：`markdown_output/gui_full_pdf_smoke`。
+  - 两份 PDF 总 wall time 约 `347.2s`。
+  - `群论笔记3.1`：parser prep 约 `53.5s`，crop Vision `70` blocks 约 `38.9s`，Brain `13` pages 约 `124.1s`。
+  - `群论笔记4.1`：crop Vision `47` blocks 约 `12.8s`，Brain `11` pages 约 `91.6s`。
+  - 结论：主要瓶颈是 Brain 长尾和双解析/PaddleOCR artifact 下载，不是页面 Brain 并发被删。
+- 使用已有 `群论笔记4.1` 双引擎 artifact 做 Brain 并发对照：
+  - 输出目录：`markdown_output/concurrency_ab_4_1_brain6/dual_4_1_brain6`。
+  - Vision `60`、Brain `6`，不重复 MinerU/PaddleOCR 上传解析。
+  - Brain total 约 `94.7s`，p50 `39.2s`，p90 `50.8s`，max `53.6s`，长尾系数 `1.37`。
+  - 对比上一轮 Brain workers `11` 的 total 约 `91.6s`、max 约 `91.6s`：降低并发能压低最慢页，但不一定降低总 wall time。
+- 使用同一 `群论笔记4.1` 双引擎 artifact 验证 Brain 快速模式：
+  - 输出目录：`markdown_output/concurrency_ab_4_1_fast_brain/dual_4_1_fast_brain`。
+  - Vision `60`、Brain `60`，实际 Brain worker `11`，`--brain-thinking disabled`。
+  - Crop Vision `47` blocks 约 `20.9s`。
+  - Brain total 约 `12.2s`，p50 `8.4s`，p90 `11.9s`，max `12.1s`。
+  - 对比旧 thinking 路径 `91.6s`：耗时长的主因是 Brain 思考模式长尾，不是并发被删除。
+  - 最终用户 Markdown 未发现 API Key、Traceback、validator 文本或模型思考过程。
 - 双引擎候选组融合离线验证：
   - `python -m pytest tests/test_fusion.py tests/test_dual_pipeline.py tests/test_hybrid_enrichment.py tests/test_mineru_pipeline.py tests/test_paddleocr_pipeline.py tests/test_validators.py -q`：46 passed。
   - 覆盖页级对齐、bbox/text 粗分组、未匹配 block 保留、公式候选替换、坏操作拒绝、prompt 不暴露内部 block 对象和 pipeline 写出 `fused_document_ir.json`。
