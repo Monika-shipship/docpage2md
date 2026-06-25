@@ -70,6 +70,7 @@
 - 官方模型/价格缓存新增 provider 级刷新状态：
   - `refresh.provider_status` 记录每个 Provider 的状态、来源 URL、模型数量和失败原因。
   - OpenAI-compatible 继续只发现 `/models`，价格保持 `user_required`，不自动猜测。
+  - DashScope 官方文档抓取会过滤明显的文档 slug 伪模型，例如 `qwen-false`、`qwen-usage-list` 和 `qwen-vl-compatible-with-openai`。
 - 修复 Tkinter GUI 自动化/关闭时可能残留 `_drain_output_queue` after 回调并打印 Tcl 噪声的问题。
 - 继续加强最终 Markdown 的数学符号规范化：
   - 单个裸 Unicode 数学符号会包成 LaTeX inline math。

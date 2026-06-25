@@ -66,7 +66,7 @@ def refresh_official_catalog(
     if "dashscope" in normalized:
         try:
             before = len(records)
-            records.extend(fetch_model_ids_from_docs())
+            records.extend(_clean_official_records(fetch_model_ids_from_docs(), allowed_providers={"dashscope", "dashscope_openai"}))
             provider_status["dashscope"]["status"] = "ok"
             provider_status["dashscope"]["records"] = len(records) - before
         except Exception as exc:
@@ -313,6 +313,56 @@ def diff_model_records(old_records: list[ModelRecord], new_records: list[ModelRe
         if before_price != after_price:
             price_changed.append({"model": key, "before": before_price, "after": after_price})
     return {"added": added, "removed": removed, "price_changed": price_changed}
+
+
+def _clean_official_records(records: list[ModelRecord], *, allowed_providers: set[str] | None = None) -> list[ModelRecord]:
+    cleaned: dict[str, ModelRecord] = {}
+    for record in records:
+        if allowed_providers and record.provider not in allowed_providers:
+            continue
+        if _looks_like_doc_artifact(record.model_id):
+            continue
+        cleaned[_record_key(record)] = record
+    return list(cleaned.values())
+
+
+_DOC_ARTIFACT_EXACT_SEGMENTS = {
+    "api",
+    "by",
+    "false",
+    "free",
+    "input",
+    "list",
+    "mode",
+    "model",
+    "output",
+    "row",
+    "scope",
+    "td",
+    "tier",
+    "title",
+    "true",
+    "usage",
+    "xref",
+}
+
+
+def _looks_like_doc_artifact(model_id: str) -> bool:
+    lowered = (model_id or "").strip().lower()
+    if not lowered:
+        return True
+    if any(fragment in lowered for fragment in ("github.io", "compatible-with-openai", "api-reference")):
+        return True
+    if lowered.endswith("-api") or "-api-" in lowered or "-by-" in lowered:
+        return True
+    segments = [segment for segment in re.split(r"[-_.]+", lowered) if segment]
+    if any(segment in _DOC_ARTIFACT_EXACT_SEGMENTS for segment in segments):
+        return True
+    if any(re.fullmatch(r"(?:p|td|bq|hp|xr)\d+", segment) for segment in segments):
+        return True
+    if re.search(r"(?:^|[-_.])cn(?:[-_.]|$)", lowered) and re.search(r"(?:row|xref|td\d+|p\d+|input|output|mode|scope|tier)", lowered):
+        return True
+    return False
 
 
 def _merge_with_static_fallback(dynamic_records: list[ModelRecord]) -> list[ModelRecord]:

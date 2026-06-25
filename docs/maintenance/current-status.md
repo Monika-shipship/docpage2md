@@ -39,7 +39,7 @@ Current GUI details:
 - Cost UI is a table and only estimates Vision/Brain token fees; MinerU/PaddleOCR are quota/limit notes.
 - Model management is provider-first: Provider/Key, role binding, candidate models and third-party model library.
 - PaddleOCR is selectable as a parser engine, default model `PaddleOCR-VL-1.6`, async endpoint `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`, default PDF chunk size 100 pages.
-- Official model/price refresh is available through CLI and GUI background refresh, with provider-aware diff summary and local fallback.
+- Official model/price refresh is available through CLI and GUI background refresh, with provider-aware diff summary and local fallback. DashScope refresh keeps the broad official catalog but filters obvious documentation slug artifacts; GUI role binding then narrows Vision/Brain candidates by capability metadata.
 
 The longer-term WebUI plan is tracked in `docs/plans/webui-roadmap.md`. PaddleOCR status and follow-up comparison work are tracked in `docs/plans/paddleocr-integration-roadmap.md`.
 
@@ -151,7 +151,7 @@ python docpage2md.py --engine-mode hybrid --model-profile cheap --input-file ".\
 - PaddleOCR offline tests cover adapter, bad JSONL/empty pages, client fake HTTP, pending/running/done states, 429/503/504 retry, result download retry, pipeline rendering and chunk merge.
 - PaddleOCR adapter confidence values are numeric floats in `0.0-1.0`; human confidence labels are stored separately as `confidence_label`. This is required because the hybrid refiner treats `block.confidence` as numeric.
 - PaddleOCR remote URL inputs perform a HEAD `Content-Length` check when available and block files over 200 MB; unknown length is logged and allowed to proceed.
-- Official catalog refresh cache includes `refresh.provider_status` with per-provider status, source URLs, record counts and failure reasons.
+- Official catalog refresh cache includes `refresh.provider_status` with per-provider status, source URLs, record counts and failure reasons. A live DashScope/DeepSeek refresh smoke produced 340 records after documentation artifact filtering and no obvious fake IDs such as `qwen-false` or `qwen-usage-list`.
 - Historical alias search: no working-tree matches.
 - Public fixture artifact smoke can run without network or private data.
 - Private real API smoke should use ignored files under `input_docs/` or another local path; do not commit those inputs or outputs.

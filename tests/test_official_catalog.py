@@ -2,6 +2,7 @@ import json
 
 from docpage2md_app.aliyun_catalog import ModelRecord
 from docpage2md_app.official_catalog import (
+    _clean_official_records,
     diff_model_records,
     fetch_openai_compatible_model_ids,
     merge_markdown_pricing,
@@ -109,6 +110,21 @@ def test_refresh_official_catalog_records_provider_status_and_openai_prices_are_
     assert custom.price_source == "user_required"
     assert custom.input_price is None
     assert custom.output_price is None
+
+
+def test_clean_official_records_filters_doc_slug_artifacts():
+    records = [
+        ModelRecord(model_id="qwen3-vl-plus", provider="dashscope"),
+        ModelRecord(model_id="qwen-false", provider="dashscope"),
+        ModelRecord(model_id="qwen-usage-list", provider="dashscope"),
+        ModelRecord(model_id="qwen-vl-compatible-with-openai", provider="dashscope"),
+        ModelRecord(model_id="kimi-k27code-cn-us-output-p", provider="dashscope_openai"),
+        ModelRecord(model_id="kimi-k2.6", provider="dashscope_openai"),
+    ]
+
+    cleaned = _clean_official_records(records, allowed_providers={"dashscope", "dashscope_openai"})
+
+    assert [record.model_id for record in cleaned] == ["qwen3-vl-plus", "kimi-k2.6"]
 
 
 class _Response:
