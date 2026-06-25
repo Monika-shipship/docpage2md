@@ -56,6 +56,25 @@ def test_gui_builds_single_file_hybrid_command(tmp_path):
     ]
 
 
+def test_gui_builds_dual_hybrid_command(tmp_path):
+    pdf = tmp_path / "notes.pdf"
+    pdf.write_bytes(b"%PDF")
+    options = GuiRunOptions(
+        layout_engine="MinerU + PaddleOCR 双引擎融合",
+        refine_mode="开启 DocPage2MD 精修",
+        source_kind="input_file",
+        source_value=str(pdf),
+        output_folder=str(tmp_path / "out"),
+    )
+
+    argv = build_cli_argv(options)
+
+    assert argv[argv.index("--engine-mode") + 1] == "dual_hybrid"
+    assert argv[argv.index("--layout-engine") + 1] == "dual"
+    assert argv[argv.index("--refine-mode") + 1] == "docpage2md"
+    assert argv[-2:] == ["--input-file", str(pdf)]
+
+
 def test_gui_builds_multi_file_command(tmp_path):
     first = tmp_path / "a.pdf"
     second = tmp_path / "b.pptx"

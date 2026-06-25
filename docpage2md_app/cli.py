@@ -52,11 +52,11 @@ def parse_args(argv=None):
     parser.add_argument("-o", "--output", type=str, default="./markdown_output", help="输出目录路径")
     parser.add_argument(
         "--engine-mode",
-        choices=["vision_only", "mineru_only", "hybrid", "mineru_hybrid", "paddleocr_only", "paddleocr_hybrid"],
+        choices=["vision_only", "mineru_only", "hybrid", "mineru_hybrid", "paddleocr_only", "paddleocr_hybrid", "dual_hybrid"],
         default="vision_only",
-        help="处理模式：hybrid 兼容 mineru_hybrid；新增 paddleocr_only / paddleocr_hybrid",
+        help="处理模式：hybrid 兼容 mineru_hybrid；新增 paddleocr_only / paddleocr_hybrid / dual_hybrid",
     )
-    parser.add_argument("--layout-engine", choices=["mineru", "paddleocr", "none"], default=None, help="解析引擎覆盖：mineru / paddleocr / none")
+    parser.add_argument("--layout-engine", choices=["mineru", "paddleocr", "dual", "none"], default=None, help="解析引擎覆盖：mineru / paddleocr / dual / none")
     parser.add_argument("--refine-mode", choices=["none", "docpage2md"], default=None, help="Markdown 精修策略：none 或 docpage2md")
     parser.add_argument(
         "--document-type",
@@ -250,6 +250,9 @@ def _resolve_workflow(args) -> tuple[str, str, str]:
     elif engine_mode == "paddleocr_only":
         layout_engine = "paddleocr"
         refine_mode = "none"
+    elif engine_mode == "dual_hybrid":
+        layout_engine = "dual"
+        refine_mode = "docpage2md"
     else:
         layout_engine = "none"
         refine_mode = "docpage2md"
@@ -265,6 +268,9 @@ def _resolve_workflow(args) -> tuple[str, str, str]:
             engine_mode = "mineru_only"
     elif layout_engine == "paddleocr":
         engine_mode = "paddleocr_hybrid" if refine_mode == "docpage2md" else "paddleocr_only"
+    elif layout_engine == "dual":
+        engine_mode = "dual_hybrid"
+        refine_mode = "docpage2md"
     else:
         engine_mode = "vision_only"
     return engine_mode, layout_engine, refine_mode
@@ -479,6 +485,8 @@ def main(argv=None):
     config = build_config(args)
     args = _maybe_prompt_initial_mode(args)
     config = build_config(args)
+    if _is_dual_cli_mode(args):
+        return _run_dual_cli(args, config)
     if _is_paddleocr_cli_mode(args):
         return _run_paddleocr_cli(args, config)
     if _is_mineru_cli_mode(args):
@@ -629,7 +637,7 @@ def main(argv=None):
 
 
 def _is_mineru_cli_mode(args) -> bool:
-    if _args_layout_engine(args) == "paddleocr" or args.paddleocr_artifact_dir or args.paddleocr_url:
+    if _args_layout_engine(args) in {"paddleocr", "dual"} or args.paddleocr_artifact_dir or args.paddleocr_url:
         return False
     return bool(
         args.mineru_artifact_dir
@@ -641,6 +649,8 @@ def _is_mineru_cli_mode(args) -> bool:
 
 
 def _is_paddleocr_cli_mode(args) -> bool:
+    if _args_layout_engine(args) == "dual":
+        return False
     return bool(
         args.paddleocr_artifact_dir
         or args.paddleocr_url
@@ -653,11 +663,25 @@ def _is_paddleocr_cli_mode(args) -> bool:
 def _args_layout_engine(args) -> str:
     if args.layout_engine:
         return args.layout_engine
+    if args.engine_mode == "dual_hybrid":
+        return "dual"
     if args.engine_mode in {"paddleocr_only", "paddleocr_hybrid"}:
         return "paddleocr"
     if args.engine_mode in {"mineru_only", "hybrid", "mineru_hybrid"}:
         return "mineru"
     return "none"
+
+
+def _is_dual_cli_mode(args) -> bool:
+    return bool(
+        _args_layout_engine(args) == "dual"
+        and (
+            args.input_file
+            or args.input_files
+            or args.input_folder
+            or (args.mineru_artifact_dir and args.paddleocr_artifact_dir)
+        )
+    )
 
 
 def _maybe_prompt_initial_mode(args):
@@ -984,6 +1008,116 @@ def _run_paddleocr_cli(args, config: AppConfig) -> int:
     except (PaddleOCRError, ValueError, OSError) as exc:
         safe_progress(run_logger, f"PaddleOCR API failed: {exc}")
         print(f"PaddleOCR API 失败：{exc}")
+        return 1
+
+
+def _run_dual_cli(args, config: AppConfig) -> int:
+    from .dual_pipeline import DUAL_ENGINE_MODE, process_dual_artifact_task
+    from .mineru_client import MinerUError, MinerUClient
+    from .paddleocr_client import PaddleOCRError, PaddleOCRClient
+
+    config = replace(config, engine_mode=DUAL_ENGINE_MODE, layout_engine="dual", refine_mode="docpage2md")
+    doc_name = None if args.name == "default" else args.name
+    run_logger = RunLogger(_dual_process_log_path(config, args, doc_name), echo=True)
+    safe_progress(
+        run_logger,
+        (
+            f"Dual hybrid mode start: mineru_model={config.mineru_model_version}, "
+            f"paddleocr_model={config.paddleocr_model}, page_ranges={args.page_ranges or 'all'}, "
+            f"mineru_token_env={config.mineru_api_token_env}, paddleocr_token_env={config.paddleocr_api_key_env}"
+        ),
+    )
+    safe_progress(
+        run_logger,
+        (
+            f"Models: vision={config.vision_provider}:{config.model_vision} "
+            f"brain={config.brain_provider}:{config.model_brain}"
+        ),
+    )
+
+    if args.mineru_artifact_dir and args.paddleocr_artifact_dir:
+        try:
+            result = process_dual_artifact_task(
+                args.mineru_artifact_dir,
+                args.paddleocr_artifact_dir,
+                config,
+                doc_name=doc_name,
+                source_path=args.input_file,
+                progress=run_logger,
+            )
+            print(f"双引擎融合处理完成：共 {result['page_count']} 页 -> {result['output_dir']}")
+            return 0
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            safe_progress(run_logger, f"Dual artifact failed: {exc}")
+            print(f"双引擎 artifact 处理失败：{exc}")
+            return 1
+
+    try:
+        local_files = _resolve_dual_local_files(args)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    if not local_files:
+        print("双引擎融合缺少输入来源：请指定 --input-file、--input-files、--input-folder，或同时指定 --mineru-artifact-dir 和 --paddleocr-artifact-dir。")
+        return 2
+    if args.mineru_url or args.paddleocr_url:
+        print("双引擎融合首版只支持本地文件和已有 artifact；远程 URL 请先分别生成 artifact。")
+        return 2
+    try:
+        validate_mineru_model_version_for_paths(local_files, config.mineru_model_version)
+        _validate_dual_page_limits(local_files, args, config)
+        mineru_client = MinerUClient(config, progress=run_logger)
+        paddle_client = PaddleOCRClient(config, progress=run_logger)
+        processed_count = 0
+        for source in local_files:
+            _validate_paddleocr_size(source)
+            output_doc_name = doc_name if len(local_files) == 1 else None
+            safe_progress(run_logger, f"Dual parser submit start: source={source.name}")
+
+            safe_progress(run_logger, f"Dual MinerU submit: {source.name}")
+            batch_id = mineru_client.submit_local_files([source], page_ranges=args.page_ranges)
+            safe_progress(run_logger, f"Dual MinerU batch submitted: batch_id={batch_id}")
+            mineru_result = mineru_client.wait_for_batch_results(batch_id, expected_count=1)[0]
+            mineru_artifact = _download_mineru_artifact_only(
+                mineru_client,
+                mineru_result,
+                source=str(source),
+                config=config,
+                args=args,
+                task_ref={"task_id": mineru_result.task_id, "batch_id": batch_id},
+                progress=run_logger,
+            )
+
+            safe_progress(run_logger, f"Dual PaddleOCR submit: {source.name}")
+            job_id = paddle_client.submit_local_file(source, page_ranges=args.page_ranges)
+            safe_progress(run_logger, f"Dual PaddleOCR job submitted: job_id={job_id}")
+            paddle_status = paddle_client.wait_for_job(job_id)
+            paddle_artifact = _download_paddleocr_artifact_only(
+                paddle_client,
+                paddle_status,
+                source=str(source),
+                config=config,
+                args=args,
+                page_ranges=args.page_ranges,
+                progress=run_logger,
+            )
+
+            result = process_dual_artifact_task(
+                mineru_artifact,
+                paddle_artifact,
+                config,
+                doc_name=output_doc_name,
+                source_path=str(source),
+                progress=_per_dual_document_progress(config, args, str(source), output_doc_name, run_logger),
+            )
+            processed_count += 1
+            print(f"双引擎融合处理完成：共 {result['page_count']} 页 -> {result['output_dir']}")
+        safe_progress(run_logger, f"Dual hybrid local batch complete: {processed_count}/{len(local_files)} files")
+        print(f"双引擎融合本地任务完成：{processed_count}/{len(local_files)} 个文件")
+        return 0
+    except (MinerUError, PaddleOCRError, ValueError, OSError) as exc:
+        safe_progress(run_logger, f"Dual hybrid failed: {exc}")
+        print(f"双引擎融合失败：{exc}")
         return 1
 
 
@@ -1550,6 +1684,70 @@ def _download_and_process_mineru_result(
     )
 
 
+def _download_mineru_artifact_only(
+    client,
+    result,
+    *,
+    source: str,
+    config: AppConfig,
+    args,
+    task_ref: dict[str, str | None],
+    progress=None,
+) -> Path:
+    from .mineru_cache import cache_key_for_source, task_cache_dir, unzip_mineru_result, write_task_manifest
+
+    cache_key = cache_key_for_source(source, page_ranges=args.page_ranges, model_version=config.mineru_model_version)
+    cache_dir = task_cache_dir(config.output_folder, cache_key)
+    zip_path = cache_dir / "mineru_result.zip"
+    artifact_dir = cache_dir / "artifact"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    safe_progress(progress, f"Downloading MinerU artifact only: source={_safe_source_label(source)}, cache_key={cache_key[:12]}")
+    client.download_zip(result.full_zip_url or "", zip_path)
+    unzip_mineru_result(zip_path, artifact_dir)
+    write_task_manifest(
+        artifact_dir,
+        source=source,
+        page_ranges=args.page_ranges,
+        model_version=config.mineru_model_version,
+        full_zip_url=result.full_zip_url,
+        file_name=getattr(result, "file_name", None),
+        data_id=getattr(result, "data_id", None),
+        **task_ref,
+    )
+    safe_progress(progress, f"MinerU artifact ready for dual mode: {artifact_dir}")
+    return artifact_dir
+
+
+def _download_paddleocr_artifact_only(
+    client,
+    status,
+    *,
+    source: str,
+    config: AppConfig,
+    args,
+    page_ranges: str | None,
+    progress=None,
+) -> Path:
+    from .paddleocr_cache import cache_key_for_source, task_cache_dir, write_task_manifest
+
+    cache_key = cache_key_for_source(source, page_ranges=page_ranges, model=config.paddleocr_model)
+    cache_dir = task_cache_dir(config.output_folder, cache_key)
+    artifact_dir = cache_dir / "artifact"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    safe_progress(progress, f"Downloading PaddleOCR artifact only: source={_safe_source_label(source)}, cache_key={cache_key[:12]}")
+    client.download_job_artifact(status, artifact_dir, source=source, page_ranges=page_ranges)
+    write_task_manifest(
+        artifact_dir,
+        source=source,
+        page_ranges=page_ranges,
+        model=config.paddleocr_model,
+        job_id=status.job_id,
+        trace_id=status.trace_id,
+    )
+    safe_progress(progress, f"PaddleOCR artifact ready for dual mode: {artifact_dir}")
+    return artifact_dir
+
+
 def _per_document_progress(config: AppConfig, args, source: str, doc_name: str | None, progress):
     output_name = doc_name or _source_output_name(source)
     doc_log_path = Path(config.output_folder) / output_name / "process.log"
@@ -1569,6 +1767,21 @@ def _per_paddleocr_document_progress(config: AppConfig, args, source: str, doc_n
     output_name = doc_name or _source_output_name(source)
     doc_log_path = Path(config.output_folder) / output_name / "process.log"
     shared_log_path = _paddleocr_process_log_path(config, args, doc_name)
+    if progress is None or doc_log_path.resolve() == shared_log_path.resolve():
+        return progress
+    doc_logger = RunLogger(doc_log_path, echo=False)
+
+    def tee(message: str) -> None:
+        safe_progress(progress, message)
+        safe_progress(doc_logger, message)
+
+    return tee
+
+
+def _per_dual_document_progress(config: AppConfig, args, source: str, doc_name: str | None, progress):
+    output_name = doc_name or _source_output_name(source)
+    doc_log_path = Path(config.output_folder) / output_name / "process.log"
+    shared_log_path = _dual_process_log_path(config, args, doc_name)
     if progress is None or doc_log_path.resolve() == shared_log_path.resolve():
         return progress
     doc_logger = RunLogger(doc_log_path, echo=False)
@@ -1614,6 +1827,32 @@ def _resolve_paddleocr_local_files(args) -> list[Path]:
     for path in files:
         deduped[str(path.resolve()).lower()] = path.resolve()
     return sorted(deduped.values(), key=lambda path: str(path).lower())
+
+
+def _resolve_dual_local_files(args) -> list[Path]:
+    mineru_files = _resolve_mineru_local_files(args)
+    paddle_files = _resolve_paddleocr_local_files(args)
+    paddle_set = {str(path.resolve()).lower() for path in paddle_files}
+    unsupported = [path for path in mineru_files if str(path.resolve()).lower() not in paddle_set]
+    if unsupported:
+        names = ", ".join(path.name for path in unsupported[:5])
+        raise ValueError(f"双引擎融合要求输入同时被 MinerU 和 PaddleOCR 支持；以下文件暂不支持 PaddleOCR：{names}")
+    return mineru_files
+
+
+def _validate_dual_page_limits(local_files: list[Path], args, config: AppConfig) -> None:
+    for source in local_files:
+        if source.suffix.lower() != ".pdf":
+            continue
+        total_pages = estimate_pdf_pages(source)
+        if not total_pages:
+            continue
+        chunks = build_page_chunks(total_pages, args.page_ranges or "", chunk_size=config.paddleocr_page_chunk_size)
+        if len(chunks) > 1:
+            raise ValueError(
+                f"双引擎融合当前暂不自动分段：{source.name} 选中约 {sum(chunk.page_count for chunk in chunks)} 页，"
+                f"超过 PaddleOCR 单段 {config.paddleocr_page_chunk_size} 页。请用 --page-ranges 分段运行。"
+            )
 
 
 def _validate_explicit_mineru_file(path: str | Path) -> Path:
@@ -1696,6 +1935,10 @@ def _paddleocr_process_log_path(config: AppConfig, args, doc_name: str | None) -
     return Path(config.output_folder) / _paddleocr_log_output_name(args, doc_name) / "process.log"
 
 
+def _dual_process_log_path(config: AppConfig, args, doc_name: str | None) -> Path:
+    return Path(config.output_folder) / _dual_log_output_name(args, doc_name) / "process.log"
+
+
 def _mineru_log_output_name(args, doc_name: str | None) -> str:
     if doc_name:
         return doc_name
@@ -1730,6 +1973,20 @@ def _paddleocr_log_output_name(args, doc_name: str | None) -> str:
     if args.input_files:
         return "paddleocr_batch"
     return "paddleocr_task"
+
+
+def _dual_log_output_name(args, doc_name: str | None) -> str:
+    if doc_name:
+        return doc_name
+    if args.input_file:
+        return Path(args.input_file).stem
+    if args.mineru_artifact_dir and args.paddleocr_artifact_dir:
+        return f"{Path(args.mineru_artifact_dir).name}_dual"
+    if args.input_folder:
+        return f"{Path(args.input_folder).name}_dual_batch"
+    if args.input_files:
+        return "dual_batch"
+    return "dual_hybrid_task"
 
 
 def _source_output_name(source: str) -> str:

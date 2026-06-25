@@ -28,12 +28,15 @@ PaddleOCR 已作为 DocPage2MD 的正式可选解析引擎接入。它和 MinerU
 - 离线测试覆盖 adapter、坏 JSONL、空页、client fake HTTP、pending/running/done、429/503/504 重试、结果下载重试、pipeline 渲染和 chunk merge。
 - 已通过 Tkinter GUI 代码路径用 `tests/群论笔记4.1.pdf` 全量跑通 `paddleocr_only` 和 `paddleocr_hybrid`，输出分别在 `markdown_output/gui_paddleocr_real_verify_only/gui_paddleocr_4_1_only` 与 `markdown_output/gui_paddleocr_real_verify_hybrid/gui_paddleocr_4_1_hybrid`。
 - 同一 PDF 的基础耗时对比已记录：`mineru_only` 约 `16.4s`，`mineru_hybrid` 约 `113.9s`，`paddleocr_only` 约 `19.1s`，`paddleocr_hybrid` 约 `106.0s`。
+- `dual_hybrid` 双引擎融合首版已完成：MinerU 作为主版面/crop 骨架，PaddleOCR 作为同页证据，再进入 DocPage2MD 精修。
+- 已用真实 `tests/群论笔记4.1.pdf` 页 1 验证 PaddleOCR API 和 `dual_hybrid`，输出分别在 `markdown_output/paddleocr_api_probe_20260625/paddleocr_api_probe_page1`、`markdown_output/dual_real_probe_20260625/dual_real_probe_page1` 和修复后复跑的 `markdown_output/dual_real_artifact_rerun_20260625/dual_real_artifact_rerun_page1`。
 
 仍需真实验收/优化：
 
 - 与同一文件的 `mineru_only` / `mineru_hybrid` 继续做公式质量、表格质量和图片切分质量对比。
 - 根据更多真实失败码继续补充更细的错误提示。
 - 根据真实返回字段继续完善 PaddleOCR artifact 解析。
+- 实现长 PDF 的 `dual_hybrid` chunked merge。目前双引擎模式会阻止超过 PaddleOCR chunk size 的 PDF，避免错误地只处理前一段。
 
 ## 已阅读的本地文档
 
@@ -132,6 +135,7 @@ mineru_only
 paddleocr_only
 mineru_hybrid
 paddleocr_hybrid
+dual_hybrid
 vision_only
 ```
 
@@ -139,7 +143,7 @@ vision_only
 
 - 现有 `hybrid` 继续等价于 `mineru_hybrid`，避免破坏旧脚本。
 - 现有 `mineru_only` 保持不变。
-- 新增 PaddleOCR 时优先增加显式 CLI 参数，例如 `--layout-engine mineru|paddleocr|none` 与 `--refine-mode none|docpage2md`，再映射到旧 `engine_mode`。
+- 新增 PaddleOCR/双引擎时优先增加显式 CLI 参数，例如 `--layout-engine mineru|paddleocr|dual|none` 与 `--refine-mode none|docpage2md`，再映射到旧 `engine_mode`。
 
 ## 输出适配设计
 
@@ -183,15 +187,14 @@ Adapter 任务：
 - 保留 bbox、置信度、类别、页面图片和裁剪图引用。
 - 对公式、表格、图示说明继续走 DocPage2MD 的 Markdown contract 和 validator。
 
-## 后续重点：MinerU + PaddleOCR 双引擎融合
+## MinerU + PaddleOCR 双引擎融合
 
-当前 `mineru_hybrid` 和 `paddleocr_hybrid` 是两条可选解析路径：同一文件要么以 MinerU 为前置解析，要么以 PaddleOCR 为前置解析。用户引入 PaddleOCR 的更高阶目标不是简单替代 MinerU，而是把两者共同输出作为候选证据，融合后得到更准确的 Markdown。
+`mineru_hybrid` 和 `paddleocr_hybrid` 是两条可选解析路径：同一文件要么以 MinerU 为前置解析，要么以 PaddleOCR 为前置解析。`dual_hybrid` 是首版双引擎融合路径：同一文件同时跑 MinerU 与 PaddleOCR，把两者共同输出作为候选证据，融合后得到更准确的 Markdown。
 
-建议新增一个独立工作流，例如：
+当前内部模式名：
 
 ```text
 dual_hybrid
-mineru_paddleocr_fusion
 ```
 
 GUI 上显示为：
@@ -199,6 +202,20 @@ GUI 上显示为：
 ```text
 MinerU + PaddleOCR 双引擎融合精修
 ```
+
+首版已完成的范围：
+
+- 本地文件、本地多文件、文件夹。
+- 已有 artifact pair：`--mineru-artifact-dir` + `--paddleocr-artifact-dir`。
+- MinerU 作为 primary layout/crop backbone，PaddleOCR 写入 `dual_evidence`。
+- Brain prompt 接收 compact dual evidence，只允许 checked ops 局部修正。
+- 输出保留 `mineru_raw/`、`paddleocr_raw/`、融合后的 `ir/document_ir.json` 和 `run_report.json`。
+
+首版限制：
+
+- 远程 URL 暂不直接支持双引擎，可先分别生成 artifact 后融合。
+- 长 PDF 暂不做双引擎自动分段合并；超过 PaddleOCR chunk size 时阻止运行。
+- 当前是 MinerU-primary evidence merge，不是完整 bbox candidate grouping。下面的 candidate grouping 仍是下一步质量升级方向。
 
 ### 核心原则
 
@@ -378,7 +395,7 @@ AI 输出应是结构化操作，而不是直接重写整页 Markdown：
 
 CLI 当前已支持：
 
-- `--layout-engine mineru|paddleocr|none`。
+- `--layout-engine mineru|paddleocr|dual|none`。
 - `--refine-mode none|docpage2md`。
 - `--paddleocr-model PaddleOCR-VL-1.6|PaddleOCR-VL-1.5|PaddleOCR-VL|PP-StructureV3|PP-OCRv5`。
 - `--paddleocr-api-key-env PADDLEOCR_API_TOKEN`，默认读取 `PADDLEOCR_API_TOKEN`。
@@ -394,7 +411,7 @@ CLI 当前已支持：
 GUI 当前已实现：
 
 - “文档类型”只作为推荐预设，不和模式冲突。
-- “解析引擎”单独选择：MinerU、PaddleOCR。
+- “解析引擎”单独选择：MinerU、PaddleOCR、MinerU + PaddleOCR 双引擎融合。
 - “Markdown 精修”单独选择：关闭、开启 DocPage2MD 精修。
 - “处理模式”显示成中文组合结果，例如“PaddleOCR + Markdown 精修”。
 - 在模式旁边显示中文说明，明确速度、成本和适用场景。
@@ -488,6 +505,7 @@ HTTP 假服务测试：
 
 - 新增 `paddleocr_only`。
 - 新增 `paddleocr_hybrid`。
+- 新增 `dual_hybrid` 首版。
 - 保持 `hybrid` 对旧用户等价于 `mineru_hybrid`。
 - 更新 CLI help、README、GUI 模式说明和 tests。
 
@@ -502,6 +520,13 @@ HTTP 假服务测试：
 - 用 `tests/test-PaddleOCR/` 私有真实样本对比 MinerU 和 PaddleOCR。
 - 记录不同文档类型下的速度、成本、公式质量、表格质量、图片切分质量。
 - 决定默认推荐策略，不用一次性替换 MinerU。
+
+### Phase 6：双引擎融合升级
+
+- 实现 `dual_hybrid` 自动 chunked merge。
+- 实现 bbox/text candidate grouping，而不是只把 PaddleOCR 作为整页证据。
+- 记录每个候选组的 choose/merge/keep-both/mark-uncertain 审计。
+- 用真实长 PDF 和复杂公式页比较 `mineru_hybrid`、`paddleocr_hybrid`、`dual_hybrid` 的质量和耗时。
 
 ## 不做的事
 

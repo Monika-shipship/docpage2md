@@ -25,6 +25,7 @@ DocPage2MD has five processing modes:
 - `mineru_hybrid` / `hybrid`: MinerU layout/crops first, then crop vision + Brain JSON ops + checked refiner + deterministic renderer.
 - `paddleocr_only`: call or read PaddleOCR output, adapt `layoutParsingResults` / Markdown / images to DocumentIR, then render clean Markdown.
 - `paddleocr_hybrid`: PaddleOCR DocumentIR plus DocPage2MD crop Vision / Brain refinement.
+- `dual_hybrid`: MinerU and PaddleOCR both parse the same input; MinerU stays the primary layout/crop backbone, PaddleOCR is same-page evidence, then DocPage2MD runs crop Vision + Brain + checked refiner.
 - `vision_only`: legacy image-folder flow for page images.
 
 The Tkinter GUI is the current lightweight desktop entry. It supports local single file, multiple files, folder batch, MinerU artifact, PaddleOCR artifact and URL inputs; Chinese labels/logs; progress/ETA; cost estimate; output folder opening; Vision/Brain worker controls; and model management. The run tab is split into left-side workflow/input/output controls and right-side progress/cost/log controls.
@@ -39,6 +40,7 @@ Current GUI details:
 - Cost UI is a table and only estimates Vision/Brain token fees; MinerU/PaddleOCR are quota/limit notes.
 - Model management is provider-first: Provider/Key, role binding, candidate models and third-party model library.
 - PaddleOCR is selectable as a parser engine, default model `PaddleOCR-VL-1.6`, async endpoint `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`, default PDF chunk size 100 pages.
+- Dual parser is selectable as `MinerU + PaddleOCR 双引擎融合`; it currently supports local files/folders and artifact pairs, not remote URLs or automatic chunked dual merge.
 - Official model/price refresh is available through CLI and GUI background refresh, with provider-aware diff summary and local fallback. DashScope refresh keeps the broad official catalog but filters obvious documentation slug artifacts; GUI role binding then narrows Vision/Brain candidates by capability metadata.
 
 The longer-term WebUI plan is tracked in `docs/plans/webui-roadmap.md`. PaddleOCR status and follow-up comparison work are tracked in `docs/plans/paddleocr-integration-roadmap.md`.
@@ -143,7 +145,7 @@ python docpage2md.py --engine-mode hybrid --model-profile cheap --input-file ".\
 
 - `python docpage2md.py --help`: passed.
 - `python -m docpage2md_app --help`: passed.
-- `python -m pytest -q`: 284 passed.
+- `python -m pytest -q`: 292 passed.
 - `git diff --check`: passed, with only CRLF conversion warnings.
 - GUI construction smoke passed: `DocPage2MdGui()` can construct, update idle tasks and destroy cleanly after the input table/provider/cost redesign.
 - `python -m pytest tests/test_cli.py tests/test_gui.py tests/test_hybrid_enrichment.py tests/test_mineru_pipeline.py tests/test_files_and_session.py tests/test_run_logger.py -q`: 41 passed during GUI/log/performance work.
@@ -174,6 +176,15 @@ python docpage2md.py --engine-mode hybrid --model-profile cheap --input-file ".\
     - Full 11 pages, `status=ok`, `engine_mode=paddleocr_hybrid`, layout model `PaddleOCR-VL-1.6`, Vision `qwen3-vl-plus`, Brain `deepseek-v4-flash`, final pages `ok=11/11`, Brain `partial=11/11`, total about `106.0s`.
   - Both outputs contain `paddleocr_raw/`, `ir/`, `assets/`, `Slide_XX.md`, `*_FULL.md`, `run_report.json` and Chinese `process.log`.
   - Final Markdown for both modes passed no-key/no-traceback/no-confidence-error/no-validator-text/no-reasoning checks.
+- Latest dual engine real verification:
+  - Source: `tests/群论笔记4.1.pdf`, page range `1`.
+  - PaddleOCR-only API probe output: `markdown_output/paddleocr_api_probe_20260625/paddleocr_api_probe_page1`.
+    - `status=ok`, `engine_mode=paddleocr_only`, 1 page, and real API result contained `layoutParsingResults`, `prunedResult`, `markdown`, `outputImages`, `inputImage` and `dataInfo`.
+  - Dual real probe output: `markdown_output/dual_real_probe_20260625/dual_real_probe_page1`.
+    - `status=ok`, `engine_mode=dual_hybrid`, strategy `mineru_primary_paddleocr_evidence`, layout model `vlm+PaddleOCR-VL-1.6`.
+  - Post-fix artifact rerun output: `markdown_output/dual_real_artifact_rerun_20260625/dual_real_artifact_rerun_page1`.
+    - `status=ok`, pages `1/1`, Vision `qwen3-vl-plus`, Brain `deepseek-v4-flash`.
+    - Final Markdown no longer repeats `(2)结合律：` and passed no-key/no-traceback/no-provider-error/no-validator-text/no-reasoning checks.
 - Same-file parser comparison for `tests/群论笔记4.1.pdf`:
   - `mineru_only`: `markdown_output/mineru_real_compare_4_1_only/mineru_4_1_only_compare`, 11 pages, `status=ok`, final pages `ok=11/11`, about `16.4s`.
   - `mineru_hybrid` / legacy `hybrid`: `markdown_output/gui_parallel_full_verify/群论笔记4.1`, 11 pages, `status=ok`, final pages `ok=11/11`, about `113.9s`.
@@ -191,3 +202,4 @@ python docpage2md.py --engine-mode hybrid --model-profile cheap --input-file ".\
 - If a real API smoke reveals a quality issue, summarize it in `docs/changelog.md` and keep detailed diagnostics in `run_report.json`, not Markdown.
 - Do not read, rewrite, move or delete `markdown_output/已归档`; it is deprecated output retained by user request.
 - PaddleOCR docs are local under `docs/PaddleOCR/`; read them before changing request payloads, limits or artifact parsing.
+- For `dual_hybrid`, implement chunked dual merge before allowing long PDFs to auto-split; current guard intentionally blocks PDFs beyond the PaddleOCR chunk size.

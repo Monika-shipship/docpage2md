@@ -46,6 +46,7 @@ def render_blocks_to_markdown(
     if include_provenance_comments:
         heading = f"{provenance_comment(renderer_template_block(slide_no))}\n{heading}"
     chunks = [heading]
+    last_rendered_body = ""
     skip_indexes = set()
     for index, block in enumerate(blocks):
         if index in skip_indexes:
@@ -54,15 +55,21 @@ def render_blocks_to_markdown(
         if _is_table_caption_block(block) and _is_reliable_table_block(next_block):
             rendered = _render_table_with_caption(block, next_block)
             skip_indexes.add(index + 1)
+            rendered = _remove_adjacent_duplicate_prefix(last_rendered_body, rendered)
             if include_provenance_comments:
                 rendered = f"{provenance_comment(block)}\n{provenance_comment(next_block)}\n{rendered}"
-            chunks.append(rendered)
+            if rendered:
+                chunks.append(rendered)
+                last_rendered_body = rendered
             continue
         rendered = render_block(block)
+        if rendered:
+            rendered = _remove_adjacent_duplicate_prefix(last_rendered_body, rendered)
         if rendered:
             if include_provenance_comments:
                 rendered = f"{provenance_comment(block)}\n{rendered}"
             chunks.append(rendered)
+            last_rendered_body = rendered
     return "\n\n".join(chunks).rstrip() + "\n"
 
 
@@ -212,6 +219,38 @@ def _detail_items(value: Any) -> list[str]:
 def _render_collapsible_details(summary: str, lines: list[str]) -> str:
     body = "\n".join(lines).strip()
     return f"<details>\n<summary>{summary}</summary>\n\n{body}\n\n</details>"
+
+
+def _remove_adjacent_duplicate_prefix(previous: str, current: str) -> str:
+    previous_line = _single_short_label(previous)
+    if not previous_line:
+        return current
+    lines = current.splitlines()
+    first_index = next((index for index, line in enumerate(lines) if line.strip()), None)
+    if first_index is None:
+        return current
+    first = lines[first_index].strip()
+    if first == previous_line:
+        del lines[first_index]
+        return "\n".join(lines).strip()
+    if first.startswith(previous_line) and len(first) > len(previous_line) + 2:
+        lines[first_index] = first[len(previous_line) :].lstrip()
+        return "\n".join(lines).strip()
+    return current
+
+
+def _single_short_label(text: str) -> str | None:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return None
+    line = lines[0]
+    if len(line) > 80 or line.startswith("![") or "|" in line:
+        return None
+    if line.endswith((":","：")):
+        return line
+    if re.match(r"^[（(]?\d+[）).、]?\s*\S{1,24}[：:]$", line):
+        return line
+    return None
 
 
 def _render_uncertain(text: str) -> str:

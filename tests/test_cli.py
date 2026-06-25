@@ -64,6 +64,25 @@ def test_cli_build_config_exposes_mineru_multiformat_options(tmp_path):
     assert config.brain_provider == "deepseek"
 
 
+def test_cli_build_config_exposes_dual_hybrid_workflow(tmp_path):
+    args = cli.parse_args(
+        [
+            "--engine-mode",
+            "dual_hybrid",
+            "--input-file",
+            "notes.pdf",
+            "--output",
+            str(tmp_path),
+        ]
+    )
+
+    config = cli.build_config(args)
+
+    assert config.engine_mode == "dual_hybrid"
+    assert config.layout_engine == "dual"
+    assert config.refine_mode == "docpage2md"
+
+
 def test_cli_build_config_exposes_mineru_advanced_options(tmp_path):
     args = cli.parse_args(
         [
@@ -343,6 +362,20 @@ def test_cli_blocks_oversized_paddleocr_url(monkeypatch):
         assert "large.pdf" in str(exc)
     else:
         raise AssertionError("Expected oversized PaddleOCR URL to fail")
+
+
+def test_cli_dual_rejects_pdf_that_needs_chunking(tmp_path):
+    pdf = tmp_path / "long.pdf"
+    pdf.write_bytes(b"%PDF\n" + b"\n".join([b"<< /Type /Page >>"] * 101))
+    args = cli.parse_args(["--engine-mode", "dual_hybrid", "--input-file", str(pdf), "--output", str(tmp_path / "out")])
+    config = cli.build_config(args)
+
+    try:
+        cli._validate_dual_page_limits([pdf], args, config)
+    except ValueError as exc:
+        assert "暂不自动分段" in str(exc)
+    else:
+        raise AssertionError("Expected dual hybrid oversized PDF to fail")
 
 
 def test_interactive_default_starts_with_hybrid_mineru_pdf(monkeypatch):

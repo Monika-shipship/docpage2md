@@ -54,6 +54,7 @@ _ENGINE_MODE_LABELS = {
     "mineru_only": "仅 MinerU 解析",
     "paddleocr_hybrid": "PaddleOCR + Markdown 精修",
     "paddleocr_only": "仅 PaddleOCR 解析",
+    "dual_hybrid": "MinerU + PaddleOCR 双引擎融合",
     "vision_only": "纯视觉旧流程",
 }
 _MODEL_PROFILE_LABELS = {
@@ -103,6 +104,69 @@ def translate_log_line(line: str) -> str:
 
 def translate_progress_message(message: str) -> str:
     """Translate backend progress events to Chinese while preserving ids, paths and counts."""
+    if match := re.search(
+        r"Dual hybrid mode start: mineru_model=([^,]+), paddleocr_model=([^,]+), page_ranges=([^,]+), mineru_token_env=([^,]+), paddleocr_token_env=(.+)",
+        message,
+    ):
+        pages = "全量" if match.group(3) == "all" else match.group(3)
+        return (
+            f"开始双引擎融合：MinerU模型={match.group(1)}，PaddleOCR模型={match.group(2)}，"
+            f"页码={pages}，MinerU Token={match.group(4)}，PaddleOCR Token={match.group(5)}"
+        )
+    if match := re.search(r"Discovering dual artifacts: mineru=([^,]+), paddleocr=(.+)", message):
+        return f"正在扫描双引擎 artifact：MinerU={match.group(1)}，PaddleOCR={match.group(2)}"
+    if match := re.search(r"Dual output directory ready: (.+)", message):
+        return f"双引擎输出目录已准备：{match.group(1)}"
+    if message == "Adapting MinerU artifact to DocumentIR":
+        return "正在把 MinerU 结果转换为内部文档结构"
+    if message == "Adapting PaddleOCR artifact to DocumentIR":
+        return "正在把 PaddleOCR 结果转换为内部文档结构"
+    if match := re.search(r"MinerU evidence ready: pages=(\d+), assets=(\d+)", message):
+        return f"MinerU 证据已就绪：页数={match.group(1)}，素材={match.group(2)}"
+    if match := re.search(r"PaddleOCR evidence ready: pages=(\d+), assets=(\d+)", message):
+        return f"PaddleOCR 证据已就绪：页数={match.group(1)}，素材={match.group(2)}"
+    if message == "Merging MinerU + PaddleOCR evidence":
+        return "正在融合 MinerU 与 PaddleOCR 两份解析证据"
+    if match := re.search(r"Dual DocumentIR ready: pages=(\d+), primary_blocks=(\d+)", message):
+        return f"双引擎文档结构已就绪：共 {match.group(1)} 页，主块数={match.group(2)}"
+    if message == "Dual hybrid enrichment start: crop vision + Brain evidence selection":
+        return "开始双引擎混合精修：裁剪图 Vision 识别 + Brain 证据判断"
+    if message.startswith("Dual hybrid enrichment done:"):
+        return f"双引擎混合精修完成：{message.split(':', 1)[1].strip()}"
+    if match := re.search(r"Wrote dual document IR: (.+)", message):
+        return f"双引擎内部文档结构已写入：{match.group(1)}"
+    if match := re.search(r"Rendering dual page (\d+)/(\d+): slide=(\d+), blocks=(\d+)", message):
+        return f"正在渲染双引擎 Markdown：第 {match.group(1)}/{match.group(2)} 页，slide={match.group(3)}，块数={match.group(4)}"
+    if match := re.search(r"Dual page rendered: slide=(\d+), status=([^,]+), markdown=(.+)", message):
+        return f"双引擎 Markdown 已生成：第 {match.group(1)} 页，状态={_status_label(match.group(2))}，文件={match.group(3)}"
+    if match := re.search(r"Dual Markdown rendering done: pages=(\d+), elapsed=([\d.]+)s", message):
+        return f"双引擎 Markdown 渲染完成：页数={match.group(1)}，耗时={match.group(2)}秒"
+    if match := re.search(r"Wrote dual run report: (.+), status=(.+)", message):
+        return f"双引擎运行报告已写入：{match.group(1)}，状态={_status_label(match.group(2))}"
+    if match := re.search(r"Dual parser submit start: source=(.+)", message):
+        return f"开始提交双引擎解析：文件={match.group(1)}"
+    if match := re.search(r"Dual MinerU submit: (.+)", message):
+        return f"双引擎正在提交 MinerU：{match.group(1)}"
+    if match := re.search(r"Dual MinerU batch submitted: batch_id=(.+)", message):
+        return f"双引擎 MinerU 任务已提交：batch_id={match.group(1)}"
+    if match := re.search(r"Downloading MinerU artifact only: source=([^,]+), cache_key=(.+)", message):
+        return f"正在下载 MinerU 证据 artifact：来源={match.group(1)}，缓存键={match.group(2)}"
+    if match := re.search(r"MinerU artifact ready for dual mode: (.+)", message):
+        return f"MinerU 证据 artifact 已就绪：{match.group(1)}"
+    if match := re.search(r"Dual PaddleOCR submit: (.+)", message):
+        return f"双引擎正在提交 PaddleOCR：{match.group(1)}"
+    if match := re.search(r"Dual PaddleOCR job submitted: job_id=(.+)", message):
+        return f"双引擎 PaddleOCR 任务已提交：job_id={match.group(1)}"
+    if match := re.search(r"Downloading PaddleOCR artifact only: source=([^,]+), cache_key=(.+)", message):
+        return f"正在下载 PaddleOCR 证据 artifact：来源={match.group(1)}，缓存键={match.group(2)}"
+    if match := re.search(r"PaddleOCR artifact ready for dual mode: (.+)", message):
+        return f"PaddleOCR 证据 artifact 已就绪：{match.group(1)}"
+    if match := re.search(r"Dual hybrid local batch complete: (\d+)/(\d+) files", message):
+        return f"双引擎本地批量完成：{match.group(1)}/{match.group(2)} 个文件"
+    if message.startswith("Dual hybrid failed:"):
+        return f"双引擎融合失败：{message.split(':', 1)[1].strip()}"
+    if message.startswith("Dual artifact failed:"):
+        return f"双引擎 artifact 处理失败：{message.split(':', 1)[1].strip()}"
     if match := re.search(
         r"MinerU mode start: mode=([^,]+), profile=([^,]+), mineru_model=([^,]+), page_ranges=([^,]+), token_env=(.+)",
         message,

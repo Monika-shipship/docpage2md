@@ -81,6 +81,22 @@ def test_renderer_normalizes_unicode_math_inside_text_blocks():
     assert "ω" not in markdown
 
 
+def test_renderer_dedupes_adjacent_short_label_prefix_after_brain_fix():
+    markdown = render_blocks_to_markdown(
+        [
+            {"type": "paragraph", "text": "(2)结合律："},
+            {
+                "type": "formula_inline",
+                "text": "(2)结合律：\n$\\forall \\alpha,\\beta,\\gamma$，恒有 $(g(\\alpha)g(\\beta))g(\\gamma)=g(\\alpha)(g(\\beta)g(\\gamma))$",
+            },
+        ],
+        1,
+    )
+
+    assert markdown.count("(2)结合律：") == 1
+    assert "$\\forall \\alpha,\\beta,\\gamma$" in markdown
+
+
 def test_golden_renderer_fixture():
     fixtures = Path(__file__).parent / "fixtures"
     raw = (fixtures / "golden_raw_stage1.txt").read_text(encoding="utf-8")

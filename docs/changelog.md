@@ -6,10 +6,15 @@
 
 - 正式接入 PaddleOCR 主路径：
   - 新增 `paddleocr_only` 和 `paddleocr_hybrid`。
-  - 新增 `--layout-engine mineru|paddleocr|none` 和 `--refine-mode none|docpage2md`。
+  - 新增 `--layout-engine mineru|paddleocr|dual|none` 和 `--refine-mode none|docpage2md`。
   - 新增 PaddleOCR 参数：`--paddleocr-model`、`--paddleocr-api-key-env`、`--paddleocr-base-url`、`--paddleocr-artifact-dir`、`--paddleocr-url`、`--paddleocr-page-chunk-size` 和 optional payload 开关。
   - 默认模型为 `PaddleOCR-VL-1.6`，默认异步接口为 `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`。
   - 本地 PDF 默认按 100 页分段，输出保留 `paddleocr_raw/`、`ir/`、`assets/`、`Slide_XX.md`、`*_FULL.md` 和 `run_report.json`。
+- 新增 `dual_hybrid` 双引擎融合首版：
+  - CLI 支持 `--engine-mode dual_hybrid` 和 `--layout-engine dual`。
+  - 同一输入先走 MinerU 和 PaddleOCR，MinerU 作为主版面/crop 骨架，PaddleOCR 作为同页交叉证据，再复用现有 crop Vision、Brain JSON ops、checked refiner 和 renderer。
+  - 支持本地单文件、多文件、文件夹，以及同时提供 `--mineru-artifact-dir` + `--paddleocr-artifact-dir` 的 artifact 融合。
+  - 输出同时保留 `mineru_raw/`、`paddleocr_raw/`、融合后的 `ir/document_ir.json`、`Slide_XX.md`、`*_FULL.md` 和 `run_report.json`。
 - 新增 PaddleOCR client / artifact / adapter / pipeline：
   - 支持解析 `layoutParsingResults`、`prunedResult`、`ocrResults`、Markdown 图片、`outputImages` 和 `inputImage`。
   - PaddleOCR artifact 先转换为现有 DocumentIR，再复用 renderer、validator 和 hybrid enrichment。
@@ -76,12 +81,15 @@
   - 单个裸 Unicode 数学符号会包成 LaTeX inline math。
   - `G→S`、`k→g→?` 这类箭头表达式会作为完整公式片段处理，避免生成重叠 `$...$`。
   - 修复图示说明中的箭头链触发 `display_math_unbalanced` / `inline_math_unbalanced` 的问题。
+- 渲染器新增相邻短标题去重保护：
+  - 当 Brain 把后一块 OCR 标题修正后与上一块短标题完全重复时，只渲染一次标题，保留后一块正文/公式。
+  - 真实 `dual_hybrid` 页 1 中重复的 `(2)结合律：` 已修复。
 
 ### Verified
 
 - `python docpage2md.py --help`：通过。
 - `python -m docpage2md_app --help`：通过。
-- `python -m pytest -q`：284 passed。
+- `python -m pytest -q`：292 passed。
 - `git diff --check`：无 whitespace error，仅有 CRLF 提示。
 - Tkinter GUI 构建 smoke 通过：`DocPage2MdGui()` 能创建、刷新 idle tasks 并销毁。
 - 聚焦 GUI/CLI/MinerU/secrets 测试：54 passed。
@@ -99,6 +107,11 @@
   - `paddleocr_hybrid` 输出目录：`markdown_output/gui_paddleocr_real_verify_hybrid/gui_paddleocr_4_1_hybrid`，11 页全量，`status=ok`，最终页 `ok=11/11`，Brain `partial=11/11`，约 `106.0s`。
   - 两个输出都包含 `paddleocr_raw/`、`ir/`、`assets/`、`Slide_XX.md`、`*_FULL.md`、`run_report.json` 和中文 `process.log`。
   - 最终用户 Markdown 未发现 API Key、Python traceback、validator 文本、模型思考过程或置信度转换错误。
+- 使用真实 `tests/群论笔记4.1.pdf` 验证 PaddleOCR API 与 `dual_hybrid`：
+  - PaddleOCR-only API 探针输出：`markdown_output/paddleocr_api_probe_20260625/paddleocr_api_probe_page1`，1 页，`status=ok`，确认真实返回包含 `layoutParsingResults/prunedResult/markdown/outputImages/inputImage/dataInfo`。
+  - 双引擎真实页 1 输出：`markdown_output/dual_real_probe_20260625/dual_real_probe_page1`，`status=ok`，`engine_mode=dual_hybrid`，`dual_parser.strategy=mineru_primary_paddleocr_evidence`。
+  - 修复重复标题后，用真实 artifact 复跑输出：`markdown_output/dual_real_artifact_rerun_20260625/dual_real_artifact_rerun_page1`，`status=ok`，1/1 页，layout model `vlm+PaddleOCR-VL-1.6`，Vision `qwen3-vl-plus`，Brain `deepseek-v4-flash`。
+  - 最终用户 Markdown 未发现 API Key、Python traceback、provider 原始错误、validator 诊断文本或模型思考过程。
 - 同一 PDF 主路径耗时对比已记录：
   - `mineru_only`：约 `16.4s`。
   - `mineru_hybrid` / `hybrid`：约 `113.9s`。

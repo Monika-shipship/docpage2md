@@ -717,10 +717,18 @@ def _crop_vision_prompt(block: dict[str, Any]) -> str:
 def _brain_ops_prompt(page_ir: dict[str, Any], context_pages: list[dict[str, Any]]) -> str:
     page_no = int(page_ir.get("source_page") or 0)
     context = [_brain_context_page(page, target_page_no=page_no) for page in context_pages]
+    dual_note = ""
+    if page_ir.get("dual_evidence"):
+        dual_note = (
+            "当前页包含 MinerU 与 PaddleOCR 两份解析证据。MinerU 是主版面骨架，"
+            "PaddleOCR 是交叉核验证据；只有当 PaddleOCR 对公式、手写字词或段落明显更完整/更符合上下文时，"
+            "才使用 checked op 修正对应 MinerU block。\n"
+        )
     return (
         "你是 DocPage2MD 的 Brain 纠错器。只能输出 JSON，不得输出 Markdown，不得输出思考过程。\n"
         "任务：结合前后页上下文，修正明显 OCR/LaTeX 识别错误。不要自由重写整页，不要删除大段内容。\n"
         "公式和数学符号必须使用 LaTeX；即使符号混在 paragraph/text block 中，也要改成 $...$ 内的 \\phi、\\theta、\\omega 等命令，不能保留裸 φ、θ、ω。\n"
+        f"{dual_note}"
         "允许 ops：replace_text_span_checked, normalize_formula, mark_uncertain, merge_block, promote_heading, demote_heading。\n"
         "replace_text_span_checked 格式："
         '{"op":"replace_text_span_checked","id":"p0001-b001","old_text":"...","new_text":"...","field":"text","reason":"..."}\n'
@@ -736,7 +744,7 @@ def _brain_context_page(page: dict[str, Any], *, target_page_no: int) -> dict[st
     block_limit = 80 if is_target else 32
     raw_limit = 1600 if is_target else 360
     text_limit = 420 if is_target else 120
-    return {
+    context = {
         "page": page.get("source_page"),
         "role": "target" if is_target else "neighbor",
         "raw_text": _truncate(page.get("raw_text") or "", raw_limit),
@@ -750,10 +758,35 @@ def _brain_context_page(page: dict[str, Any], *, target_page_no: int) -> dict[st
             if _brain_context_block_text(block)
         ],
     }
+    dual_evidence = page.get("dual_evidence")
+    if is_target and isinstance(dual_evidence, dict):
+        context["dual_evidence"] = _brain_dual_evidence_context(dual_evidence)
+    return context
 
 
 def _brain_context_block_text(block: dict[str, Any]) -> str:
     return str(block.get("latex") or block.get("text") or block.get("description") or "").strip()
+
+
+def _brain_dual_evidence_context(dual_evidence: dict[str, Any]) -> dict[str, Any]:
+    def compact(engine: str) -> dict[str, Any]:
+        payload = dual_evidence.get(engine) if isinstance(dual_evidence.get(engine), dict) else {}
+        return {
+            "available": bool(payload.get("available")),
+            "raw_text": _truncate(payload.get("raw_text") or "", 1200),
+            "blocks": [
+                {
+                    "id": block.get("id"),
+                    "type": block.get("type"),
+                    "text": _truncate(block.get("text") or "", 220),
+                    "confidence": block.get("confidence"),
+                }
+                for block in (payload.get("blocks") or [])[:80]
+                if isinstance(block, dict) and str(block.get("text") or "").strip()
+            ],
+        }
+
+    return {"mineru": compact("mineru"), "paddleocr": compact("paddleocr")}
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:

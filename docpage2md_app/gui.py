@@ -104,6 +104,7 @@ ENGINE_MODE_LABELS = {
     "mineru_only": "仅 MinerU 解析（最快）",
     "paddleocr_hybrid": "PaddleOCR + Markdown 精修",
     "paddleocr_only": "仅 PaddleOCR 解析",
+    "dual_hybrid": "MinerU + PaddleOCR 双引擎融合",
 }
 ENGINE_MODE_LABEL_TO_KEY = {label: key for key, label in ENGINE_MODE_LABELS.items()}
 ENGINE_MODE_DESCRIPTIONS = {
@@ -112,12 +113,14 @@ ENGINE_MODE_DESCRIPTIONS = {
     "mineru_only": "只把 MinerU 解析结果渲染成 Markdown，不调用 Vision/Brain；速度最快，适合排版清楚的 PDF。",
     "paddleocr_hybrid": "PaddleOCR 负责 OCR/layout/Markdown 初稿，DocPage2MD 继续并行精修公式、图示、表格和结构。",
     "paddleocr_only": "只把 PaddleOCR 结果渲染为 Markdown，不调用 Vision/Brain；PaddleOCR 按平台额度管理，不计入模型 token 成本。",
+    "dual_hybrid": "同时调用 MinerU 与 PaddleOCR。MinerU 作为主版面骨架，PaddleOCR 作为同页证据，再由 DocPage2MD 判断并精修；更慢但适合复杂手写公式。",
     "vision_only": "旧版图片目录流程，只在 CLI 中使用；GUI 主路径暂不启用。",
 }
 
 LAYOUT_ENGINE_LABELS = {
     "mineru": "MinerU",
     "paddleocr": "PaddleOCR",
+    "dual": "MinerU + PaddleOCR 双引擎融合",
     "none": "不使用解析引擎",
 }
 LAYOUT_ENGINE_LABEL_TO_KEY = {label: key for key, label in LAYOUT_ENGINE_LABELS.items()}
@@ -184,7 +187,7 @@ PROVIDER_PRESETS = {
     },
 }
 
-SUPPORTED_ENGINE_MODES = {"mineru_only", "hybrid", "mineru_hybrid", "paddleocr_only", "paddleocr_hybrid"}
+SUPPORTED_ENGINE_MODES = {"mineru_only", "hybrid", "mineru_hybrid", "paddleocr_only", "paddleocr_hybrid", "dual_hybrid"}
 SUPPORTED_PROVIDERS = ["dashscope", "dashscope_openai", "deepseek", "openai_compatible", "paddleocr"]
 VISION_COST_BLOCK_TYPES = {"figure_note", "image_ref", "table", "formula_block"}
 ROUGH_PDF_CROP_BLOCKS_PER_PAGE = 3
@@ -318,7 +321,7 @@ def workflow_engine_mode(options: GuiRunOptions) -> str:
     layout = layout_engine_key(options.layout_engine)
     refine = refine_mode_key(options.refine_mode)
     explicit = engine_mode_key(options.engine_mode)
-    if explicit in {"mineru_only", "mineru_hybrid", "paddleocr_only", "paddleocr_hybrid"}:
+    if explicit in {"mineru_only", "mineru_hybrid", "paddleocr_only", "paddleocr_hybrid", "dual_hybrid"}:
         return explicit
     if explicit == "hybrid" and layout == "mineru" and refine == "docpage2md":
         return "hybrid"
@@ -326,6 +329,8 @@ def workflow_engine_mode(options: GuiRunOptions) -> str:
         return "mineru_hybrid" if refine == "docpage2md" else "mineru_only"
     if layout == "paddleocr":
         return "paddleocr_hybrid" if refine == "docpage2md" else "paddleocr_only"
+    if layout == "dual":
+        return "dual_hybrid"
     if explicit in SUPPORTED_ENGINE_MODES:
         return explicit
     return "vision_only"
@@ -361,6 +366,8 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
     engine_mode = workflow_engine_mode(options)
     layout_engine = layout_engine_key(options.layout_engine)
     refine_mode = refine_mode_key(options.refine_mode)
+    if layout_engine == "dual":
+        refine_mode = "docpage2md"
     model_profile = model_profile_key(options.model_profile)
     if engine_mode not in SUPPORTED_ENGINE_MODES:
         raise ValueError("GUI 目前支持 MinerU/PaddleOCR 解析主路径。旧版 vision_only 请继续使用 CLI。")
@@ -376,6 +383,8 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
         raise ValueError("MinerU artifact 目录只能配合 MinerU 解析引擎使用。")
     if source_kind == "paddleocr_artifact_dir" and layout_engine != "paddleocr":
         raise ValueError("PaddleOCR artifact 目录只能配合 PaddleOCR 解析引擎使用。")
+    if layout_engine == "dual" and source_kind not in {"input_file", "input_files", "input_folder"}:
+        raise ValueError("双引擎融合当前 GUI 支持本地文件、多个本地文件和文件夹。已有双 artifact 组合请使用 CLI。")
 
     page_ranges = options.page_ranges.strip().replace(" ", "")
     if page_ranges and not PAGE_RANGE_RE.match(page_ranges):
@@ -384,7 +393,7 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
     source_value = options.source_value.strip()
     if not source_value:
         raise ValueError("请选择或填写输入来源。")
-    mineru_model_version = effective_mineru_model_version(options) if layout_engine == "mineru" else ((options.mineru_model_version or "vlm").strip() or "vlm")
+    mineru_model_version = effective_mineru_model_version(options) if layout_engine in {"mineru", "dual"} else ((options.mineru_model_version or "vlm").strip() or "vlm")
 
     argv = [
         "--engine-mode",
@@ -545,8 +554,11 @@ def local_input_paths_for_options(options: GuiRunOptions, *, require_exists: boo
         if not folder.exists() or not folder.is_dir():
             return [] if not require_exists else [folder]
         iterator = folder.rglob("*") if options.recursive else folder.glob("*")
-        if layout_engine_key(options.layout_engine) == "paddleocr":
+        layout_engine = layout_engine_key(options.layout_engine)
+        if layout_engine == "paddleocr":
             allowed = IMAGE_SUFFIXES | {".pdf"}
+        elif layout_engine == "dual":
+            allowed = (IMAGE_SUFFIXES | {".pdf"}) & MINERU_SUPPORTED_SUFFIXES
         else:
             allowed = MINERU_SUPPORTED_SUFFIXES
         paths = sorted(
@@ -704,6 +716,8 @@ def selected_config_from_options(options: GuiRunOptions, base_config: AppConfig 
     engine_mode = workflow_engine_mode(options)
     layout_engine = layout_engine_key(options.layout_engine)
     refine_mode = refine_mode_key(options.refine_mode)
+    if layout_engine == "dual":
+        refine_mode = "docpage2md"
     config = replace(
         config,
         engine_mode=engine_mode,
@@ -712,7 +726,7 @@ def selected_config_from_options(options: GuiRunOptions, base_config: AppConfig 
         document_type=document_type_key(options.document_type),
         model_profile=model_profile_key(options.model_profile),
         output_folder=options.output_folder,
-        mineru_model_version=effective_mineru_model_version(options) if layout_engine == "mineru" else ((options.mineru_model_version or "vlm").strip() or "vlm"),
+        mineru_model_version=effective_mineru_model_version(options) if layout_engine in {"mineru", "dual"} else ((options.mineru_model_version or "vlm").strip() or "vlm"),
         mineru_page_ranges=options.page_ranges or None,
         mineru_is_ocr=options.mineru_is_ocr,
         mineru_enable_formula=options.mineru_enable_formula,
@@ -1673,7 +1687,7 @@ class DocPage2MdGui:
         ttk.Combobox(
             workflow,
             textvariable=self.layout_engine,
-            values=[LAYOUT_ENGINE_LABELS["mineru"], LAYOUT_ENGINE_LABELS["paddleocr"]],
+            values=[LAYOUT_ENGINE_LABELS["mineru"], LAYOUT_ENGINE_LABELS["paddleocr"], LAYOUT_ENGINE_LABELS["dual"]],
             state="readonly",
         ).grid(row=1, column=1, sticky="ew", pady=4)
         self._help_button(workflow, "engine_mode").grid(row=1, column=2, padx=(6, 0), pady=4)
@@ -2227,6 +2241,8 @@ class DocPage2MdGui:
             parser_keys = [("解析引擎", "MINERU_API_TOKEN")]
         elif layout == "paddleocr":
             parser_keys = [("解析引擎", self.paddleocr_api_key_env.get())]
+        elif layout == "dual":
+            parser_keys = [("MinerU", "MINERU_API_TOKEN"), ("PaddleOCR", self.paddleocr_api_key_env.get())]
         else:
             parser_keys = []
         for label, env_name in parser_keys:
@@ -2554,6 +2570,9 @@ class DocPage2MdGui:
         elif mode == "paddleocr_only":
             self.layout_engine.set(LAYOUT_ENGINE_LABELS["paddleocr"])
             self.refine_mode.set(REFINE_MODE_LABELS["none"])
+        elif mode == "dual_hybrid":
+            self.layout_engine.set(LAYOUT_ENGINE_LABELS["dual"])
+            self.refine_mode.set(REFINE_MODE_LABELS["docpage2md"])
         if model_profile_key(self.model_profile.get()) != profile:
             self.model_profile.set(MODEL_PROFILE_LABELS[profile])
         self._on_options_changed()
@@ -2785,13 +2804,16 @@ class DocPage2MdGui:
             engine = "mineru_hybrid" if refine == "docpage2md" else "mineru_only"
         elif layout == "paddleocr":
             engine = "paddleocr_hybrid" if refine == "docpage2md" else "paddleocr_only"
+        elif layout == "dual":
+            engine = "dual_hybrid"
+            refine = "docpage2md"
         else:
             engine = "vision_only"
         return GuiRunOptions(
             document_type=document_type_key(self.document_type.get()),
             engine_mode=engine,
             layout_engine=self.layout_engine.get(),
-            refine_mode=self.refine_mode.get(),
+            refine_mode=REFINE_MODE_LABELS["docpage2md"] if layout == "dual" else self.refine_mode.get(),
             model_profile=self.model_profile.get(),
             source_kind=source_kind_key(self.source_kind.get()),
             source_value=self.source_value.get(),
@@ -2847,10 +2869,17 @@ class DocPage2MdGui:
         refine = refine_mode_key(self.refine_mode.get())
         profile_key = model_profile_key(self.model_profile.get())
         try:
-            mineru_model = effective_mineru_model_version(self._options()) if layout == "mineru" and self.source_value.get().strip() else self.mineru_model_version.get()
+            mineru_model = effective_mineru_model_version(self._options()) if layout in {"mineru", "dual"} and self.source_value.get().strip() else self.mineru_model_version.get()
         except ValueError as exc:
             mineru_model = f"配置需调整：{exc}"
-        parser_model = f"MinerU {mineru_model}" if layout == "mineru" else f"PaddleOCR {self.paddleocr_model.get()}"
+        if layout == "mineru":
+            parser_model = f"MinerU {mineru_model}"
+        elif layout == "paddleocr":
+            parser_model = f"PaddleOCR {self.paddleocr_model.get()}"
+        elif layout == "dual":
+            parser_model = f"MinerU {mineru_model} + PaddleOCR {self.paddleocr_model.get()}"
+        else:
+            parser_model = layout
         self.run_summary_text.set(
             "文档类型只设置推荐值，可手动覆盖模式、档位和模型。\n"
             f"当前：{DOCUMENT_PRESETS.get(document_key, DOCUMENT_PRESETS['custom'])[0]} / "
@@ -2901,7 +2930,7 @@ class DocPage2MdGui:
         build_cli_argv(options)
         engine_mode = workflow_engine_mode(options)
         layout_engine = layout_engine_key(options.layout_engine)
-        if engine_mode in {"hybrid", "mineru_hybrid", "paddleocr_hybrid"}:
+        if engine_mode in {"hybrid", "mineru_hybrid", "paddleocr_hybrid", "dual_hybrid"}:
             model_issues = validate_selected_models(options.vision, options.brain)
             model_issues.extend(missing_model_key_messages(options.vision, options.brain))
             if model_issues:
@@ -2932,17 +2961,29 @@ class DocPage2MdGui:
                         raise ValueError(f"PaddleOCR 当前支持 PDF 和图片，不支持: {path.suffix}")
                     if path.stat().st_size > PADDLEOCR_LOCAL_FILE_LIMIT_BYTES:
                         raise ValueError(f"PaddleOCR 本地上传单文件限制为 50MB：{path.name}")
+                elif layout_engine == "dual":
+                    if path.suffix.lower() != ".pdf" and path.suffix.lower() not in IMAGE_SUFFIXES:
+                        raise ValueError(f"双引擎融合当前支持 PDF 和图片，不支持: {path.suffix}")
+                    if path.suffix.lower() not in MINERU_SUPPORTED_SUFFIXES:
+                        supported = ", ".join(sorted(MINERU_SUPPORTED_SUFFIXES))
+                        raise ValueError(f"双引擎融合要求 MinerU 也支持该文件类型: {path.suffix}。MinerU 支持: {supported}")
+                    if path.stat().st_size > PADDLEOCR_LOCAL_FILE_LIMIT_BYTES:
+                        raise ValueError(f"PaddleOCR 本地上传单文件限制为 50MB：{path.name}")
                 else:
                     if path.suffix.lower() not in MINERU_SUPPORTED_SUFFIXES:
                         supported = ", ".join(sorted(MINERU_SUPPORTED_SUFFIXES))
                         raise ValueError(f"不支持的文件类型: {path.suffix}。支持: {supported}")
                 local_paths.append(path)
-        if local_paths and layout_engine == "mineru":
+        if local_paths and layout_engine in {"mineru", "dual"}:
             validate_mineru_model_version_for_paths(local_paths, effective_mineru_model_version(options))
         if layout_engine == "paddleocr" and source_kind != "paddleocr_artifact_dir" and not get_env_value(options.paddleocr_api_key_env):
             raise ValueError(f"本地文件/文件夹通过 PaddleOCR API 解析需要 {options.paddleocr_api_key_env}，当前未检测到。")
+        if layout_engine == "dual" and not get_env_value(options.paddleocr_api_key_env):
+            raise ValueError(f"双引擎融合需要 PaddleOCR Token 环境变量 {options.paddleocr_api_key_env}，当前未检测到。")
         if layout_engine == "mineru" and source_kind != "mineru_artifact_dir" and not get_env_value("MINERU_API_TOKEN"):
             raise ValueError("本地文件/文件夹通过 MinerU API 解析需要 MINERU_API_TOKEN，当前未检测到。")
+        if layout_engine == "dual" and not get_env_value("MINERU_API_TOKEN"):
+            raise ValueError("双引擎融合需要 MINERU_API_TOKEN，当前未检测到。")
         Path(options.output_folder).mkdir(parents=True, exist_ok=True)
 
     def _start_process(self) -> None:
@@ -2991,7 +3032,7 @@ class DocPage2MdGui:
         chunk_lines: list[str] = []
         chunk_size = (
             _positive_worker_count(options.paddleocr_page_chunk_size, "PaddleOCR 分段页数")
-            if layout_engine == "paddleocr"
+            if layout_engine in {"paddleocr", "dual"}
             else _positive_worker_count(options.mineru_page_chunk_size, "MinerU 分段页数")
         )
         if layout_engine == "mineru" and not options.mineru_auto_split_pages:
@@ -3002,6 +3043,8 @@ class DocPage2MdGui:
             pages = estimate_pdf_pages(path)
             if not pages:
                 continue
+            if layout_engine == "dual" and pages > chunk_size:
+                raise ValueError(f"双引擎融合当前暂不自动分段：{path.name} 共 {pages} 页，超过 PaddleOCR 建议单段 {chunk_size} 页。请先用页码范围分段运行。")
             chunks = build_page_chunks(pages, options.page_ranges, chunk_size=chunk_size)
             if len(chunks) > 1:
                 ranges = "，".join(chunk.page_ranges for chunk in chunks[:4])

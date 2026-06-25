@@ -33,6 +33,7 @@ Expected secrets:
 - `mineru_hybrid`: explicit MinerU + DocPage2MD refinement mode.
 - `paddleocr_only`: PaddleOCR async artifact/API -> DocumentIR -> deterministic Markdown.
 - `paddleocr_hybrid`: PaddleOCR async artifact/API -> DocumentIR -> crop Vision + Brain JSON ops -> checked refiner -> deterministic Markdown.
+- `dual_hybrid`: MinerU and PaddleOCR both parse the same input; MinerU stays the primary layout/crop backbone, PaddleOCR is same-page evidence, then the existing crop Vision + Brain + checked refiner path decides.
 - `vision_only`: legacy image-folder flow under `doc_pages/`.
 
 GUI supports the main MinerU and PaddleOCR paths: local single file, local multiple files, folder batch, MinerU artifact, PaddleOCR artifact and URL. `vision_only` remains CLI-only for now. The run tab is a two-column workbench:
@@ -54,6 +55,16 @@ PaddleOCR implementation notes:
 - Artifacts are saved under `.paddleocr_cache/.../artifact` and copied to final `paddleocr_raw/`.
 - Do not commit PaddleOCR token values. Local ignored token note may be `.env.paddleocr.local.md`.
 - Adapter `block.confidence` must stay numeric (`0.0-1.0`). Store human labels such as `high` / `medium` / `low` in `confidence_label`, otherwise hybrid refiner float conversion can fail.
+
+Dual engine implementation notes:
+
+- User-facing mode: `dual_hybrid`; GUI label: `MinerU + PaddleOCR 双引擎融合`.
+- CLI supports local file(s)/folder and the artifact pair `--mineru-artifact-dir` + `--paddleocr-artifact-dir`.
+- Remote URL dual mode is not supported yet; generate both artifacts first, then run artifact fusion.
+- Dual mode currently blocks PDFs that exceed the PaddleOCR chunk size because chunked dual merge is not implemented.
+- Fusion code lives in `docpage2md_app/dual_ir.py` and `docpage2md_app/dual_pipeline.py`.
+- `dual_ir` must keep MinerU as the primary layout/crop source so existing hybrid parallelism stays intact.
+- Brain prompt receives compact `dual_evidence`; do not let Brain freely rewrite full Markdown.
 
 ## Parallelism
 
@@ -102,6 +113,17 @@ Latest PaddleOCR real verification:
 - Status: `ok`; final pages `11/11`; Brain pages `partial=11/11`; no Brain thread failures.
 - Total elapsed about `124.9s`: PaddleOCR submit/parse about `1.4s`, artifact download/cache about `21.3s`, Brain enrichment about `102.0s`, render/report about `0.1s`.
 - This run validates the numeric PaddleOCR confidence fix; no `could not convert string to float` error appeared.
+
+Latest dual engine real verification:
+
+- Real PaddleOCR API was confirmed with `tests/群论笔记4.1.pdf`, page range `1`, using `PADDLEOCR_API_TOKEN` from the process environment.
+- PaddleOCR-only probe output: `markdown_output/paddleocr_api_probe_20260625/paddleocr_api_probe_page1`, `status=ok`, `engine_mode=paddleocr_only`, with `paddleocr_raw/result.jsonl`, `ir/`, `assets/`, `Slide_01.md` and `run_report.json`.
+- Dual real probe output: `markdown_output/dual_real_probe_20260625/dual_real_probe_page1`, `status=ok`, `engine_mode=dual_hybrid`, strategy `mineru_primary_paddleocr_evidence`.
+- After renderer duplicate-prefix protection, artifact rerun output: `markdown_output/dual_real_artifact_rerun_20260625/dual_real_artifact_rerun_page1`.
+  - `status=ok`, pages `1/1`, layout model `vlm+PaddleOCR-VL-1.6`.
+  - Vision `qwen3-vl-plus`, Brain `deepseek-v4-flash`.
+  - The duplicated `(2)结合律：` line from the first real probe is fixed in final Markdown.
+  - Final Markdown scan found no token, traceback, reasoning content, provider raw error or validator text.
 
 ## Logging
 
@@ -240,7 +262,7 @@ Most recent regression on 2026-06-25:
 
 - `python docpage2md.py --help`: passed.
 - `python -m docpage2md_app --help`: passed.
-- `python -m pytest -q`: `279 passed`.
+- `python -m pytest -q`: `292 passed`.
 - `git diff --check`: passed, with only CRLF conversion warnings.
 
 Focused smoke used during GUI/log work:
