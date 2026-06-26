@@ -16,7 +16,7 @@ from .aliyun_catalog import filter_brain_models, filter_vision_models, verify_op
 from .cli import MINERU_SUPPORTED_SUFFIXES
 from .config import AppConfig
 from .cost import calculate_image_tokens, estimate_deepseek_chat_tokens, estimate_price, estimate_text_cost
-from .env import get_env_value, set_user_env_value
+from .env import set_user_env_value
 from .input_inspection import (
     HTML_SUFFIXES,
     IMAGE_SUFFIXES,
@@ -85,7 +85,7 @@ from .third_party_models import (
     update_third_party_model_verification,
     upsert_third_party_model,
 )
-from .secrets import check_secret_exists, set_secret_value
+from .secrets import check_secret_exists, get_secret_value, set_secret_value
 
 
 DOCUMENT_PRESETS = {
@@ -234,6 +234,11 @@ PROVIDER_PRESETS = {
 
 SUPPORTED_ENGINE_MODES = {"mineru_only", "hybrid", "mineru_hybrid", "paddleocr_only", "paddleocr_hybrid", "dual_hybrid"}
 SUPPORTED_PROVIDERS = ["dashscope", "dashscope_openai", "deepseek", "openai_compatible", "paddleocr"]
+SECRET_STORE_LABELS = {
+    "本地文件（推荐，不进 Git）": "local",
+    "Windows 用户环境变量": "env",
+    "Windows 凭据管理器": "credential",
+}
 VISION_COST_BLOCK_TYPES = {"figure_note", "image_ref", "table", "formula_block"}
 ROUGH_PDF_CROP_BLOCKS_PER_PAGE = 3
 ROUGH_CROP_IMAGE_TOKENS = 1800
@@ -739,7 +744,12 @@ def _validate_selected_model(role_label: str, selected: SelectedModel | None, *,
     return issues
 
 
-def missing_model_key_messages(vision: SelectedModel | None, brain: SelectedModel | None) -> list[str]:
+def missing_model_key_messages(
+    vision: SelectedModel | None,
+    brain: SelectedModel | None,
+    *,
+    repo_root: Path | None = None,
+) -> list[str]:
     messages: list[str] = []
     seen: set[str] = set()
     for role_label, selected in (("Vision", vision), ("Brain", brain)):
@@ -749,8 +759,8 @@ def missing_model_key_messages(vision: SelectedModel | None, brain: SelectedMode
         if not env_name or env_name in seen:
             continue
         seen.add(env_name)
-        if not get_env_value(env_name):
-            messages.append(f"{role_label} 需要环境变量 {env_name}，当前未检测到。")
+        if not get_secret_value(env_name, repo_root=repo_root):
+            messages.append(f"{role_label} 需要 Key {env_name}，当前未检测到。")
     return messages
 
 
@@ -2668,7 +2678,7 @@ class DocPage2MdGui:
     def _verify_provider_model(self) -> None:
         provider_name = self.provider_kind.get()
         env_name = self.provider_key_name.get().strip()
-        api_key = get_env_value(env_name)
+        api_key = get_secret_value(env_name, repo_root=self.repo_root)
         if not api_key:
             self.provider_status.set(f"未检测到 {env_name}，请先保存或设置 Key。")
             return
@@ -2710,7 +2720,7 @@ class DocPage2MdGui:
             ("Vision", self.vision_provider.get(), self.vision_model.get(), self.vision_base_url.get(), self.vision_api_key_env.get(), True),
             ("Brain", self.brain_provider.get(), self.brain_model.get(), self.brain_base_url.get(), self.brain_api_key_env.get(), False),
         ):
-            api_key = get_env_value(env_name)
+            api_key = get_secret_value(env_name, repo_root=self.repo_root)
             if not api_key:
                 results.append(f"{label}: 未检测到 {env_name}")
                 continue
@@ -2755,10 +2765,13 @@ class DocPage2MdGui:
         self.tp_model = self.tk.StringVar(value="")
         self.tp_base_url = self.tk.StringVar(value="https://api.openai.com/v1")
         self.tp_api_key_env = self.tk.StringVar(value="OPENAI_API_KEY")
+        self.tp_api_key_value = self.tk.StringVar(value="")
+        self.tp_secret_store = self.tk.StringVar(value="本地文件（推荐，不进 Git）")
         self.tp_roles = self.tk.StringVar(value="both")
         self.tp_supports_vision = self.tk.BooleanVar(value=True)
         self.tp_input_price = self.tk.StringVar(value="")
         self.tp_output_price = self.tk.StringVar(value="")
+        editor.columnconfigure(5, weight=1)
         ttk.Label(editor, text="名称").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
         ttk.Entry(editor, textvariable=self.tp_name).grid(row=0, column=1, sticky="ew", pady=4)
         ttk.Label(editor, text="提供商").grid(row=0, column=2, sticky="w", padx=(8, 6), pady=4)
@@ -2769,21 +2782,29 @@ class DocPage2MdGui:
         ttk.Entry(editor, textvariable=self.tp_model).grid(row=1, column=1, columnspan=3, sticky="ew", pady=4)
         ttk.Label(editor, text="Base URL").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=4)
         ttk.Entry(editor, textvariable=self.tp_base_url).grid(row=2, column=1, columnspan=3, sticky="ew", pady=4)
-        ttk.Label(editor, text="Key 环境变量").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=4)
+        ttk.Label(editor, text="Key 名称").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=4)
         ttk.Entry(editor, textvariable=self.tp_api_key_env).grid(row=3, column=1, sticky="ew", pady=4)
-        ttk.Label(editor, text="角色").grid(row=3, column=2, sticky="w", padx=(8, 6), pady=4)
-        ttk.Combobox(editor, textvariable=self.tp_roles, values=["vision", "brain", "both"], state="readonly").grid(
-            row=3, column=3, sticky="ew", pady=4
+        ttk.Label(editor, text="API Key").grid(row=3, column=2, sticky="w", padx=(8, 6), pady=4)
+        ttk.Entry(editor, textvariable=self.tp_api_key_value, show="*").grid(row=3, column=3, sticky="ew", pady=4)
+        ttk.Label(editor, text="保存到").grid(row=3, column=4, sticky="w", padx=(8, 6), pady=4)
+        ttk.Combobox(editor, textvariable=self.tp_secret_store, values=list(SECRET_STORE_LABELS), state="readonly", width=20).grid(
+            row=3, column=5, sticky="ew", pady=4
         )
-        ttk.Checkbutton(editor, text="支持图片输入", variable=self.tp_supports_vision).grid(row=4, column=0, sticky="w", pady=4)
-        ttk.Label(editor, text="输入价 元/M").grid(row=4, column=1, sticky="e", padx=(8, 6), pady=4)
-        ttk.Entry(editor, textvariable=self.tp_input_price, width=12).grid(row=4, column=2, sticky="w", pady=4)
-        ttk.Label(editor, text="输出价 元/M").grid(row=4, column=3, sticky="w", padx=(8, 6), pady=4)
-        ttk.Entry(editor, textvariable=self.tp_output_price, width=12).grid(row=4, column=4, sticky="w", pady=4)
+        ttk.Label(editor, text="角色").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=4)
+        ttk.Combobox(editor, textvariable=self.tp_roles, values=["vision", "brain", "both"], state="readonly").grid(
+            row=4, column=1, sticky="ew", pady=4
+        )
+        ttk.Checkbutton(editor, text="支持图片输入", variable=self.tp_supports_vision).grid(row=4, column=2, sticky="w", pady=4)
+        ttk.Button(editor, text="保存 Key", command=self._save_third_party_key).grid(row=4, column=3, sticky="w", padx=(8, 0), pady=4)
+        ttk.Button(editor, text="检查 Key", command=self._check_third_party_key).grid(row=4, column=4, sticky="w", padx=(8, 0), pady=4)
+        ttk.Label(editor, text="输入价 元/M").grid(row=5, column=0, sticky="w", padx=(0, 6), pady=4)
+        ttk.Entry(editor, textvariable=self.tp_input_price, width=12).grid(row=5, column=1, sticky="w", pady=4)
+        ttk.Label(editor, text="输出价 元/M").grid(row=5, column=2, sticky="w", padx=(8, 6), pady=4)
+        ttk.Entry(editor, textvariable=self.tp_output_price, width=12).grid(row=5, column=3, sticky="w", pady=4)
         actions = ttk.Frame(editor)
-        actions.grid(row=5, column=0, columnspan=5, sticky="ew", pady=(10, 0))
+        actions.grid(row=6, column=0, columnspan=6, sticky="ew", pady=(10, 0))
         actions.columnconfigure(0, weight=1)
-        ttk.Label(actions, text="只保存环境变量名，不保存 API Key 明文。验证结果会写回 log/third_party_models.json。").grid(row=0, column=0, sticky="w")
+        ttk.Label(actions, text="模型库只保存 Key 名称；API Key 可保存到本地 ignored 文件、用户环境变量或凭据管理器。").grid(row=0, column=0, sticky="w")
         ttk.Button(actions, text="保存/更新", command=self._save_third_party_model).grid(row=0, column=1, padx=(8, 0))
         ttk.Button(actions, text="验证", command=self._verify_third_party_model).grid(row=0, column=2, padx=(8, 0))
         ttk.Button(actions, text="自动发现", command=self._discover_third_party_models).grid(row=0, column=3, padx=(8, 0))
@@ -2863,7 +2884,7 @@ class DocPage2MdGui:
                     item["provider"],
                     item["model"],
                     _price_brief(item.get("input_price"), item.get("output_price")),
-                    _key_status_brief(item["api_key_env"]),
+                    _key_status_brief(item["api_key_env"], repo_root=self.repo_root),
                 ),
             )
 
@@ -2919,7 +2940,7 @@ class DocPage2MdGui:
                     item.get("model_id") or "",
                     "/".join(item.get("roles") or []),
                     _price_brief(item.get("input_price"), item.get("output_price")),
-                    _key_status_brief(item.get("api_key_env") or "OPENAI_API_KEY"),
+                    _key_status_brief(item.get("api_key_env") or "OPENAI_API_KEY", repo_root=self.repo_root),
                     _verification_brief(item.get("verification") or {}),
                 ),
             )
@@ -3589,7 +3610,7 @@ class DocPage2MdGui:
         layout_engine = layout_engine_key(options.layout_engine)
         if engine_mode in {"hybrid", "mineru_hybrid", "paddleocr_hybrid", "dual_hybrid"}:
             model_issues = validate_selected_models(options.vision, options.brain)
-            model_issues.extend(missing_model_key_messages(options.vision, options.brain))
+            model_issues.extend(missing_model_key_messages(options.vision, options.brain, repo_root=self.repo_root))
             if model_issues:
                 raise ValueError("模型配置不完整：\n- " + "\n- ".join(model_issues))
         source_kind = source_kind_key(options.source_kind)
@@ -3597,9 +3618,9 @@ class DocPage2MdGui:
             if not re.match(r"^https?://", options.source_value.strip(), flags=re.IGNORECASE):
                 raise ValueError("远程 URL 需要以 http:// 或 https:// 开头。")
             if layout_engine == "paddleocr":
-                if not get_env_value(options.paddleocr_api_key_env):
+                if not get_secret_value(options.paddleocr_api_key_env, repo_root=self.repo_root):
                     raise ValueError(f"远程 URL 通过 PaddleOCR 解析需要 {options.paddleocr_api_key_env}，当前未检测到。")
-            elif not get_env_value("MINERU_API_TOKEN"):
+            elif not get_secret_value("MINERU_API_TOKEN", repo_root=self.repo_root):
                 raise ValueError("远程 URL 解析需要 MINERU_API_TOKEN，当前未检测到。")
             Path(options.output_folder).mkdir(parents=True, exist_ok=True)
             return
@@ -3633,13 +3654,13 @@ class DocPage2MdGui:
                 local_paths.append(path)
         if local_paths and layout_engine in {"mineru", "dual"}:
             validate_mineru_model_version_for_paths(local_paths, effective_mineru_model_version(options))
-        if layout_engine == "paddleocr" and source_kind != "paddleocr_artifact_dir" and not get_env_value(options.paddleocr_api_key_env):
+        if layout_engine == "paddleocr" and source_kind != "paddleocr_artifact_dir" and not get_secret_value(options.paddleocr_api_key_env, repo_root=self.repo_root):
             raise ValueError(f"本地文件/文件夹通过 PaddleOCR API 解析需要 {options.paddleocr_api_key_env}，当前未检测到。")
-        if layout_engine == "dual" and not get_env_value(options.paddleocr_api_key_env):
+        if layout_engine == "dual" and not get_secret_value(options.paddleocr_api_key_env, repo_root=self.repo_root):
             raise ValueError(f"双引擎融合需要 PaddleOCR Token 环境变量 {options.paddleocr_api_key_env}，当前未检测到。")
-        if layout_engine == "mineru" and source_kind != "mineru_artifact_dir" and not get_env_value("MINERU_API_TOKEN"):
+        if layout_engine == "mineru" and source_kind != "mineru_artifact_dir" and not get_secret_value("MINERU_API_TOKEN", repo_root=self.repo_root):
             raise ValueError("本地文件/文件夹通过 MinerU API 解析需要 MINERU_API_TOKEN，当前未检测到。")
-        if layout_engine == "dual" and not get_env_value("MINERU_API_TOKEN"):
+        if layout_engine == "dual" and not get_secret_value("MINERU_API_TOKEN", repo_root=self.repo_root):
             raise ValueError("双引擎融合需要 MINERU_API_TOKEN，当前未检测到。")
         Path(options.output_folder).mkdir(parents=True, exist_ok=True)
 
@@ -3894,6 +3915,7 @@ class DocPage2MdGui:
         self.tp_model.set(item.get("model") or "")
         self.tp_base_url.set(item.get("base_url") or "")
         self.tp_api_key_env.set(item.get("api_key_env") or "OPENAI_API_KEY")
+        self.tp_api_key_value.set("")
         self.tp_roles.set("vision" if role == ROLE_VISION else "brain")
         self.tp_supports_vision.set(bool(item.get("supports_vision")))
         self.tp_input_price.set("" if item.get("input_price") is None else str(item.get("input_price")))
@@ -3915,6 +3937,7 @@ class DocPage2MdGui:
         self.tp_model.set(item.get("model") or "")
         self.tp_base_url.set(item.get("base_url") or "")
         self.tp_api_key_env.set(item.get("api_key_env") or "OPENAI_API_KEY")
+        self.tp_api_key_value.set("")
         roles = item.get("roles") or []
         if ROLE_VISION in roles and ROLE_BRAIN in roles:
             self.tp_roles.set("both")
@@ -3933,6 +3956,8 @@ class DocPage2MdGui:
         self.tp_model.set("")
         self.tp_base_url.set("https://api.openai.com/v1")
         self.tp_api_key_env.set("OPENAI_API_KEY")
+        self.tp_api_key_value.set("")
+        self.tp_secret_store.set("本地文件（推荐，不进 Git）")
         self.tp_roles.set("both")
         self.tp_supports_vision.set(True)
         self.tp_input_price.set("")
@@ -3954,8 +3979,8 @@ class DocPage2MdGui:
         self.model_message.set("已保存当前 Vision / Brain 模型为默认配置。")
 
     def _refresh_model_status(self) -> None:
-        vision_ok = bool(get_env_value(self.vision_api_key_env.get()))
-        brain_ok = bool(get_env_value(self.brain_api_key_env.get()))
+        vision_ok = bool(get_secret_value(self.vision_api_key_env.get(), repo_root=self.repo_root))
+        brain_ok = bool(get_secret_value(self.brain_api_key_env.get(), repo_root=self.repo_root))
         self.vision_status.set(
             f"Key：{self.vision_api_key_env.get()} {'已设置' if vision_ok else '未设置'}；"
             f"价格：{_model_price_for_selection(self.vision_provider.get(), self.vision_model.get(), self.base_config)}"
@@ -3972,6 +3997,7 @@ class DocPage2MdGui:
         missing_keys = missing_model_key_messages(
             SelectedModel(self.vision_provider.get(), self.vision_model.get(), self.vision_base_url.get(), self.vision_api_key_env.get()),
             SelectedModel(self.brain_provider.get(), self.brain_model.get(), self.brain_base_url.get(), self.brain_api_key_env.get()),
+            repo_root=self.repo_root,
         )
         health = "模型配置完整。" if not issues and not missing_keys else "模型配置需要处理：" + "；".join(issues + missing_keys)
         self.model_summary_text.set(
@@ -3995,8 +4021,48 @@ class DocPage2MdGui:
         self._refresh_model_status()
         self.model_message.set(f"已保存环境变量 {env_name}。")
 
+    def _save_third_party_key_value(self) -> str:
+        env_name = self.tp_api_key_env.get().strip()
+        key_value = self.tp_api_key_value.get().strip()
+        if not env_name:
+            raise ValueError("请先填写 Key 名称，例如 OPENAI_API_KEY 或 NVTOKENS_API_KEY。")
+        if not key_value:
+            raise ValueError("请先在 API Key 输入框粘贴 Key。")
+        store_label = self.tp_secret_store.get()
+        store = SECRET_STORE_LABELS.get(store_label, "local")
+        if store == "credential" and os.name != "nt":
+            raise ValueError("当前系统不支持 Windows 凭据管理器，请改用本地文件或环境变量。")
+        if not set_secret_value(env_name, key_value, store=store, repo_root=self.repo_root):
+            raise ValueError(f"保存到 {store_label} 失败，请改用本地文件或检查系统权限。")
+        self.tp_api_key_value.set("")
+        ok, where = check_secret_exists(env_name, repo_root=self.repo_root)
+        if not ok:
+            raise ValueError(f"已尝试保存 {env_name}，但检查时仍未读取到。")
+        return f"{env_name} 已保存到 {where}"
+
+    def _save_third_party_key(self) -> None:
+        try:
+            message = self._save_third_party_key_value()
+        except ValueError as exc:
+            self.model_message.set(str(exc))
+            return
+        self._refresh_model_status()
+        self._reload_model_catalog()
+        self.model_message.set(message + "。模型库不会保存 API Key 明文。")
+
+    def _check_third_party_key(self) -> None:
+        env_name = self.tp_api_key_env.get().strip()
+        if not env_name:
+            self.model_message.set("请先填写 Key 名称。")
+            return
+        ok, where = check_secret_exists(env_name, repo_root=self.repo_root)
+        self.model_message.set(f"{env_name} {'已找到' if ok else '未找到'}（{where}）。检查 Key 不联网。")
+
     def _save_third_party_model(self) -> None:
         try:
+            key_message = ""
+            if self.tp_api_key_value.get().strip():
+                key_message = self._save_third_party_key_value()
             item = {
                 "id": self.third_party_id.get() or None,
                 "name": self.tp_name.get() or self.tp_model.get(),
@@ -4015,7 +4081,8 @@ class DocPage2MdGui:
             return
         self.third_party_id.set(saved["id"])
         self._reload_model_catalog()
-        self.model_message.set(f"已保存第三方模型: {saved['name']}")
+        suffix = f"；{key_message}" if key_message else ""
+        self.model_message.set(f"已保存第三方模型: {saved['name']}{suffix}。")
 
     def _delete_selected_third_party_model(self) -> None:
         item_id = self.third_party_id.get()
@@ -4030,9 +4097,9 @@ class DocPage2MdGui:
             self.model_message.set("未找到要删除的第三方模型。")
 
     def _verify_third_party_model(self) -> None:
-        api_key = get_env_value(self.tp_api_key_env.get())
+        api_key = get_secret_value(self.tp_api_key_env.get(), repo_root=self.repo_root)
         if not api_key:
-            self.model_message.set(f"未检测到环境变量 {self.tp_api_key_env.get()}。")
+            self.model_message.set(f"未检测到 Key {self.tp_api_key_env.get()}。请先在 API Key 输入框粘贴并保存。")
             return
         is_vision = self.tp_roles.get() in {"vision", "both"} or self.tp_supports_vision.get()
         try:
@@ -4058,9 +4125,9 @@ class DocPage2MdGui:
         self.model_message.set(f"验证结果: {status} {(error or '')[:160]}")
 
     def _discover_third_party_models(self) -> None:
-        api_key = get_env_value(self.tp_api_key_env.get())
+        api_key = get_secret_value(self.tp_api_key_env.get(), repo_root=self.repo_root)
         if not api_key:
-            self.model_message.set(f"未检测到环境变量 {self.tp_api_key_env.get()}，无法自动发现模型。")
+            self.model_message.set(f"未检测到 Key {self.tp_api_key_env.get()}，无法自动发现模型。请先粘贴并保存 API Key。")
             return
         if self.tp_provider.get() != "openai_compatible":
             self.model_message.set("自动发现当前只支持 OpenAI-compatible Provider。")
@@ -4156,11 +4223,12 @@ def _catalog_diff_brief(diff: dict, errors: list[dict]) -> str:
     return "差异摘要：" + "，".join(parts)
 
 
-def _key_status_brief(env_name: str) -> str:
+def _key_status_brief(env_name: str, *, repo_root: Path | None = None) -> str:
     env_name = (env_name or "").strip()
     if not env_name:
         return "未配置"
-    return f"{env_name} {'已设置' if get_env_value(env_name) else '未设置'}"
+    ok, where = check_secret_exists(env_name, repo_root=repo_root)
+    return f"{env_name} {'已设置' if ok else '未设置'}" + (f"（{where}）" if ok else "")
 
 
 def _verification_brief(verification: dict) -> str:

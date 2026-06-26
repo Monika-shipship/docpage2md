@@ -21,8 +21,10 @@ from docpage2md_app.gui import (
     translate_log_line,
     missing_model_key_messages,
     validate_selected_models,
+    _key_status_brief,
 )
 from docpage2md_app.input_inspection import build_page_chunks
+from docpage2md_app.secrets import get_local_secret, set_local_secret
 
 
 def test_gui_builds_single_file_hybrid_command(tmp_path):
@@ -414,7 +416,44 @@ def test_gui_missing_model_key_messages_dedupes_env_names(monkeypatch):
         brain=SelectedModel("openai_compatible", "vendor/brain", "https://vendor.example/v1", "SAME_KEY"),
     )
 
-    assert messages == ["Vision 需要环境变量 SAME_KEY，当前未检测到。"]
+    assert messages == ["Vision 需要 Key SAME_KEY，当前未检测到。"]
+
+
+def test_gui_missing_model_key_messages_accepts_local_secret(monkeypatch, tmp_path):
+    monkeypatch.delenv("VENDOR_KEY", raising=False)
+    set_local_secret("VENDOR_KEY", "secret-value", repo_root=tmp_path)
+
+    messages = missing_model_key_messages(
+        vision=SelectedModel("openai_compatible", "vendor/vision", "https://vendor.example/v1", "VENDOR_KEY"),
+        brain=None,
+        repo_root=tmp_path,
+    )
+
+    assert messages == []
+    assert "已设置" in _key_status_brief("VENDOR_KEY", repo_root=tmp_path)
+
+
+def test_gui_third_party_key_save_writes_local_secret_not_model_registry(tmp_path):
+    try:
+        app = DocPage2MdGui()
+    except Exception as exc:
+        if exc.__class__.__name__ == "TclError":
+            pytest.skip(f"Tkinter display unavailable: {exc}")
+        raise
+    try:
+        app.root.withdraw()
+        app.repo_root = tmp_path
+        app.tp_api_key_env.set("VENDOR_DIRECT_KEY")
+        app.tp_api_key_value.set("direct-secret-value")
+        app.tp_secret_store.set("本地文件（推荐，不进 Git）")
+
+        message = app._save_third_party_key_value()
+
+        assert "VENDOR_DIRECT_KEY" in message
+        assert get_local_secret("VENDOR_DIRECT_KEY", repo_root=tmp_path) == "direct-secret-value"
+        assert app.tp_api_key_value.get() == ""
+    finally:
+        app.destroy()
 
 
 def test_gui_rejects_bad_worker_count():
