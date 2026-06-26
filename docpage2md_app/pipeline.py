@@ -604,9 +604,10 @@ def _write_stage2_fail_open_markdown(
     if not fallback:
         return False
     markdown, validation = fallback
-    if not validation.ok:
+    if not validation.ok and not _fallback_validation_is_acceptable(validation.to_dict()):
         return False
 
+    fail_open_code = _specific_validation_code(code, source_validation) or _specific_validation_code(code, validation.to_dict()) or code
     output_path = doc_root / f"Slide_{slide_no:02d}.md"
     meta_path = doc_root / f"Slide_{slide_no:02d}.meta.json"
     meta = build_fail_open_slide_meta(
@@ -615,7 +616,7 @@ def _write_stage2_fail_open_markdown(
         validation.to_dict(),
         raw_data_map,
         config,
-        code=code,
+        code=fail_open_code,
         message=message,
         fallback_source="stage1_page_ir",
         provider_audit=provider_audit,
@@ -627,7 +628,7 @@ def _write_stage2_fail_open_markdown(
         build_error_sidecar(
             slide_no,
             "stage2",
-            code,
+            fail_open_code,
             message,
             validation=source_validation,
             raw_response=raw_response,
@@ -635,7 +636,7 @@ def _write_stage2_fail_open_markdown(
         ),
     )
 
-    stage_failed(page, "stage2", code, message)
+    stage_failed(page, "stage2", fail_open_code, message)
     page["stage2"].update(
         {
             "sha256": sha256_text(markdown),
@@ -647,11 +648,26 @@ def _write_stage2_fail_open_markdown(
     page["final"].update(
         {
             "status": "fail_open",
-            "reason": code,
+            "reason": fail_open_code,
             "markdown_source": meta.get("markdown_source"),
         }
     )
     return True
+
+
+def _specific_validation_code(default_code: str, validation: dict | None) -> str | None:
+    if default_code != "validation_failed" or not isinstance(validation, dict):
+        return None
+    for issue in validation.get("errors") or []:
+        if isinstance(issue, dict) and issue.get("code"):
+            return str(issue["code"])
+    return None
+
+
+def _fallback_validation_is_acceptable(validation: dict) -> bool:
+    errors = validation.get("errors") or []
+    allowed = {"latex_frac_missing_braces", "formula_brace_unbalanced"}
+    return bool(errors) and all(str(issue.get("code") or "") in allowed for issue in errors if isinstance(issue, dict))
 
 
 def _build_stage2_fallback_markdown(*, doc_root=None, slide_no, code, message, raw_data_map, target_blocks):
@@ -752,6 +768,8 @@ def _stage2_warning_fallback_issue(validation: dict, *, slide_no, raw_data_map, 
         "latex_frac_missing_braces",
         "formula_uncertain_marker",
         "formula_markup_needs_normalize",
+        "formula_repeated_token_artifact",
+        "formula_spaced_operator_artifact",
         "inline_math_suspicious",
         "unicode_math_symbol_outside_latex",
     }

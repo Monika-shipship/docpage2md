@@ -6,6 +6,9 @@ from typing import Literal
 from .coverage import assess_ocr_coverage
 from .formula_quality import (
     contains_unicode_math_symbols,
+    has_spaced_math_operator_artifact,
+    looks_like_latex_display,
+    looks_like_repeated_token_formula_artifact,
     markdown_formula_markup_needs_normalize,
     normalize_text_for_math_coverage,
     strip_math_and_code_regions,
@@ -148,7 +151,10 @@ def validate_slide_markdown(
     if code_free.count("$$") % 2:
         errors.append(_issue("display_math_unbalanced", "error", "行间公式 $$ 分隔符数量不成对。", slide_no))
     errors.extend(_formula_delimiter_errors(code_free, slide_no))
+    errors.extend(_naked_latex_environment_errors(code_free, slide_no))
+    errors.extend(_formula_quality_errors(code_free, slide_no))
     warnings.extend(_formula_quality_warnings(code_free, slide_no))
+    warnings.extend(_spaced_math_operator_warnings(code_free, slide_no))
     warnings.extend(_unicode_math_symbol_warnings(text, slide_no))
     if markdown_formula_markup_needs_normalize(code_free):
         warnings.append(
@@ -245,6 +251,22 @@ def _formula_delimiter_errors(text: str, slide_no: int) -> list[ValidationIssue]
     return []
 
 
+def _naked_latex_environment_errors(text: str, slide_no: int) -> list[ValidationIssue]:
+    plain = strip_math_and_code_regions(text)
+    if not looks_like_latex_display(plain):
+        return []
+    evidence = _first_matching_line(plain, r"\\begin\{")
+    return [
+        _issue(
+            "naked_latex_environment",
+            "error",
+            "最终 Markdown 含裸 LaTeX 环境，应放入 $$...$$ 行间公式。",
+            slide_no,
+            _formula_preview(evidence, 160),
+        )
+    ]
+
+
 def _formula_quality_warnings(text: str, slide_no: int) -> list[ValidationIssue]:
     warnings = []
     for segment in _math_segments(text):
@@ -256,11 +278,41 @@ def _formula_quality_warnings(text: str, slide_no: int) -> list[ValidationIssue]
             warnings.append(_issue("formula_bracket_unbalanced", "warning", "公式中的方括号数量不平衡。", slide_no, segment[:120]))
         if _latex_left_right_unbalanced(segment):
             warnings.append(_issue("latex_left_right_unbalanced", "warning", "\\left 与 \\right 数量不匹配。", slide_no, segment[:120]))
-        if re.search(r"\\frac(?!\s*\{)", segment):
-            warnings.append(_issue("latex_frac_missing_braces", "warning", "\\frac 后缺少花括号参数。", slide_no, segment[:120]))
         if _has_uncertain_formula_marker(segment):
             warnings.append(_issue("formula_uncertain_marker", "warning", "公式中包含不确定识别标记。", slide_no, segment[:120]))
+        if looks_like_repeated_token_formula_artifact(segment):
+            warnings.append(
+                _issue(
+                    "formula_repeated_token_artifact",
+                    "warning",
+                    "公式疑似包含重复 token 乱码，应重新识别或保留公式裁剪图核对。",
+                    slide_no,
+                    segment[:160],
+                )
+            )
     return _dedupe_issues(warnings)
+
+
+def _formula_quality_errors(text: str, slide_no: int) -> list[ValidationIssue]:
+    errors = []
+    for segment in _math_segments(text):
+        if re.search(r"\\frac(?!\s*\{)", segment):
+            errors.append(_issue("latex_frac_missing_braces", "error", "\\frac 后缺少花括号参数。", slide_no, segment[:120]))
+    return _dedupe_issues(errors)
+
+
+def _spaced_math_operator_warnings(text: str, slide_no: int) -> list[ValidationIssue]:
+    if not has_spaced_math_operator_artifact(text):
+        return []
+    return [
+        _issue(
+            "formula_spaced_operator_artifact",
+            "warning",
+            "公式中疑似存在 OCR 空格化算子，例如 T r / d e t，应规范为 \\operatorname{Tr} / \\det。",
+            slide_no,
+            _formula_preview(_first_matching_line(text, r"T\s+r|d\s+e\s+t|s\s+i\s+n|c\s+o\s+s"), 160),
+        )
+    ]
 
 
 def _unicode_math_symbol_warnings(text: str, slide_no: int) -> list[ValidationIssue]:
@@ -589,6 +641,13 @@ def _formula_preview(text: str, limit: int = 120) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
+
+
+def _first_matching_line(text: str, pattern: str) -> str:
+    for line in (text or "").splitlines():
+        if re.search(pattern, line):
+            return line.strip()
+    return (text or "").strip()
 
 
 def _unicode_math_evidence(text: str) -> str:

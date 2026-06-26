@@ -4,6 +4,7 @@ from typing import Any
 
 
 OCR_CONFUSION_SCHEMA_VERSION = 1
+CONTEXTUAL_OCR_CORRECTION_SCHEMA_VERSION = 1
 MAX_CONFUSION_REPLACEMENTS = 20
 MAX_CONFUSION_REPLACEMENT_RATIO = 0.02
 
@@ -144,6 +145,20 @@ def apply_ocr_confusion_fixes(
         text_before_sha256=_sha256_text(original),
         text_after_sha256=_sha256_text(candidate),
     ).to_dict()
+
+
+def contextual_ocr_corrections_disabled_report(document_ir: dict[str, Any]) -> dict[str, Any]:
+    """Return an audit stub for removed rule-based contextual OCR corrections."""
+    pages = document_ir.get("pages") or []
+    return {
+        "schema_version": CONTEXTUAL_OCR_CORRECTION_SCHEMA_VERSION,
+        "status": "disabled",
+        "reason": "rule_based_contextual_replacements_removed_use_brain_evidence_review",
+        "pages_checked": len(pages),
+        "pages_changed": 0,
+        "replacement_count": 0,
+        "pages": [],
+    }
 
 
 def _replacement_ratio(text: str, replacement_count: int) -> float:

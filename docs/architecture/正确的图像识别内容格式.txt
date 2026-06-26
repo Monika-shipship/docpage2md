@@ -1,0 +1,9 @@
+<details open>
+    这是默认开着的块
+<summary>图示识别内容</summary>
+
+
+
+<details>
+    这是默认关着的块
+<summary>图示识别内容</summary>

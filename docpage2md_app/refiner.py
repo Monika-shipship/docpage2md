@@ -202,6 +202,8 @@ def detect_block_suspects(page_ir: Dict[str, Any]) -> List[BlockSuspect]:
         suspect_no = len(suspects) + 1
 
         if not text:
+            if _empty_text_block_has_nontext_payload(block):
+                continue
             suspects.append(
                 _block_suspect(
                     page_ir,
@@ -294,6 +296,22 @@ def detect_block_suspects(page_ir: Dict[str, Any]) -> List[BlockSuspect]:
     return suspects
 
 
+def _empty_text_block_has_nontext_payload(block: Dict[str, Any]) -> bool:
+    block_type = block.get("type")
+    if block_type in {"image_ref", "figure_note"}:
+        if any(str(block.get(key) or "").strip() for key in ("path", "image_path", "crop_ref", "image_ref")):
+            return True
+        figure = block.get("figure") if isinstance(block.get("figure"), dict) else {}
+        if any(figure.get(key) not in (None, "", [], {}) for key in ("figure_type", "labels", "relations", "uncertainties")):
+            return True
+    if block_type == "table":
+        if any(str(block.get(key) or "").strip() for key in ("table_image_path", "image_path", "crop_ref", "image_ref")):
+            return True
+        if block.get("rows") or block.get("columns"):
+            return True
+    return False
+
+
 def apply_block_op_checked(
     page_ir: Dict[str, Any],
     op: Dict[str, Any],
@@ -311,6 +329,8 @@ def apply_block_op_checked(
         slide,
         target_raw=target_raw,
     )
+    text_previews = _op_text_previews(page_ir, op)
+    no_change_reason = _block_no_change_reason(page_ir, op)
     before_ids = _block_ids(page_ir)
     before_summaries = _block_summaries(page_ir)
     candidate = deepcopy(page_ir)
@@ -319,7 +339,7 @@ def apply_block_op_checked(
     after_summaries = _block_summaries(candidate)
     if not changed:
         return page_ir, False, {
-            "reason": "no_change",
+            "reason": no_change_reason or "no_change",
             "before_block_ids": before_ids,
             "after_block_ids": before_ids,
             "before_blocks": before_summaries,
@@ -330,6 +350,7 @@ def apply_block_op_checked(
             "after_text_sha256": _target_text_sha256(before_summaries, op),
             "validator_before": before_validation.to_dict(),
             "validator_after": before_validation.to_dict(),
+            **text_previews,
         }
 
     contract_errors = page_ir_contract_errors(candidate, expected_slide_no=slide if slide > 0 else None)
@@ -346,6 +367,7 @@ def apply_block_op_checked(
             "before_text_sha256": _target_text_sha256(before_summaries, op),
             "after_text_sha256": _target_text_sha256(after_summaries, op),
             "validator_before": before_validation.to_dict(),
+            **text_previews,
         }
 
     after_markdown = render_page_ir_to_markdown(candidate, slide)
@@ -364,6 +386,7 @@ def apply_block_op_checked(
             "removed_text_hashes": _removed_text_hashes(before_summaries, after_summaries),
             "before_text_sha256": _target_text_sha256(before_summaries, op),
             "after_text_sha256": _target_text_sha256(after_summaries, op),
+            **text_previews,
         }
 
     return candidate, True, {
@@ -379,6 +402,7 @@ def apply_block_op_checked(
         "before_text_sha256": _target_text_sha256(before_summaries, op),
         "after_text_sha256": _target_text_sha256(after_summaries, op),
         "degraded": op_name == "mark_uncertain",
+        **text_previews,
     }
 
 
@@ -611,6 +635,107 @@ def _apply_block_op(page_ir: Dict[str, Any], op: Dict[str, Any]) -> bool:
     return False
 
 
+def _block_no_change_reason(page_ir: Dict[str, Any], op: Dict[str, Any]) -> str | None:
+    op_name = op.get("op")
+    blocks = page_ir.get("blocks") or []
+    if op_name == "replace_text_span_checked":
+        block = _find_block(blocks, op.get("id"))
+        if not block:
+            return "target_block_not_found"
+        old_text = str(op.get("old_text") or "")
+        new_text = str(op.get("new_text") or "")
+        if not old_text or not new_text:
+            return "missing_checked_span"
+        if old_text == new_text:
+            return "replacement_same_as_current"
+        if is_api_error_text(new_text):
+            return "unsafe_or_error_text"
+        if not _replacement_growth_is_safe(old_text, new_text):
+            return "replacement_growth_unsafe"
+        if _replace_text_span_is_too_broad(block, old_text, new_text):
+            return "replacement_too_broad"
+        fields = [str(op.get("field"))] if op.get("field") else ["text", "latex", "raw_text", "description"]
+        searchable_values = [
+            str(block.get(field) or "")
+            for field in fields
+            if field in {"text", "latex", "raw_text", "description"} and isinstance(block.get(field), str)
+        ]
+        if not any(old_text in value for value in searchable_values):
+            if new_text and any(new_text in value for value in searchable_values):
+                return "replacement_same_as_current"
+            return "old_text_not_found"
+        return "no_change"
+    if op_name == "mark_uncertain":
+        block = _find_block(blocks, op.get("id"))
+        if not block:
+            return "target_block_not_found"
+        if block.get("type") == "uncertain":
+            return "already_uncertain"
+        return "mark_uncertain_no_effect"
+    if op_name == "normalize_formula":
+        block = _find_block(blocks, op.get("id"))
+        if not block:
+            return "target_block_not_found"
+        if block.get("type") not in {"formula_inline", "formula_block"}:
+            return "normalize_formula_not_applicable"
+        text = (block.get("text") or "").strip()
+        if _normalize_formula_text(text) == text:
+            return "normalized_formula_unchanged"
+        return "no_change"
+    if op_name == "promote_heading":
+        block = _find_block(blocks, op.get("id"))
+        if not block:
+            return "target_block_not_found"
+        if block.get("type") == "heading":
+            return "already_heading"
+        return "promote_heading_no_effect"
+    if op_name == "demote_heading":
+        block = _find_block(blocks, op.get("id"))
+        if not block:
+            return "target_block_not_found"
+        if block.get("type") == "paragraph":
+            return "already_paragraph"
+        return "demote_heading_no_effect"
+    if op_name == "drop_block":
+        block = _find_block(blocks, op.get("id"))
+        if not block:
+            return "target_block_not_found"
+        text = (block.get("text") or block.get("description") or "").strip()
+        if text and op.get("reason") not in {"empty", "page_artifact"}:
+            return "drop_block_not_allowed_nonempty"
+        return "drop_block_no_effect"
+    return None
+
+
+def _op_text_previews(page_ir: Dict[str, Any], op: Dict[str, Any]) -> Dict[str, Any]:
+    target_ids = {str(value) for value in (op.get("id"), op.get("a"), op.get("b")) if value}
+    current_texts: list[str] = []
+    first_block: Dict[str, Any] | None = None
+    for block in page_ir.get("blocks") or []:
+        if not isinstance(block, dict) or str(block.get("id") or "") not in target_ids:
+            continue
+        if first_block is None:
+            first_block = block
+        text = _longest_block_text(block)
+        if text:
+            current_texts.append(text)
+    result = {
+        "old_text_preview": _text_preview(str(op.get("old_text") or ""), limit=180),
+        "new_text_preview": _text_preview(str(op.get("new_text") or ""), limit=180),
+        "current_text_preview": _text_preview("\n".join(current_texts), limit=180),
+        "reason_preview": _text_preview(str(op.get("reason") or ""), limit=200),
+    }
+    if first_block:
+        result.update(
+            {
+                "target_block_type": first_block.get("type"),
+                "target_block_origin": first_block.get("origin") or first_block.get("source_engine"),
+                "target_block_confidence": first_block.get("confidence"),
+            }
+        )
+    return result
+
+
 def _op_merge_block(page_ir: Dict[str, Any], a_id: str | None, b_id: str | None) -> bool:
     blocks = page_ir.get("blocks") or []
     a_index = _find_block_index(blocks, a_id)
@@ -712,6 +837,8 @@ def _op_replace_text_span_checked(page_ir: Dict[str, Any], op: Dict[str, Any]) -
         return False
     if not _replacement_growth_is_safe(old_text, new_text):
         return False
+    if _replace_text_span_is_too_broad(block, old_text, new_text):
+        return False
 
     fields = [str(op.get("field"))] if op.get("field") else ["text", "latex", "raw_text", "description"]
     changed_fields = []
@@ -752,6 +879,41 @@ def _replacement_growth_is_safe(old_text: str, new_text: str) -> bool:
     if len(old_text) >= 8 and len(new_text) <= len(old_text) * 4:
         return True
     return False
+
+
+def _replace_text_span_is_too_broad(block: Dict[str, Any], old_text: str, new_text: str) -> bool:
+    if _looks_like_markdown_document(old_text) or _looks_like_markdown_document(new_text):
+        return True
+    block_text = _longest_block_text(block)
+    if len(block_text) >= 600 and len(old_text) >= max(420, int(len(block_text) * 0.70)):
+        return True
+    return False
+
+
+def _looks_like_markdown_document(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    if re.search(r"(?im)^\s*#\s*Slide\s+\d+\b", value):
+        return True
+    if re.search(r"(?im)^\s*\[(?:mineru|paddleocr)\]\s+", value):
+        return True
+    if "```" in value:
+        return True
+    if len(value) > 1200:
+        return True
+    if value.count("\n") >= 16:
+        return True
+    return False
+
+
+def _longest_block_text(block: Dict[str, Any]) -> str:
+    texts = [
+        str(block.get(field) or "")
+        for field in ("text", "latex", "raw_text", "description")
+        if isinstance(block.get(field), str)
+    ]
+    return max(texts, key=len, default="")
 
 
 def _mark_refiner_origin(block: Dict[str, Any], op: str, *, before_ids: list[str | None] | None = None):
@@ -833,11 +995,27 @@ def _target_text_sha256(summaries: list[Dict[str, Any]], op: Dict[str, Any]) -> 
     return _sha256_text("|".join(str(value) for value in hashes))
 
 
-def _text_preview(text: str, limit: int = 120) -> str:
-    compact = " ".join((text or "").split())
+def _text_preview(text: str, limit: int = 120) -> str | None:
+    compact = " ".join(str(text or "").split())
     if len(compact) <= limit:
-        return compact
-    return compact[: limit - 3].rstrip() + "..."
+        return _redact_sensitive_preview(compact) if compact else None
+    compact = _redact_sensitive_preview(compact)
+    head_len = max(20, (limit - 3) // 2)
+    tail_len = max(20, limit - 3 - head_len)
+    return compact[:head_len].rstrip() + "..." + compact[-tail_len:].lstrip()
+
+
+def _redact_sensitive_preview(text: str) -> str:
+    redacted = re.sub(
+        r"(?i)\b(api[_-]?key|token|secret|authorization|bearer)\b\s*[:=]\s*['\"]?([A-Za-z0-9._\-]{12,})",
+        lambda match: f"{match.group(1)}=[REDACTED]",
+        text,
+    )
+    redacted = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}", "Bearer [REDACTED]", redacted)
+    redacted = re.sub(r"\b(?:sk|ak|tk)-[A-Za-z0-9._\-]{16,}\b", "[REDACTED_TOKEN]", redacted)
+    redacted = re.sub(r"\b[a-fA-F0-9]{40,}\b", "[REDACTED_HEX]", redacted)
+    redacted = re.sub(r"\b[A-Za-z0-9_-]{48,}\b", "[REDACTED_TOKEN]", redacted)
+    return redacted
 
 
 def _sha256_text(text: str) -> str:

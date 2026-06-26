@@ -4,6 +4,7 @@ from pathlib import Path
 
 from docpage2md_app.paddleocr_adapter import adapt_paddleocr_artifacts
 from docpage2md_app.paddleocr_artifacts import discover_paddleocr_artifacts
+from docpage2md_app.invariant import page_ir_contract_errors
 
 
 _PNG_1X1 = base64.b64decode(
@@ -51,6 +52,7 @@ def test_paddleocr_adapter_reads_layout_results(tmp_path):
     assert all(isinstance(block["confidence"], float) for block in blocks)
     assert blocks[2]["latex"]
     assert document_ir["assets"][0]["source_path"].endswith("fig.png")
+    assert page_ir_contract_errors(document_ir["pages"][0], expected_slide_no=1) == []
 
 
 def test_paddleocr_adapter_markdown_fallback_uses_numeric_confidence(tmp_path):
@@ -64,6 +66,8 @@ def test_paddleocr_adapter_markdown_fallback_uses_numeric_confidence(tmp_path):
     assert block["type"] == "paragraph"
     assert block["confidence"] == 0.62
     assert block["confidence_label"] == "medium"
+    assert block["bbox"] is None
+    assert page_ir_contract_errors(document_ir["pages"][0], expected_slide_no=1) == []
 
 
 def test_paddleocr_adapter_skips_bad_jsonl_and_keeps_empty_page(tmp_path):

@@ -9,7 +9,7 @@ from .artifacts import (
 )
 from .config import AppConfig
 from .content_inventory import merge_content_inventory_summaries
-from .detect import detect_page_suspects, summarize_suspects
+from .detect import build_initial_findings_pool, summarize_findings
 from .provenance import merge_provenance_summaries
 from .table_quality import assess_table
 from .versioning import DOCPAGE2MD_PIPELINE_VERSION
@@ -34,7 +34,7 @@ def build_run_report(
                 "stage2": _stage_state(),
                 "validation": {"ok": None, "errors": [], "warnings": []},
                 "quality": _empty_quality_summary(),
-                "suspects": [],
+                "findings": _empty_findings(),
                 "provenance": {"schema_version": None, "entries": [], "summary": {}},
                 "content_inventory": {"schema_version": None, "entries": [], "summary": {}},
                 "block_refiner": {
@@ -88,6 +88,8 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
     warnings = sum(len(page.get("validation", {}).get("warnings") or []) for page in pages)
     block_refiner_applied_ops = sum(len(page.get("block_refiner", {}).get("applied_ops") or []) for page in pages)
     op_audit_status_counts = _op_audit_status_counts(pages)
+    op_rejection_reasons = _op_audit_rejection_reasons(pages)
+    contract_error_codes = _op_audit_contract_error_codes(pages)
     formula_warning_count = sum(
         _count_validation_codes(page, ("formula_", "latex_"))
         + int(page.get("quality", {}).get("formula_warning_count") or 0)
@@ -116,9 +118,14 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "op_audit": {
             "total": sum(op_audit_status_counts.values()),
             "by_status": op_audit_status_counts,
+            "rejection_reasons": op_rejection_reasons,
+            "contract_error_codes": contract_error_codes,
             "removed_spans": _op_audit_removed_span_count(pages),
             "degraded": _op_audit_degraded_count(pages),
         },
+        "op_rejection_reasons": op_rejection_reasons,
+        "contract_error_codes": contract_error_codes,
+        "brain_discovered_count": _brain_discovered_count(pages),
         "block_counts": block_counts,
         "semantic_role_counts": _sum_semantic_role_counts(pages),
         "provenance": provenance_summary,
@@ -130,7 +137,7 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "table_warning_count": table_warning_count,
         "ocr_coverage_warning_count": ocr_coverage_warning_count,
         "markdown_source_counts": _markdown_source_counts(pages),
-        "suspects": summarize_suspects(pages),
+        "findings": summarize_findings(pages),
     }
     report["cost"]["actual_tokens"] = _actual_token_usage(pages)
     report["cost"]["note"] = (
@@ -208,9 +215,14 @@ def summarize_blocks(blocks: Iterable[Dict[str, Any]] | None) -> Dict[str, Any]:
     return summary
 
 
-def refresh_page_suspects(page: Dict[str, Any], blocks: list[Dict[str, Any]] | None = None) -> list[Dict[str, Any]]:
-    suspects = detect_page_suspects(
+def refresh_page_findings(
+    page: Dict[str, Any],
+    blocks: list[Dict[str, Any]] | None = None,
+    page_ir: Dict[str, Any] | None = None,
+) -> list[Dict[str, Any]]:
+    findings = build_initial_findings_pool(
         slide_no=int(page.get("slide_no") or 0),
+        page_ir=page_ir,
         stage1=page.get("stage1") or {},
         stage2=page.get("stage2") or {},
         validation=page.get("validation") or {},
@@ -218,8 +230,20 @@ def refresh_page_suspects(page: Dict[str, Any], blocks: list[Dict[str, Any]] | N
         block_refiner=page.get("block_refiner") or {},
         blocks=blocks,
     )
-    page["suspects"] = suspects
-    return suspects
+    page_findings = page.get("findings") if isinstance(page.get("findings"), dict) else _empty_findings()
+    page_findings["initial"] = findings
+    page.setdefault("findings", page_findings)
+    page["findings"] = page_findings
+    page.pop("suspects", None)
+    return findings
+
+
+def refresh_page_suspects(
+    page: Dict[str, Any],
+    blocks: list[Dict[str, Any]] | None = None,
+    page_ir: Dict[str, Any] | None = None,
+) -> list[Dict[str, Any]]:
+    return refresh_page_findings(page, blocks, page_ir)
 
 
 def _stage_state():
@@ -248,6 +272,14 @@ def _empty_quality_summary() -> Dict[str, Any]:
         "formula_warning_count": 0,
         "table_warning_count": 0,
         "warnings": [],
+    }
+
+
+def _empty_findings() -> Dict[str, Any]:
+    return {
+        "initial": [],
+        "brain_decisions": [],
+        "brain_discovered": [],
     }
 
 
@@ -306,6 +338,40 @@ def _op_audit_removed_span_count(pages: list[Dict[str, Any]]) -> int:
 
 def _op_audit_degraded_count(pages: list[Dict[str, Any]]) -> int:
     return sum(1 for audit in _iter_op_audits(pages) if audit.get("degraded"))
+
+
+def _op_audit_rejection_reasons(pages: list[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for audit in _iter_op_audits(pages):
+        if audit.get("status") != "rejected":
+            continue
+        reason = str(audit.get("reason") or "unknown")
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
+def _op_audit_contract_error_codes(pages: list[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for audit in _iter_op_audits(pages):
+        if audit.get("status") != "rejected":
+            continue
+        for error in audit.get("errors") or []:
+            code = str(error or "unknown")
+            counts[code] = counts.get(code, 0) + 1
+    return counts
+
+
+def _brain_discovered_count(pages: list[Dict[str, Any]]) -> int:
+    total = 0
+    for page in pages:
+        brain = page.get("brain") if isinstance(page.get("brain"), dict) else {}
+        total += int(brain.get("brain_discovered_count") or 0)
+        if brain.get("brain_discovered_count") is not None:
+            continue
+        for audit in page.get("op_audit") or []:
+            if isinstance(audit, dict) and audit.get("decision") == "brain_discovered":
+                total += 1
+    return total
 
 
 def _iter_op_audits(pages: list[Dict[str, Any]]):

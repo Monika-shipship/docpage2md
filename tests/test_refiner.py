@@ -176,7 +176,32 @@ def test_apply_block_op_checked_rejects_unsafe_large_text_growth():
 
     assert applied is False
     assert refined == page_ir
-    assert detail["reason"] == "no_change"
+    assert detail["reason"] == "replacement_growth_unsafe"
+    assert detail["current_text_preview"] == "A"
+
+
+def test_block_refiner_keeps_empty_image_ref_with_path():
+    page_ir = build_page_ir("占位", 3)
+    page_ir["blocks"] = [
+        {
+            "id": "p0003-b001",
+            "type": "image_ref",
+            "text": "",
+            "source_page": 3,
+            "confidence": 0.72,
+            "origin": "vision_description",
+            "source_engine": "vision",
+            "evidence": {"raw_text": "", "provider": "vision"},
+            "bbox": None,
+            "image_ref": "assets/crops/figure.jpg",
+        }
+    ]
+
+    result = refine_page_ir(page_ir, slide_no=3)
+
+    assert result.changed is False
+    assert result.page_ir["blocks"][0]["id"] == "p0003-b001"
+    assert "![image](assets/crops/figure.jpg)" in render_page_ir_to_markdown(result.page_ir)
 
 
 def test_block_refiner_moves_formula_tag_outside_aligned_environment():
@@ -262,7 +287,104 @@ def test_block_op_checked_rejects_contract_breaking_drop():
 
     assert applied is False
     assert refined == page_ir
-    assert detail["reason"] == "no_change"
+    assert detail["reason"] == "drop_block_not_allowed_nonempty"
+
+
+def test_block_op_checked_reports_old_text_not_found():
+    page_ir = build_page_ir("配分函数为 Z。", 6)
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {
+            "op": "replace_text_span_checked",
+            "id": "p0006-b001",
+            "old_text": "配分函教",
+            "new_text": "配分函数",
+            "field": "text",
+        },
+        slide_no=6,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "replacement_same_as_current"
+    assert detail["old_text_preview"] == "配分函教"
+    assert detail["new_text_preview"] == "配分函数"
+    assert detail["current_text_preview"] == "配分函数为 Z。"
+    assert detail["target_block_type"] == "paragraph"
+    assert detail["target_block_origin"] == "vision_ocr"
+    assert detail["target_block_confidence"] == 0.55
+
+
+def test_block_op_checked_reports_missing_old_text_when_replacement_not_present():
+    page_ir = build_page_ir("配分函教为 Z。", 6)
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {
+            "op": "replace_text_span_checked",
+            "id": "p0006-b001",
+            "old_text": "不存在",
+            "new_text": "配分函数",
+            "field": "text",
+        },
+        slide_no=6,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "old_text_not_found"
+
+
+def test_block_op_checked_reports_replacement_same_as_current():
+    page_ir = build_page_ir("配分函教为 Z。", 6)
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {
+            "op": "replace_text_span_checked",
+            "id": "p0006-b001",
+            "old_text": "配分函教",
+            "new_text": "配分函教",
+            "field": "text",
+        },
+        slide_no=6,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "replacement_same_as_current"
+
+
+def test_block_op_checked_reports_already_uncertain():
+    page_ir = build_page_ir("看不清。", 6)
+    page_ir["blocks"][0]["type"] = "uncertain"
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "mark_uncertain", "id": "p0006-b001"},
+        slide_no=6,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "already_uncertain"
+
+
+def test_block_op_checked_reports_normalized_formula_unchanged():
+    page_ir = build_page_ir("E = mc^2", 6)
+    page_ir["blocks"][0]["type"] = "formula_block"
+    page_ir["blocks"][0]["latex"] = "E = mc^2"
+
+    refined, applied, detail = apply_block_op_checked(
+        page_ir,
+        {"op": "normalize_formula", "id": "p0006-b001"},
+        slide_no=6,
+    )
+
+    assert applied is False
+    assert refined == page_ir
+    assert detail["reason"] == "normalized_formula_unchanged"
 
 
 def test_block_op_checked_rejects_unknown_block_origin():

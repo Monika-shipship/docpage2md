@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, Iterable
 from .artifacts import sha256_text
 from .config import AppConfig
 from .env import get_env_value
+from .detect import build_initial_findings_pool
 from .figures import analyze_figure_description
 from .formula_quality import assess_formula_text
 from .models import (
@@ -221,20 +222,41 @@ def _run_document_brain_refinement(
     if not pages:
         return {}
     requested_workers = max(1, int(config.brain_batch_workers or 1))
-    workers = _worker_count(requested_workers, len(pages))
+    context_radius = max(0, int(config.brain_context_radius or 0))
+    page_jobs = []
+    reports_by_slide: dict[int, dict[str, Any]] = {}
+    skipped = 0
+    for page_index, page_ir in enumerate(pages):
+        slide_no = int(page_ir.get("source_page") or page_index + 1)
+        skip_reason = _brain_skip_reason(page_ir)
+        if skip_reason:
+            skipped += 1
+            refined_page, report = _skip_brain_and_run_refiner(page_ir, slide_no, skip_reason)
+            pages[page_index] = refined_page
+            reports_by_slide[slide_no] = report
+            continue
+        page_jobs.append((page_index, slide_no, page_ir))
+
+    workers = _worker_count(requested_workers, len(page_jobs)) if page_jobs else 0
     safe_progress(
         progress,
         (
             f"Hybrid Brain batch start: pages={len(pages)}, workers={workers}, "
-            f"requested_workers={requested_workers}, thinking={config.brain_thinking}"
+            f"requested_workers={requested_workers}, tasks={len(page_jobs)}, skipped={skipped}, "
+            f"thinking={config.brain_thinking}, context_radius={context_radius}"
+        ),
+    )
+    safe_progress(
+        progress,
+        (
+            f"Brain 并发说明：配置并发={requested_workers}，可运行页任务={len(page_jobs)}，"
+            f"实际worker={workers}，跳过低价值页={skipped}，Brain上下文=前后{context_radius}页"
         ),
     )
     started = time.monotonic()
-    reports_by_slide: dict[int, dict[str, Any]] = {}
-    page_jobs = []
-    for page_index, page_ir in enumerate(pages):
-        slide_no = int(page_ir.get("source_page") or page_index + 1)
-        page_jobs.append((page_index, slide_no, page_ir))
+    if not page_jobs:
+        safe_progress(progress, f"Hybrid Brain batch done: pages={len(pages)}, statuses=skipped:{skipped}, elapsed=0.0s")
+        return reports_by_slide
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
@@ -244,6 +266,7 @@ def _run_document_brain_refinement(
                 slide_no,
                 deepcopy(page_ir),
                 context_pages,
+                context_radius,
                 config,
                 brain_backend,
                 progress,
@@ -294,16 +317,32 @@ def _run_single_brain_refinement_job(
     slide_no: int,
     page_ir: dict[str, Any],
     pages: list[dict[str, Any]],
+    context_radius: int,
     config: AppConfig,
     brain_backend: BrainBackend,
     progress: ProgressCallback | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    context_window = _context_window(pages, page_index)
-    safe_progress(progress, f"Hybrid page {slide_no} Brain start: context_pages={len(context_window)}")
+    context_window = _context_window(pages, page_index, radius=context_radius)
+    review_profile = _brain_review_profile(page_ir)
+    safe_progress(
+        progress,
+        (
+            f"Hybrid page {slide_no} Brain start: context_pages={len(context_window)}, "
+            f"context_radius={context_radius}, findings={review_profile.get('finding_count')}, "
+            f"priority_blocks={review_profile.get('priority_block_count')}"
+        ),
+    )
     brain_started = time.monotonic()
     page_after_brain, brain_report = _run_brain_ops(page_ir, context_window, config, brain_backend)
     brain_elapsed = time.monotonic() - brain_started
     brain_report["elapsed_seconds"] = round(brain_elapsed, 3)
+    brain_report["context_window"] = {
+        "configured_radius": context_radius,
+        "actual_pages": len(context_window),
+        "page_numbers": [page.get("source_page") for page in context_window],
+        "truncated": True,
+        "truncation_note": "上下文字段按固定长度压缩，避免 prompt 过长。",
+    }
     safe_progress(
         progress,
         (
@@ -313,6 +352,9 @@ def _run_single_brain_refinement_job(
             f"elapsed={brain_elapsed:.1f}s"
         ),
     )
+    rejection_summary = _format_reason_counts_zh(brain_report.get("op_rejection_reasons") or {})
+    if rejection_summary:
+        safe_progress(progress, f"Brain 第 {slide_no} 页拒绝原因：{rejection_summary}")
 
     block_refine_result = refine_page_ir(
         page_after_brain,
@@ -326,6 +368,44 @@ def _run_single_brain_refinement_job(
             f"applied={len(block_refine_result.applied_ops)}, dismissed={len(block_refine_result.dismissed)}"
         ),
     )
+    return block_refine_result.page_ir, {
+        "brain": brain_report,
+        "block_refiner": block_refine_result.to_dict(),
+    }
+
+
+def _brain_skip_reason(page_ir: dict[str, Any]) -> str | None:
+    blocks = [block for block in page_ir.get("blocks") or [] if isinstance(block, dict)]
+    if not blocks:
+        return "empty_page"
+    profile = _brain_review_profile(page_ir)
+    if profile["finding_count"]:
+        return None
+    if profile["has_dual_evidence"]:
+        return None
+    if profile["has_visual_or_formula"]:
+        return None
+    if profile["low_confidence_block_count"]:
+        return None
+    return "low_value_clean_page"
+
+
+def _skip_brain_and_run_refiner(page_ir: dict[str, Any], slide_no: int, reason: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    block_refine_result = refine_page_ir(page_ir, slide_no=slide_no, target_raw=page_ir.get("raw_text"))
+    brain_report = {
+        "version": HYBRID_ENRICHMENT_VERSION,
+        "status": "skipped",
+        "skip_reason": reason,
+        "ops_requested": 0,
+        "ops_applied": 0,
+        "ops_rejected": 0,
+        "brain_discovered_count": 0,
+        "warnings": [],
+        "op_audit": [],
+        "usage": None,
+        "request_id": None,
+        "provider_latency": None,
+    }
     return block_refine_result.page_ir, {
         "brain": brain_report,
         "block_refiner": block_refine_result.to_dict(),
@@ -429,7 +509,7 @@ def default_crop_vision_backend(
         call_aliyun_openai_vision(
             model_id=config.model_vision,
             image_path=str(image_path),
-            prompt_text=_crop_vision_prompt(block),
+            prompt_text=_crop_vision_prompt(page_ir, block),
             api_key=api_key,
             base_url=config.vision_base_url,
             stream=True,
@@ -469,13 +549,13 @@ def default_brain_backend(
         if not isinstance(parsed, dict):
             last_error = _backend_error("invalid_brain_json", "Brain output was not valid JSON.", payload)
             continue
-        ops = parsed.get("ops") or parsed.get("operations") or []
-        if not isinstance(ops, list):
-            return _backend_error("invalid_brain_ops", "Brain JSON field 'ops' must be a list.", payload)
+        review_payload = _normalize_brain_review_payload(parsed)
+        if review_payload.get("error"):
+            return _backend_error(str(review_payload["error"]), str(review_payload["message"]), payload)
         return {
             "success": True,
-            "ops": [op for op in ops if isinstance(op, dict)],
-            "warnings": parsed.get("warnings") if isinstance(parsed.get("warnings"), list) else [],
+            **review_payload,
+            "warnings": review_payload.get("warnings") if isinstance(review_payload.get("warnings"), list) else [],
             "retry_count": attempt,
             **_provider_fields(payload),
         }
@@ -595,14 +675,34 @@ def _run_brain_ops(
 
     current = page_ir
     audits = []
-    ops = [op for op in response.get("ops") or [] if isinstance(op, dict)]
+    decisions = _normalize_brain_decisions(response.get("decisions") or [])
+    new_findings = _normalize_brain_new_findings(response.get("new_findings") or [], int(page_ir.get("source_page") or 0))
+    initial_finding_aliases = _brain_initial_finding_alias_map(_brain_initial_findings(page_ir))
+    new_finding_aliases = _brain_new_finding_alias_map(new_findings)
+    ops = _normalize_brain_ops(response.get("op_candidates") or response.get("ops") or [])
     applied = 0
     rejected = 0
     slide_no = int(page_ir.get("source_page") or 0)
-    for op in ops:
+    for raw_op in ops:
+        op = _normalize_brain_op_reference(raw_op)
+        if _brain_op_decision(op) == "brain_discovered":
+            op.setdefault("new_finding_id", op.get("finding_id"))
         if op.get("op") not in BLOCK_KNOWN_OPS:
             rejected += 1
-            audits.append(_brain_op_audit(op, "rejected", {"reason": "unknown_or_unsafe_op"}))
+            audits.append(
+                _brain_op_audit(
+                    op,
+                    "rejected",
+                    {"reason": "unknown_or_unsafe_op", **_brain_op_current_preview(current, op)},
+                )
+            )
+            continue
+        _resolve_brain_finding_reference(op, initial_finding_aliases, new_finding_aliases)
+        policy_error = _brain_op_policy_error(op, new_finding_aliases=new_finding_aliases)
+        if policy_error:
+            rejected += 1
+            policy_error.update(_brain_op_current_preview(current, op))
+            audits.append(_brain_op_audit(op, "rejected", policy_error))
             continue
         current, ok, detail = apply_block_op_checked(
             current,
@@ -617,12 +717,24 @@ def _run_brain_ops(
             rejected += 1
             audits.append(_brain_op_audit(op, "rejected", detail))
 
+    rejection_reasons = _count_audit_reasons(audits)
+    contract_error_codes = _count_contract_errors(audits)
     return current, {
         "version": HYBRID_ENRICHMENT_VERSION,
         "status": "ok" if rejected == 0 else "partial",
         "ops_requested": len(ops),
+        "decisions": decisions,
+        "new_findings": new_findings,
+        "op_candidates_count": len(ops),
         "ops_applied": applied,
         "ops_rejected": rejected,
+        "brain_discovered_count": len(new_findings),
+        "findings": {
+            "brain_decisions": decisions,
+            "brain_discovered": new_findings,
+        },
+        "op_rejection_reasons": rejection_reasons,
+        "contract_error_codes": contract_error_codes,
         "warnings": response.get("warnings") if isinstance(response.get("warnings"), list) else [],
         "op_audit": audits,
         **_provider_fields(response),
@@ -633,10 +745,12 @@ def _apply_vision_result(block: dict[str, Any], result: dict[str, Any]) -> list[
     changed = []
     block_type = block.get("type")
     evidence = block.setdefault("evidence", {})
+    original_text = str(block.get("latex") or block.get("text") or block.get("description") or "").strip()
     evidence["vision_enrichment"] = {
         "version": HYBRID_ENRICHMENT_VERSION,
         "content_sha256": _response_content_sha256(result),
         "model_request_id": result.get("request_id"),
+        "original_text": _truncate(original_text, 1200),
     }
 
     if block_type in {"figure_note", "image_ref"}:
@@ -693,13 +807,35 @@ def _apply_vision_result(block: dict[str, Any], result: dict[str, Any]) -> list[
             block["source_engine"] = "vision"
             changed.extend(["text", "table_quality"])
 
-    return sorted(set(changed))
+    changed = sorted(set(changed))
+    result_text = str(block.get("latex") or block.get("text") or block.get("description") or "").strip()
+    evidence["vision_enrichment"]["result_text"] = _truncate(result_text, 1200)
+    evidence["vision_enrichment"]["changed_fields"] = changed
+    evidence["vision_enrichment"]["text_changed"] = original_text != result_text
+    return changed
 
 
 def _brain_op_audit(op: dict[str, Any], status: str, detail: dict[str, Any]) -> dict[str, Any]:
     return {
         "op": op.get("op"),
+        "decision": _brain_op_decision(op),
+        "finding_id": op.get("finding_id"),
+        "new_finding_id": op.get("new_finding_id"),
+        "resolved_finding_id": detail.get("resolved_finding_id") or op.get("_resolved_finding_id"),
+        "resolved_new_finding_id": detail.get("resolved_new_finding_id") or op.get("_resolved_new_finding_id"),
+        "evidence_type": op.get("evidence_type") or op.get("evidence"),
+        "confidence": op.get("confidence"),
+        "op_payload_summary": _brain_op_payload_summary(op),
         "target_block_ids": _op_target_block_ids(op),
+        "old_text_preview": detail.get("old_text_preview") or _preview_for_audit(str(op.get("old_text") or "")),
+        "new_text_preview": detail.get("new_text_preview") or _preview_for_audit(str(op.get("new_text") or "")),
+        "current_text_preview": detail.get("current_text_preview"),
+        "reason_preview": detail.get("reason_preview") or _preview_for_audit(op.get("reason") or detail.get("reason")),
+        "finding_message_preview": detail.get("finding_message_preview") or op.get("_finding_message_preview"),
+        "finding_evidence_preview": detail.get("finding_evidence_preview") or op.get("_finding_evidence_preview"),
+        "target_block_type": detail.get("target_block_type"),
+        "target_block_origin": detail.get("target_block_origin"),
+        "target_block_confidence": detail.get("target_block_confidence"),
         "before_block_ids": detail.get("before_block_ids", []),
         "after_block_ids": detail.get("after_block_ids", []),
         "before_blocks": detail.get("before_blocks", []),
@@ -711,10 +847,367 @@ def _brain_op_audit(op: dict[str, Any], status: str, detail: dict[str, Any]) -> 
         "created_block_ids": detail.get("created_block_ids", []),
         "degraded": bool(detail.get("degraded") or op.get("op") == "mark_uncertain"),
         "reason": detail.get("reason") or op.get("reason"),
+        "policy_error_detail": detail.get("policy_error_detail"),
+        "errors": detail.get("errors", []),
         "status": status,
         "validator_before": detail.get("validator_before"),
         "validator_after": detail.get("validator_after") or detail.get("validation"),
     }
+
+
+def _normalize_brain_review_payload(parsed: dict[str, Any]) -> dict[str, Any]:
+    warnings = parsed.get("warnings") if isinstance(parsed.get("warnings"), list) else []
+    decisions = parsed.get("decisions") or []
+    new_findings = parsed.get("new_findings") or []
+    op_candidates = parsed.get("op_candidates")
+    legacy_ops = parsed.get("ops") or parsed.get("operations")
+    if op_candidates is None and legacy_ops is not None:
+        op_candidates = legacy_ops
+        warnings = list(warnings) + [{"code": "legacy_brain_ops_schema", "message": "Brain returned legacy ops schema."}]
+    if op_candidates is None:
+        op_candidates = []
+    if not isinstance(decisions, list):
+        return {"error": "invalid_brain_decisions", "message": "Brain JSON field 'decisions' must be a list."}
+    if not isinstance(new_findings, list):
+        return {"error": "invalid_brain_new_findings", "message": "Brain JSON field 'new_findings' must be a list."}
+    if not isinstance(op_candidates, list):
+        return {"error": "invalid_brain_op_candidates", "message": "Brain JSON field 'op_candidates' must be a list."}
+    return {
+        "decisions": [item for item in decisions if isinstance(item, dict)],
+        "new_findings": [item for item in new_findings if isinstance(item, dict)],
+        "op_candidates": [item for item in op_candidates if isinstance(item, dict)],
+        "warnings": warnings,
+    }
+
+
+def _normalize_brain_decisions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    decisions: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        normalized = dict(item)
+        if "finding_id" not in normalized and normalized.get("suspect_id"):
+            normalized["finding_id"] = normalized.get("suspect_id")
+        normalized.pop("suspect_id", None)
+        decision = str(normalized.get("decision") or "").strip()
+        if decision == "suspect_confirmed":
+            normalized["decision"] = "finding_confirmed"
+        decisions.append(normalized)
+    return decisions
+
+
+def _normalize_brain_new_findings(value: Any, slide_no: int) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    findings: list[dict[str, Any]] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            continue
+        finding = dict(item)
+        raw_aliases = _unique_nonempty_strings(
+            [
+                finding.get("new_finding_id"),
+                finding.get("finding_id"),
+                finding.get("id"),
+                *(finding.get("aliases") if isinstance(finding.get("aliases"), list) else []),
+            ]
+        )
+        finding_id = str(finding.get("finding_id") or finding.get("id") or f"p{slide_no:04d}-bf{index:03d}")
+        finding["finding_id"] = finding_id
+        aliases = _unique_nonempty_strings([*raw_aliases, finding.get("new_finding_id"), finding_id])
+        if aliases:
+            finding["aliases"] = aliases
+        finding.pop("id", None)
+        finding.pop("suspect_id", None)
+        finding["source"] = "brain_discovered"
+        finding["page"] = int(finding.get("page") or slide_no)
+        finding["kind"] = str(finding.get("kind") or finding.get("code") or "brain_discovered")
+        finding["severity"] = str(finding.get("severity") or "warning")
+        findings.append(finding)
+    return findings
+
+
+def _normalize_brain_ops(value: Any) -> list[dict[str, Any]]:
+    ops = []
+    if not isinstance(value, list):
+        return ops
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        op = dict(item)
+        ops.append(op)
+    return ops
+
+
+def _normalize_brain_op_reference(op: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(op)
+    if "id" not in normalized and normalized.get("block_id"):
+        normalized["id"] = normalized.get("block_id")
+    if "finding_id" not in normalized and normalized.get("suspect_id"):
+        normalized["finding_id"] = normalized.get("suspect_id")
+    normalized.pop("suspect_id", None)
+    decision = str(normalized.get("decision") or "").strip()
+    if decision == "suspect_confirmed":
+        normalized["decision"] = "finding_confirmed"
+    if "new_finding_id" not in normalized and normalized.get("source") == "brain_discovered":
+        normalized["new_finding_id"] = normalized.get("finding_id")
+    return normalized
+
+
+def _brain_op_decision(op: dict[str, Any]) -> str:
+    decision = str(op.get("decision") or op.get("source") or "").strip()
+    if decision == "suspect_confirmed":
+        return "finding_confirmed"
+    if decision in {"finding_confirmed", "brain_discovered"}:
+        return decision
+    return "finding_confirmed" if op.get("finding_id") and not op.get("new_finding_id") else "brain_discovered"
+
+
+def _brain_op_policy_error(
+    op: dict[str, Any],
+    *,
+    new_finding_ids: set[str] | None = None,
+    new_finding_aliases: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    new_finding_ids = new_finding_ids or set()
+    new_finding_aliases = new_finding_aliases or {}
+    if not str(op.get("decision") or op.get("source") or "").strip():
+        return {"reason": "brain_op_missing_or_invalid_decision"}
+    decision = _brain_op_decision(op)
+    if decision not in {"finding_confirmed", "brain_discovered"}:
+        return {"reason": "brain_op_missing_or_invalid_decision"}
+    if decision == "brain_discovered":
+        new_finding_id = str(op.get("new_finding_id") or op.get("finding_id") or "").strip()
+        if not new_finding_id:
+            return {"reason": "brain_op_missing_new_finding_reference"}
+        if new_finding_aliases and new_finding_id not in new_finding_aliases:
+            return {
+                "reason": "brain_op_unknown_new_finding_reference",
+                "policy_error_detail": {
+                    "provided_new_finding_id": new_finding_id,
+                    "known_alias_count": len(new_finding_aliases),
+                    "known_aliases_sample": sorted(new_finding_aliases)[:12],
+                },
+            }
+        if new_finding_ids and new_finding_id not in new_finding_ids:
+            return {
+                "reason": "brain_op_unknown_new_finding_reference",
+                "policy_error_detail": {
+                    "provided_new_finding_id": new_finding_id,
+                    "known_alias_count": len(new_finding_ids),
+                    "known_aliases_sample": sorted(new_finding_ids)[:12],
+                },
+            }
+    elif not str(op.get("finding_id") or "").strip():
+        return {"reason": "brain_op_missing_finding_reference"}
+
+    evidence_type = str(op.get("evidence_type") or op.get("evidence") or "").strip()
+    if not evidence_type:
+        return {"reason": "brain_op_missing_evidence_type"}
+
+    confidence = _safe_float(op.get("confidence"), -1.0)
+    if confidence < 0.0 or confidence > 1.0:
+        return {"reason": "brain_op_missing_or_invalid_confidence"}
+
+    op_name = str(op.get("op") or "")
+    if op_name == "replace_text_span_checked":
+        if confidence < 0.75:
+            return {"reason": "brain_op_low_confidence_replace"}
+        if not str(op.get("id") or "").strip():
+            return {"reason": "brain_op_missing_target_block"}
+        if not str(op.get("old_text") or "") or not str(op.get("new_text") or ""):
+            return {"reason": "brain_op_missing_checked_span"}
+        if _looks_like_whole_markdown_rewrite(str(op.get("old_text") or "")) or _looks_like_whole_markdown_rewrite(
+            str(op.get("new_text") or "")
+        ):
+            return {"reason": "brain_op_whole_markdown_rewrite"}
+    elif op_name in {"normalize_formula", "mark_uncertain", "promote_heading", "demote_heading"}:
+        if not str(op.get("id") or "").strip():
+            return {"reason": "brain_op_missing_target_block"}
+    elif op_name == "merge_block":
+        if not str(op.get("a") or "").strip() or not str(op.get("b") or "").strip():
+            return {"reason": "brain_op_missing_target_block"}
+    return None
+
+
+def _brain_initial_finding_alias_map(findings: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return _brain_finding_alias_map(findings, include_new_id=False)
+
+
+def _brain_new_finding_alias_map(new_findings: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return _brain_finding_alias_map(new_findings, include_new_id=True)
+
+
+def _brain_finding_alias_map(findings: list[dict[str, Any]], *, include_new_id: bool) -> dict[str, dict[str, Any]]:
+    aliases: dict[str, dict[str, Any]] = {}
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        alias_values = _brain_finding_alias_values(finding, include_new_id=include_new_id)
+        if not alias_values:
+            continue
+        resolved = {
+            "finding_id": str(finding.get("finding_id") or alias_values[0]),
+            "new_finding_id": str(finding.get("new_finding_id") or finding.get("finding_id") or alias_values[0])
+            if include_new_id
+            else None,
+            "aliases": alias_values,
+            "finding": finding,
+        }
+        for alias in alias_values:
+            aliases[alias] = resolved
+    return aliases
+
+
+def _brain_finding_alias_values(finding: dict[str, Any], *, include_new_id: bool) -> list[str]:
+    values: list[Any] = [finding.get("finding_id"), finding.get("id"), finding.get("suspect_id")]
+    if include_new_id:
+        values.insert(0, finding.get("new_finding_id"))
+    aliases = finding.get("aliases")
+    if isinstance(aliases, list):
+        values.extend(aliases)
+    return _unique_nonempty_strings(values)
+
+
+def _resolve_brain_finding_reference(
+    op: dict[str, Any],
+    initial_aliases: dict[str, dict[str, Any]],
+    new_aliases: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    decision = _brain_op_decision(op)
+    if decision == "brain_discovered":
+        reference = str(op.get("new_finding_id") or op.get("finding_id") or "").strip()
+        resolved = new_aliases.get(reference) if reference else None
+    else:
+        reference = str(op.get("finding_id") or "").strip()
+        resolved = initial_aliases.get(reference) if reference else None
+    if not reference:
+        return None
+    if not resolved:
+        return None
+    op["_resolved_finding_id"] = resolved.get("finding_id")
+    op["_resolved_new_finding_id"] = resolved.get("new_finding_id")
+    finding = resolved.get("finding")
+    if isinstance(finding, dict):
+        op["_finding_message_preview"] = _finding_message_preview(finding)
+        op["_finding_evidence_preview"] = _finding_evidence_preview(finding)
+    return resolved
+
+
+def _unique_nonempty_strings(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _finding_message_preview(finding: dict[str, Any]) -> str | None:
+    message = (
+        finding.get("message")
+        or finding.get("reason")
+        or finding.get("description")
+        or finding.get("kind")
+        or finding.get("code")
+    )
+    return _preview_for_audit(message)
+
+
+def _finding_evidence_preview(finding: dict[str, Any]) -> str | None:
+    evidence = finding.get("evidence")
+    if evidence in (None, "", [], {}):
+        evidence = {
+            key: finding.get(key)
+            for key in ("current_text", "suggested_text", "candidates", "op_hint", "block_id", "severity")
+            if finding.get(key) not in (None, "", [], {})
+        }
+    return _preview_for_audit(evidence)
+
+
+def _looks_like_whole_markdown_rewrite(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    if re.search(r"(?im)^\s*#\s*Slide\s+\d+\b", value):
+        return True
+    if re.search(r"(?im)^\s*\[(?:mineru|paddleocr)\]\s+", value):
+        return True
+    if "```" in value:
+        return True
+    if len(value) > 1200:
+        return True
+    if value.count("\n") >= 16:
+        return True
+    return False
+
+
+def _brain_op_payload_summary(op: dict[str, Any]) -> dict[str, Any]:
+    old_text = str(op.get("old_text") or "")
+    new_text = str(op.get("new_text") or "")
+    return {
+        "op": op.get("op"),
+        "field": op.get("field"),
+        "decision": _brain_op_decision(op),
+        "finding_id": op.get("finding_id"),
+        "new_finding_id": op.get("new_finding_id"),
+        "target_block_ids": _op_target_block_ids(op),
+        "old_text_len": len(old_text) if old_text else 0,
+        "new_text_len": len(new_text) if new_text else 0,
+        "old_text_sha256": sha256_text(old_text) if old_text else None,
+        "new_text_sha256": sha256_text(new_text) if new_text else None,
+        "evidence_type": op.get("evidence_type") or op.get("evidence"),
+        "confidence": op.get("confidence"),
+        "reason": _preview_for_audit(op.get("reason"), limit=180),
+    }
+
+
+def _count_audit_reasons(audits: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for audit in audits:
+        if audit.get("status") != "rejected":
+            continue
+        reason = str(audit.get("reason") or "unknown")
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
+def _count_contract_errors(audits: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for audit in audits:
+        if audit.get("status") != "rejected":
+            continue
+        for error in audit.get("errors") or []:
+            code = str(error or "unknown")
+            counts[code] = counts.get(code, 0) + 1
+    return counts
+
+
+def _format_reason_counts_zh(counts: dict[str, int]) -> str:
+    if not counts:
+        return ""
+    labels = {
+        "page_ir_contract_failed": "IR合同失败",
+        "no_change": "无变化",
+        "validation_would_get_worse": "校验变差",
+        "unknown_or_unsafe_op": "未知或不安全操作",
+        "brain_op_unknown_new_finding_reference": "Brain新疑点引用不存在",
+        "brain_op_missing_new_finding_reference": "Brain新疑点引用缺失",
+        "old_text_not_found": "原文片段未命中",
+        "replacement_same_as_current": "替换后与当前一致",
+        "already_uncertain": "已是不确定块",
+        "normalized_formula_unchanged": "公式规范化无变化",
+        "mark_uncertain_no_effect": "标记不确定无效果",
+        "replacement_growth_unsafe": "替换增长过大",
+        "replacement_too_broad": "替换范围过大",
+        "drop_block_not_allowed_nonempty": "非空块禁止删除",
+    }
+    parts = []
+    for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        parts.append(f"{labels.get(reason, reason)}={count}")
+    return "，".join(parts)
 
 
 def _op_target_block_ids(op: dict[str, Any]) -> list[str]:
@@ -729,6 +1222,66 @@ def _op_target_block_ids(op: dict[str, Any]) -> list[str]:
             if item and str(item) not in ids:
                 ids.append(str(item))
     return ids
+
+
+def _brain_op_current_preview(page_ir: dict[str, Any], op: dict[str, Any]) -> dict[str, Any]:
+    target_ids = set(_op_target_block_ids(op))
+    texts = []
+    first_block: dict[str, Any] | None = None
+    for block in page_ir.get("blocks") or []:
+        if not isinstance(block, dict) or str(block.get("id") or "") not in target_ids:
+            continue
+        if first_block is None:
+            first_block = block
+        text = str(block.get("text") or block.get("latex") or block.get("description") or block.get("raw_text") or "")
+        if text:
+            texts.append(text)
+    result: dict[str, Any] = {}
+    if texts:
+        result["current_text_preview"] = _preview_for_audit("\n".join(texts))
+    if first_block:
+        result.update(
+            {
+                "target_block_type": first_block.get("type"),
+                "target_block_origin": first_block.get("origin") or first_block.get("source_engine"),
+                "target_block_confidence": first_block.get("confidence"),
+            }
+        )
+    return result
+
+
+def _preview_for_audit(value: Any, limit: int = 200) -> str | None:
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        except (TypeError, ValueError):
+            text = str(value)
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return None
+    compact = _redact_sensitive_preview(compact)
+    if len(compact) <= limit:
+        return compact
+    head_len = max(20, (limit - 3) // 2)
+    tail_len = max(20, limit - 3 - head_len)
+    return compact[:head_len].rstrip() + "..." + compact[-tail_len:].lstrip()
+
+
+def _redact_sensitive_preview(text: str) -> str:
+    redacted = re.sub(
+        r"(?i)\b(api[_-]?key|token|secret|authorization|bearer)\b\s*[:=]\s*['\"]?([A-Za-z0-9._\-]{12,})",
+        lambda match: f"{match.group(1)}=[REDACTED]",
+        text,
+    )
+    redacted = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}", "Bearer [REDACTED]", redacted)
+    redacted = re.sub(r"\b(?:sk|ak|tk)-[A-Za-z0-9._\-]{16,}\b", "[REDACTED_TOKEN]", redacted)
+    redacted = re.sub(r"\b[a-fA-F0-9]{40,}\b", "[REDACTED_HEX]", redacted)
+    redacted = re.sub(r"\b[A-Za-z0-9_-]{48,}\b", "[REDACTED_TOKEN]", redacted)
+    return redacted
 
 
 def _resolve_block_image_path(block: dict[str, Any], output_root: Path) -> Path | None:
@@ -749,26 +1302,55 @@ def _context_window(pages: list[dict[str, Any]], page_index: int, radius: int = 
     return [pages[index] for index in range(start, end)]
 
 
-def _crop_vision_prompt(block: dict[str, Any]) -> str:
+def _crop_vision_prompt(page_ir: dict[str, Any], block: dict[str, Any]) -> str:
     block_type = block.get("type")
     if block_type in {"figure_note", "image_ref"}:
-        task = "识别这个图示或手绘图。返回图类型、可见标签、主要关系、与正文或公式的可能关联、不确定点。"
+        task = "识别这个图示或手绘图。必须用中文返回图类型、可见标签、主要关系、与正文或公式的可能关联、不确定点。"
     elif block_type == "table":
         task = "识别这个表格。优先返回可靠 Markdown 表格；如果结构不可靠，返回 raw_text 并说明不确定。"
     elif block_type == "formula_block":
         task = "识别这个公式裁剪图。返回可渲染 LaTeX，不要把 \\tag{} 放进 aligned 环境内部。"
     else:
         task = "识别这个文档裁剪块。"
+    context = _crop_vision_context(page_ir, block)
     return (
         f"{task}\n"
+        "页面上下文只用于判读裁剪图，不要把上下文里不存在于裁剪图的内容编进结果。\n"
+        f"页面上下文 JSON：{json.dumps(context, ensure_ascii=False)}\n"
         "只返回 JSON，不要返回思考过程，不要返回 Markdown 代码围栏。可用字段："
         "description, figure_type, labels, relations, uncertainties, latex, markdown, raw_text, warnings。"
     )
 
 
+def _crop_vision_context(page_ir: dict[str, Any], block: dict[str, Any]) -> dict[str, Any]:
+    target_id = block.get("id")
+    compact_blocks = []
+    for item in page_ir.get("blocks") or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("latex") or item.get("text") or item.get("description") or "").strip()
+        if not text:
+            continue
+        compact_blocks.append(
+            {
+                "id": item.get("id"),
+                "role": "target_crop" if item.get("id") == target_id else "nearby_page_block",
+                "type": item.get("type"),
+                "text": _truncate(text, 180),
+            }
+        )
+    return {
+        "page": page_ir.get("source_page"),
+        "target_block_id": target_id,
+        "target_block_type": block.get("type"),
+        "nearby_blocks": compact_blocks[:40],
+    }
+
+
 def _brain_ops_prompt(page_ir: dict[str, Any], context_pages: list[dict[str, Any]]) -> str:
     page_no = int(page_ir.get("source_page") or 0)
     context = [_brain_context_page(page, target_page_no=page_no) for page in context_pages]
+    review_profile = _brain_review_profile(page_ir)
     dual_note = ""
     if page_ir.get("dual_evidence"):
         dual_note = (
@@ -777,16 +1359,22 @@ def _brain_ops_prompt(page_ir: dict[str, Any], context_pages: list[dict[str, Any
             "才使用 checked op 修正对应 MinerU block。\n"
         )
     return (
-        "你是 DocPage2MD 的 Brain 纠错器。只能输出 JSON，不得输出 Markdown，不得输出思考过程。\n"
-        "任务：结合前后页上下文，修正明显 OCR/LaTeX 识别错误。不要自由重写整页，不要删除大段内容。\n"
+        "你是 DocPage2MD 的 Brain 证据审阅器。只能输出 JSON，不得输出 Markdown，不得输出思考过程。\n"
+        "任务：结合当前页、可配置前后页上下文、initial findings、MinerU/PaddleOCR 双引擎证据和 Vision 裁剪图结果，审阅明显 OCR/LaTeX 错误。\n"
+        "你可以主动发现新疑点，但不能自由重写整页；每条修改必须绑定具体 block_id 和 old_text/new_text，且 old_text 必须是目标字段中真实存在的短 span。\n"
+        "已有 finding 的审核写入 decisions，decision 使用 accept/reject/uncertain，并填写 finding_id。自主发现的新疑点写入 new_findings，source 必须是 brain_discovered。\n"
+        "所有修改只能写入 op_candidates。已有 finding 的 op 使用 decision=finding_confirmed 并填写 finding_id；自主发现的 op 使用 decision=brain_discovered 并填写 new_finding_id。\n"
+        "每条 op 必须填写 block_id、evidence_type 和 confidence。confidence 低于 0.75 时不要替换正文，可改用 mark_uncertain 或 warnings。\n"
         "公式和数学符号必须使用 LaTeX；即使符号混在 paragraph/text block 中，也要改成 $...$ 内的 \\phi、\\theta、\\omega 等命令，不能保留裸 φ、θ、ω。\n"
         f"{dual_note}"
         "允许 ops：replace_text_span_checked, normalize_formula, mark_uncertain, merge_block, promote_heading, demote_heading。\n"
         "replace_text_span_checked 格式："
-        '{"op":"replace_text_span_checked","id":"p0001-b001","old_text":"...","new_text":"...","field":"text","reason":"..."}\n'
+        '{"op":"replace_text_span_checked","block_id":"p0001-b001","old_text":"...","new_text":"...","field":"text","decision":"brain_discovered","new_finding_id":"p0001-bf001","evidence_type":"context|dual_engine|vision_crop|formula_quality|finding","confidence":0.86,"reason":"..."}\n'
+        "禁止输出整页 Markdown、禁止输出未绑定 block 的修改、禁止输出 [mineru]/[paddleocr] 二选一残留。\n"
         f"当前页：{page_no}\n"
+        f"审阅配置 JSON：{json.dumps(review_profile, ensure_ascii=False)}\n"
         f"上下文 JSON：{json.dumps(context, ensure_ascii=False)}\n"
-        '返回格式：{"ops":[],"warnings":[]}'
+        '返回格式：{"decisions":[],"new_findings":[],"op_candidates":[],"warnings":[]}'
     )
 
 
@@ -805,15 +1393,122 @@ def _brain_context_page(page: dict[str, Any], *, target_page_no: int) -> dict[st
                 "id": block.get("id"),
                 "type": block.get("type"),
                 "text": _truncate(block.get("latex") or block.get("text") or block.get("description") or "", text_limit),
+                "confidence": block.get("confidence"),
+                "origin": block.get("origin"),
+                "source_engine": block.get("source_engine"),
             }
             for block in (page.get("blocks") or [])[:block_limit]
             if _brain_context_block_text(block)
         ],
     }
+    if is_target:
+        findings = _brain_initial_findings(page)
+        context["initial_findings"] = _brain_findings_context(findings)
+        context["priority_blocks"] = _brain_priority_blocks(page, findings)
     dual_evidence = page.get("dual_evidence")
     if is_target and isinstance(dual_evidence, dict):
         context["dual_evidence"] = _brain_dual_evidence_context(dual_evidence)
     return context
+
+
+def _brain_review_profile(page_ir: dict[str, Any]) -> dict[str, Any]:
+    findings = _brain_initial_findings(page_ir)
+    priority_blocks = _brain_priority_blocks(page_ir, findings)
+    blocks = [block for block in page_ir.get("blocks") or [] if isinstance(block, dict)]
+    low_confidence_count = sum(1 for block in blocks if _safe_float(block.get("confidence"), 1.0) < 0.72)
+    has_visual_or_formula = any(block.get("type") in VISION_ENRICH_BLOCK_TYPES or block.get("type") in {"formula_inline"} for block in blocks)
+    dual = page_ir.get("dual_evidence")
+    return {
+        "mode": "standard_evidence_review",
+        "policy": "findings_first_but_brain_may_discover_high_confidence_span_errors",
+        "block_count": len(blocks),
+        "finding_count": len(findings),
+        "priority_block_count": len(priority_blocks),
+        "low_confidence_block_count": low_confidence_count,
+        "has_dual_evidence": isinstance(dual, dict) and bool((dual.get("paddleocr") or {}).get("available")),
+        "has_visual_or_formula": has_visual_or_formula,
+        "accepted_decisions": ["finding_confirmed", "brain_discovered"],
+        "required_op_fields": ["op", "id", "old_text", "new_text", "field", "decision", "evidence_type", "confidence", "reason"],
+    }
+
+
+def _brain_initial_findings(page_ir: dict[str, Any]) -> list[dict[str, Any]]:
+    findings = page_ir.get("findings")
+    if isinstance(findings, dict) and isinstance(findings.get("initial"), list):
+        return [item for item in findings.get("initial") or [] if isinstance(item, dict)]
+    slide_no = int(page_ir.get("source_page") or 0)
+    return build_initial_findings_pool(slide_no=slide_no, page_ir=page_ir, blocks=page_ir.get("blocks") or [])
+
+
+def _brain_findings_context(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact = []
+    for finding in findings[:40]:
+        if not isinstance(finding, dict):
+            continue
+        compact.append(
+            {
+                "finding_id": finding.get("finding_id") or finding.get("id"),
+                "source": finding.get("source"),
+                "kind": finding.get("kind") or finding.get("code"),
+                "severity": finding.get("severity"),
+                "block_id": finding.get("block_id"),
+                "block_type": finding.get("block_type"),
+                "current_text": _truncate(str(finding.get("current_text") or ""), 180) if finding.get("current_text") else None,
+                "candidates": _brain_finding_candidates_context(finding.get("candidates") or []),
+                "op_hint": finding.get("op_hint"),
+                "message": _truncate(str(finding.get("message") or ""), 180),
+                "evidence": _truncate(json.dumps(finding.get("evidence"), ensure_ascii=False, default=str), 240)
+                if finding.get("evidence") is not None
+                else None,
+            }
+        )
+    return compact
+
+
+def _brain_finding_candidates_context(candidates: Any) -> list[dict[str, Any]]:
+    compact = []
+    if not isinstance(candidates, list):
+        return compact
+    for candidate in candidates[:4]:
+        if not isinstance(candidate, dict):
+            continue
+        compact.append(
+            {
+                "source": candidate.get("source"),
+                "block_id": candidate.get("block_id"),
+                "type": candidate.get("type"),
+                "text": _truncate(str(candidate.get("text") or ""), 160),
+                "confidence": candidate.get("confidence"),
+            }
+        )
+    return compact
+
+
+def _brain_priority_blocks(page_ir: dict[str, Any], findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    finding_block_ids = {str(finding.get("block_id")) for finding in findings if finding.get("block_id")}
+    priority = []
+    for block in page_ir.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        block_id = str(block.get("id") or "")
+        block_type = str(block.get("type") or "")
+        confidence = _safe_float(block.get("confidence"), 1.0)
+        has_vision = isinstance(block.get("evidence"), dict) and isinstance(block["evidence"].get("vision_enrichment"), dict)
+        if block_id not in finding_block_ids and confidence >= 0.72 and block_type not in {"formula_inline", "formula_block", "table", "figure_note", "image_ref", "uncertain"} and not has_vision:
+            continue
+        priority.append(
+            {
+                "id": block_id,
+                "type": block_type,
+                "confidence": block.get("confidence"),
+                "origin": block.get("origin"),
+                "source_engine": block.get("source_engine"),
+                "text": _truncate(block.get("latex") or block.get("text") or block.get("description") or "", 360),
+                "finding_ids": [finding.get("finding_id") or finding.get("id") for finding in findings if str(finding.get("block_id") or "") == block_id],
+                "has_vision_evidence": has_vision,
+            }
+        )
+    return priority[:48]
 
 
 def _brain_context_block_text(block: dict[str, Any]) -> str:
@@ -891,7 +1586,9 @@ def _normalize_backend_response(response: dict[str, Any] | None) -> dict[str, An
         return response
     if response.get("success") is False:
         return response
-    if "ops" in response or any(key in response for key in ("description", "latex", "markdown", "content")):
+    if any(key in response for key in ("ops", "op_candidates", "decisions", "new_findings")) or any(
+        key in response for key in ("description", "latex", "markdown", "content")
+    ):
         response["success"] = True
         return response
     return _backend_error("invalid_backend_response", "Backend response lacked success/content fields.", response)
@@ -980,6 +1677,13 @@ def _first_int(source: dict[str, Any], *keys: str) -> int | None:
     return None
 
 
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _first_value(items: Iterable[dict[str, Any]], key: str):
     for item in items:
         value = item.get(key)
@@ -1011,6 +1715,7 @@ def _enrichment_summary(page_results: Iterable[dict[str, Any]]) -> dict[str, Any
         "vision_succeeded_blocks": sum(int((item.get("vision") or {}).get("succeeded_blocks") or 0) for item in results),
         "brain_ops_requested": sum(int((item.get("brain") or {}).get("ops_requested") or 0) for item in results),
         "brain_ops_applied": sum(int((item.get("brain") or {}).get("ops_applied") or 0) for item in results),
+        "brain_discovered_count": sum(int((item.get("brain") or {}).get("brain_discovered_count") or 0) for item in results),
         "refiner_ops_applied": sum(len((item.get("block_refiner") or {}).get("applied_ops") or []) for item in results),
     }
 

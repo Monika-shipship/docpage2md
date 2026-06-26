@@ -8,6 +8,19 @@ def test_page_ir_contract_accepts_generated_ir():
     assert page_ir_contract_errors(page_ir, expected_slide_no=1) == []
 
 
+def test_page_ir_contract_accepts_paddleocr_origin():
+    page_ir = build_page_ir("标题:\n\n正文。", 1)
+    page_ir["blocks"][0].update(
+        {
+            "origin": "paddleocr",
+            "source_engine": "paddleocr",
+            "evidence": {"raw_text": "标题:", "provider": "paddleocr"},
+        }
+    )
+
+    assert page_ir_contract_errors(page_ir, expected_slide_no=1) == []
+
+
 def test_page_ir_contract_reports_slide_and_block_errors():
     page_ir = build_page_ir("标题:\n\n正文。", 2)
     page_ir["source_page"] = 3

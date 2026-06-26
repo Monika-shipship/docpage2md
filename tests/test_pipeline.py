@@ -88,8 +88,9 @@ def test_brain_stage_error_does_not_write_normal_markdown(monkeypatch, tmp_path)
     assert (tmp_path / "Slide_01.error.json").exists()
     assert read_json(tmp_path / "Slide_01.meta.json")["status"] == "failed"
     assert page_reports[1]["final"]["status"] == "failed"
-    assert page_reports[1]["suspects"][0]["code"] == "Brain Error"
-    assert page_reports[1]["suspects"][0]["op_hint"] == "mark_failed_page"
+    assert page_reports[1]["findings"]["initial"][0]["kind"] == "Brain Error"
+    assert page_reports[1]["findings"]["initial"][0]["op_hint"] == "mark_failed_page"
+    assert "suspects" not in page_reports[1]
 
 
 def test_brain_stage_error_writes_markdown_fail_open_when_stage1_blocks_exist(monkeypatch, tmp_path):
@@ -581,7 +582,7 @@ def test_brain_stage_formula_warning_falls_back_to_conservative_formula_warning(
     assert meta["error"]["code"] == "latex_frac_missing_braces"
     assert_clean_user_markdown(markdown)
     assert "\\frac a}{b" in markdown
-    assert "$$\n\\frac a}{b\n$$" not in markdown
+    assert "$$\n\\frac a}{b\n$$" in markdown
     assert page_reports[1]["final"]["status"] == "fail_open"
 
 
@@ -918,12 +919,14 @@ def test_process_single_docpage_task_writes_report_and_full_markdown(monkeypatch
     assert report["summary"]["formula_warning_count"] == 0
     assert report["summary"]["table_warning_count"] == 1
     assert report["summary"]["ocr_coverage_warning_count"] == 0
-    assert report["summary"]["suspects"]["by_code"]["table_quality_warning"] == 1
-    assert "latex_frac_missing_braces" not in report["summary"]["suspects"]["by_code"]
-    assert report["summary"]["suspects"]["by_op"]["mark_uncertain"] >= 1
-    assert report["summary"]["suspects"]["actionable_total"] >= 2
+    assert report["summary"]["findings"]["by_code"]["table_quality_warning"] == 1
+    assert "latex_frac_missing_braces" not in report["summary"]["findings"]["by_code"]
+    assert report["summary"]["findings"]["by_op"]["mark_uncertain"] >= 1
+    assert report["summary"]["findings"]["actionable_total"] >= 2
     assert "ocr_coverage_low" not in {issue["code"] for issue in report["pages"][0]["validation"]["warnings"]}
-    assert any(suspect.get("block_id") and suspect.get("op") for suspect in report["pages"][0]["suspects"])
+    assert "suspects" not in report["summary"]
+    assert "suspects" not in report["pages"][0]
+    assert any(finding.get("block_id") and finding.get("op") for finding in report["pages"][0]["findings"]["initial"])
     assert report["pages"][0]["stage1"]["blocks_count"] >= 1
     assert report["pages"][0]["block_refiner"]["changed"] is True
     assert report["pages"][0]["block_refiner"]["applied_ops"][0]["op"]["op"] == "normalize_formula"

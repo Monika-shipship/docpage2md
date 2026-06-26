@@ -331,7 +331,7 @@ def test_uncertain_formula_renders_clean_raw_text_without_warning_block():
     markdown = render_page_ir_to_markdown(ir)
 
     assert ir["blocks"][0]["formula_quality"]["warnings"][0]["code"] == "formula_uncertain_marker"
-    assert markdown == "# Slide 8\n\nE = [?] mc^2\n"
+    assert markdown == "# Slide 8\n\n$$\nE = [?] mc^2\n$$\n"
     assert "> [!WARNING]" not in markdown
     assert "质量警告" not in markdown
 
@@ -341,7 +341,7 @@ def test_uncertain_formula_with_page_evidence_renders_image_reference():
 
     markdown = render_page_ir_to_markdown(ir)
 
-    assert markdown == "# Slide 8\n\n![formula](assets/pages/page-8.png)\n\nE = [?] mc^2\n"
+    assert markdown == "# Slide 8\n\n![formula](assets/pages/page-8.png)\n\n$$\nE = [?] mc^2\n$$\n"
     assert "> [!WARNING]" not in markdown
 
 

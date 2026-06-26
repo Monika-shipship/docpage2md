@@ -3,5 +3,5 @@
   "slide_no": 2,
   "tags": ["handwritten", "formula", "uncertain"],
   "expected_warning_codes": [],
-  "allow_warning_codes": []
+  "allow_warning_codes": ["formula_uncertain_marker"]
 }

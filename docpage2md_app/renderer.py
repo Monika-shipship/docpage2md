@@ -1,8 +1,15 @@
+import json
 import re
 from typing import Any, Dict, List
 
 from .provenance import provenance_comment, renderer_template_block
-from .formula_quality import format_display_math, normalize_inline_math_text
+from .formula_quality import (
+    format_display_math,
+    looks_like_latex_display,
+    looks_like_standalone_formula,
+    normalize_formula_text,
+    normalize_inline_math_text,
+)
 from .table_quality import assess_table, normalize_table_text
 
 
@@ -89,6 +96,8 @@ def _render_block_body(block: Dict[str, Any], text: str) -> str:
     block_type = block.get("type")
     if block_type == "heading":
         return f"## {_normalize_user_text(_strip_heading_marks(text))}"
+    if block_type == "formula_inline" and _should_render_as_display_formula(text):
+        return format_display_math(normalize_formula_text(_strip_known_section_heading(text)))
     if block_type in ("paragraph", "formula_inline", "list"):
         return _normalize_user_text(_strip_known_section_heading(text))
     if block_type == "table":
@@ -132,8 +141,13 @@ def _render_formula_block(block: Dict[str, Any], text: str) -> str:
 
 def _render_figure_note(block: Dict[str, Any]) -> str:
     text = block.get("description") or block.get("text") or ""
+    structured = _parse_figure_description_payload(text)
+    if structured:
+        text = structured.get("description") or structured.get("raw_text") or ""
     lines = [_normalize_user_text(line.strip()) for line in _strip_known_section_heading(text).splitlines() if line.strip()]
     figure = block.get("figure") if isinstance(block.get("figure"), dict) else {}
+    if structured:
+        figure = _merge_figure_metadata(structured, figure)
     labels = _detail_items(block.get("labels") or figure.get("labels"))
     relations = _detail_items(block.get("relations") or figure.get("relations"))
     linked_blocks = _detail_items(block.get("linked_blocks") or figure.get("linked_blocks"))
@@ -197,6 +211,70 @@ def _figure_detail_lines(
     return details
 
 
+def _parse_figure_description_payload(text: Any) -> dict[str, Any]:
+    if isinstance(text, dict):
+        return text
+    value = str(text or "").strip()
+    if not value:
+        return {}
+    value = _strip_markdown_json_fence(value)
+    candidates = [value]
+    start = value.find("{")
+    end = value.rfind("}")
+    if 0 <= start < end:
+        candidates.append(value[start : end + 1])
+    for candidate in candidates:
+        parsed = _load_jsonish_object(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    extracted = _extract_figure_jsonish_fields(value)
+    return extracted
+
+
+def _strip_markdown_json_fence(text: str) -> str:
+    value = text.strip()
+    if value.startswith("```"):
+        value = re.sub(r"^```(?:json)?\s*", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"\s*```$", "", value)
+    return value.strip()
+
+
+def _load_jsonish_object(text: str) -> Any:
+    candidate = text.strip()
+    if not candidate.startswith("{"):
+        return None
+    candidate = re.sub(r'(?<=")\s*，\s*(?=\r?\n\s*["}\]])', ",", candidate)
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_figure_jsonish_fields(text: str) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for key in ("figure_type", "description", "raw_text"):
+        match = re.search(rf'"{key}"\s*:\s*"([^"]*)"', text, flags=re.DOTALL)
+        if match:
+            fields[key] = match.group(1).strip()
+    for key in ("labels", "relations", "uncertainties", "linked_blocks"):
+        match = re.search(rf'"{key}"\s*:\s*\[(.*?)\]', text, flags=re.DOTALL)
+        if not match:
+            continue
+        items = re.findall(r'"([^"]+)"', match.group(1))
+        if items:
+            fields[key] = [item.strip() for item in items if item.strip()]
+    return fields
+
+
+def _merge_figure_metadata(parsed: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(parsed)
+    for key, value in existing.items():
+        if value in (None, "", [], {}) or value == "unknown":
+            continue
+        merged[key] = value
+    return merged
+
+
 def _detail_items(value: Any) -> list[str]:
     if value in (None, "", [], {}):
         return []
@@ -255,13 +333,25 @@ def _single_short_label(text: str) -> str | None:
 
 
 def _render_uncertain(text: str) -> str:
-    return _normalize_user_text(_strip_known_section_heading(text))
+    stripped = _strip_known_section_heading(text)
+    if _should_render_as_display_formula(stripped):
+        return format_display_math(normalize_formula_text(stripped))
+    return _normalize_user_text(stripped)
 
 
 def _render_uncertain_formula(block: Dict[str, Any], text: str, warnings: list | None = None) -> str:
     image = _formula_image_reference(block)
-    body = _normalize_user_text((text or "").strip())
+    raw = (text or "").strip()
+    if _should_render_as_display_formula(raw):
+        body = format_display_math(normalize_formula_text(raw))
+    else:
+        body = _normalize_user_text(raw)
     return f"{image}\n\n{body}" if image else body
+
+
+def _should_render_as_display_formula(text: str) -> bool:
+    stripped = (text or "").strip()
+    return looks_like_latex_display(stripped) or looks_like_standalone_formula(stripped)
 
 
 def _formula_image_reference(block: Dict[str, Any]) -> str:
@@ -289,6 +379,7 @@ def _has_blocking_formula_warning(warnings) -> bool:
         "formula_isolated_operator",
         "formula_reasoning_without_latex",
         "formula_brace_unbalanced",
+        "formula_repeated_token_artifact",
         "latex_left_right_unbalanced",
         "latex_frac_missing_braces",
     }

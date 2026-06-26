@@ -73,6 +73,17 @@ def test_formula_quality_records_truncated_formula():
     assert "formula_truncated" in [warning.code for warning in result.warnings]
 
 
+def test_formula_quality_flags_repeated_token_artifact():
+    text = (
+        r"\begin{array}{c}"
+        + r" \\ ".join(["1"] * 10)
+        + r" n_{2} n_{3} n_{4} n_{5} n_{6} n_{7} n_{8} n_{9} n_{10} n_{11} n_{12} n_{13} n_{14} n_{15} n_{16} n_{17} n_{18} n_{19}\end{array}"
+    )
+    result = assess_formula_text(text)
+
+    assert "formula_repeated_token_artifact" in [warning.code for warning in result.warnings]
+
+
 def test_formula_quality_records_isolated_operator_formula():
     result = assess_formula_text("=")
 

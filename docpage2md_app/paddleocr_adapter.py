@@ -295,6 +295,7 @@ def _paragraph_block(text: str, page_no: int, block_no: int, page_result: dict[s
             "paddleocr_label": source_label,
         },
         "source_engine": "paddleocr",
+        "bbox": None,
     }
 
 

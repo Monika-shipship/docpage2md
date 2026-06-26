@@ -11,6 +11,7 @@ BLOCK_ALLOWED_ORIGINS = {
     "vision_description",
     "vision_table",
     "vision_uncertain",
+    "paddleocr",
     "brain_refine",
     "renderer_template",
     "refiner_op",
@@ -34,6 +35,7 @@ BLOCK_VISION_ORIGINS = {
     "vision_description",
     "vision_table",
     "vision_uncertain",
+    "paddleocr",
 }
 
 

@@ -27,6 +27,17 @@ _MATH_SPAN_RE = re.compile(
     r"|\\\[(?P<bracket>.*?)\\\]",
     flags=re.DOTALL,
 )
+_LATEX_DISPLAY_ENV_RE = re.compile(
+    r"\\begin\{(?:aligned|alignedat|align\*?|split|gathered|gather\*?|bmatrix|pmatrix|matrix|array|cases|smallmatrix)\}",
+    flags=re.DOTALL,
+)
+_SPACED_MATH_OPERATOR_RE = re.compile(
+    r"(?<![A-Za-z])(?:T\s+r|d\s+e\s+t|s\s+i\s+n|c\s+o\s+s|t\s+a\s+n|l\s+o\s+g|l\s+n|e\s+x\s+p)(?![A-Za-z])",
+    flags=re.IGNORECASE,
+)
+_FORMULA_SIGNAL_RE = re.compile(
+    r"(\\[A-Za-z]+|\\begin\{|[_^{}]|[=<>+\-*/]|\\to|\\Rightarrow|\\sigma|\\det|\\operatorname)",
+)
 
 UNICODE_MATH_SYMBOLS_TO_LATEX = {
     "Α": r"A",
@@ -251,6 +262,8 @@ def assess_formula_text(text: str) -> FormulaQualityResult:
         warnings.append(_issue("formula_isolated_operator", "公式只有孤立运算符或关系符，无法可靠使用。", latex[:120]))
     if _looks_like_reasoning_without_formula(latex):
         warnings.append(_issue("formula_reasoning_without_latex", "公式 block 疑似包含模型思考说明而不是公式。", latex[:120]))
+    if looks_like_repeated_token_formula_artifact(latex):
+        warnings.append(_issue("formula_repeated_token_artifact", "公式疑似包含重复 token 乱码，应重新识别或保留公式裁剪图核对。", latex[:160]))
 
     uncertain = has_uncertain_formula_marker(latex)
     if uncertain:
@@ -261,10 +274,83 @@ def assess_formula_text(text: str) -> FormulaQualityResult:
 def normalize_formula_text(text: str) -> str:
     stripped = (text or "").strip()
     stripped = _strip_outer_formula_delimiters(stripped)
+    stripped = normalize_common_ocr_formula_artifacts(stripped)
     stripped = normalize_unicode_math_symbols(stripped)
     stripped = _normalize_alignment_environments(stripped)
     stripped = _normalize_trailing_equation_number(stripped)
     return stripped.strip()
+
+
+def normalize_common_ocr_formula_artifacts(text: str) -> str:
+    """Repair conservative OCR artifacts that only make sense inside math text."""
+    if not text:
+        return ""
+    fixed = text
+    replacements = [
+        (r"(?<![A-Za-z])T\s+r\s*(?=\\?[A-Za-z])", r"\\operatorname{Tr} "),
+        (r"(?<![A-Za-z])d\s+e\s+t\s*(?=\\?[A-Za-z(])", r"\\det "),
+        (r"(?<![A-Za-z])s\s+i\s+n(?=\s*[A-Za-z\\(])", r"\\sin"),
+        (r"(?<![A-Za-z])c\s+o\s+s(?=\s*[A-Za-z\\(])", r"\\cos"),
+        (r"(?<![A-Za-z])t\s+a\s+n(?=\s*[A-Za-z\\(])", r"\\tan"),
+        (r"(?<![A-Za-z])l\s+o\s+g(?=\s*[A-Za-z\\(])", r"\\log"),
+        (r"(?<![A-Za-z])l\s+n(?=\s*[A-Za-z\\(])", r"\\ln"),
+        (r"(?<![A-Za-z])e\s+x\s+p(?=\s*[A-Za-z\\(])", r"\\exp"),
+    ]
+    for pattern, replacement in replacements:
+        fixed = re.sub(pattern, replacement, fixed, flags=re.IGNORECASE)
+    fixed = re.sub(r"(?<![A-Za-z])S\s+O\s*\(", r"\\mathrm{SO}(", fixed)
+    fixed = fixed.replace("(无迹)", r"\text{（无迹）}")
+    fixed = re.sub(r"[ \t]{2,}", " ", fixed)
+    fixed = re.sub(r"\\operatorname\{Tr\}\s+", r"\\operatorname{Tr}", fixed)
+    fixed = re.sub(r"\\det\s+", r"\\det ", fixed)
+    return fixed.strip()
+
+
+def has_spaced_math_operator_artifact(text: str) -> bool:
+    return bool(_SPACED_MATH_OPERATOR_RE.search(text or ""))
+
+
+def looks_like_repeated_token_formula_artifact(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if re.search(r"(?:\\\\\s*1\s*){8,}", stripped):
+        return True
+    indexed_n = re.findall(r"n\s*_\s*\{\s*(?:\d+\s*){1,3}\}", stripped)
+    if len(indexed_n) >= 18:
+        return True
+    tokens = re.findall(r"\\[A-Za-z]+|[A-Za-z]+|\d+|[\u4e00-\u9fff]", stripped)
+    if len(tokens) < 90:
+        return False
+    unique_ratio = len(set(tokens)) / len(tokens)
+    top_count = max((tokens.count(token) for token in set(tokens)), default=0)
+    return unique_ratio < 0.18 and top_count >= 18
+
+
+def looks_like_latex_display(text: str) -> bool:
+    return bool(_LATEX_DISPLAY_ENV_RE.search(text or ""))
+
+
+def looks_like_standalone_formula(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if looks_like_latex_display(stripped):
+        return True
+    if len(stripped) > 2000:
+        return False
+    if not _FORMULA_SIGNAL_RE.search(stripped):
+        return False
+    if re.match(r"^[\u4e00-\u9fff]{2,12}[：:]", stripped):
+        return False
+    without_short_chinese_notes = re.sub(r"[（(][\u4e00-\u9fff]{1,8}[）)]", "", stripped)
+    if re.search(r"[\u4e00-\u9fff]", without_short_chinese_notes):
+        return False
+    math_chars = len(re.findall(r"[A-Za-z0-9\\{}_^=+\-*/<>\[\]().,|]", without_short_chinese_notes))
+    non_space = len(re.sub(r"\s+", "", without_short_chinese_notes))
+    if non_space == 0:
+        return False
+    return math_chars / non_space >= 0.55
 
 
 def normalize_markdown_formula_blocks(markdown: str) -> str:

@@ -280,13 +280,19 @@ def show_cost_estimation(console, tasks_config, config):
     table.add_column("文档页任务", style="cyan")
     table.add_column("页数", justify="right")
     table.add_column("图片Token均值/范围", justify="right")
-    table.add_column("输入Token(M)", justify="right")
-    table.add_column("输出Token(M)", justify="right")
+    table.add_column("Vision输入(M)", justify="right")
+    table.add_column("Vision输出(M)", justify="right")
+    table.add_column("Brain输入(M)", justify="right")
+    table.add_column("Brain输出(M)", justify="right")
+    table.add_column("Vision费用", justify="right", style="green")
+    table.add_column("Brain费用", justify="right", style="green")
     table.add_column("预估费用 (元)", justify="right", style="green")
 
     total_cost = 0.0
-    total_input_tokens = 0
-    total_output_tokens = 0
+    total_vision_input_tokens = 0
+    total_vision_output_tokens = 0
+    total_brain_input_tokens = 0
+    total_brain_output_tokens = 0
     catalog_records = load_model_catalog(prefer_cache=True, cache_path=config.model_cache_path, curated=True)
     vision_record = _find_model_record(
         catalog_records,
@@ -330,9 +336,10 @@ def show_cost_estimation(console, tasks_config, config):
                     page_cost = estimate_price(config.model_vision, page_input, s1_output)
                 s1_cost += page_cost
 
-            # Brain 阶段输入来自 5 页 Raw Data 窗口。真实 token 要等 Stage 1 完成后才知道，
+            # Brain 阶段输入随上下文窗口增大。真实 token 要等结构化页面和 prompt 构造完成后才知道，
             # 这里使用当前 prompt 设计的保守经验值。
-            s2_input = 3500
+            context_radius = max(0, int(getattr(config, "brain_context_radius", 2) or 0))
+            s2_input = 3500 + context_radius * 1600
             s2_output = 800
             s2_unit_cost = estimate_text_cost(s2_input, s2_output, brain_record)
             if s2_unit_cost is None:
@@ -342,19 +349,23 @@ def show_cost_estimation(console, tasks_config, config):
             s2_output_total = s2_output * num_slides
 
             doc_cost = s1_cost + s2_cost
-            doc_input_tokens = s1_input_total + s2_input_total
-            doc_output_tokens = s1_output_total + s2_output_total
 
             total_cost += doc_cost
-            total_input_tokens += doc_input_tokens
-            total_output_tokens += doc_output_tokens
+            total_vision_input_tokens += s1_input_total
+            total_vision_output_tokens += s1_output_total
+            total_brain_input_tokens += s2_input_total
+            total_brain_output_tokens += s2_output_total
 
             table.add_row(
                 doc_name,
                 str(num_slides),
                 f"{avg_img_tokens} / {min_img_tokens}-{max_img_tokens}",
-                f"{doc_input_tokens / 1_000_000:.3f}",
-                f"{doc_output_tokens / 1_000_000:.3f}",
+                f"{s1_input_total / 1_000_000:.3f}",
+                f"{s1_output_total / 1_000_000:.3f}",
+                f"{s2_input_total / 1_000_000:.3f}",
+                f"{s2_output_total / 1_000_000:.3f}",
+                f"¥ {s1_cost:.2f}",
+                f"¥ {s2_cost:.2f}",
                 f"¥ {doc_cost:.2f}",
             )
 
@@ -362,8 +373,12 @@ def show_cost_estimation(console, tasks_config, config):
         "总计",
         "",
         "",
-        f"{total_input_tokens / 1_000_000:.3f}",
-        f"{total_output_tokens / 1_000_000:.3f}",
+        f"{total_vision_input_tokens / 1_000_000:.3f}",
+        f"{total_vision_output_tokens / 1_000_000:.3f}",
+        f"{total_brain_input_tokens / 1_000_000:.3f}",
+        f"{total_brain_output_tokens / 1_000_000:.3f}",
+        "",
+        "",
         f"¥ {total_cost:.2f}",
         style="bold red",
     )

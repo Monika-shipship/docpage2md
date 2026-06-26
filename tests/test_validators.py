@@ -145,6 +145,35 @@ def test_dual_candidate_labels_are_errors():
     assert "dual_candidate_label_leak" in {issue.code for issue in result.errors}
 
 
+def test_naked_latex_environment_is_error():
+    result = validate_slide_markdown(
+        "# Slide 11\n\n\\begin{aligned}\nA &= B\n\\end{aligned}\n",
+        11,
+    )
+
+    assert not result.ok
+    assert "naked_latex_environment" in {issue.code for issue in result.errors}
+
+
+def test_spaced_formula_operator_artifact_warns():
+    result = validate_slide_markdown("# Slide 10\n\n$$ T r\\sigma_i=0 d e t\\sigma_i=-1 $$\n", 10)
+
+    assert result.ok
+    assert "formula_spaced_operator_artifact" in {issue.code for issue in result.warnings}
+
+
+def test_repeated_formula_token_artifact_warns():
+    bad_formula = (
+        "\\begin{array}{c}"
+        + " \\\\ ".join(["1"] * 10)
+        + " n_{2} n_{3} n_{4} n_{5} n_{6} n_{7} n_{8} n_{9} n_{10} n_{11} n_{12} n_{13} n_{14} n_{15} n_{16} n_{17} n_{18} n_{19}\\end{array}"
+    )
+    result = validate_slide_markdown(f"# Slide 11\n\n$$\n{bad_formula}\n$$\n", 11)
+
+    assert result.ok
+    assert "formula_repeated_token_artifact" in {issue.code for issue in result.warnings}
+
+
 def test_chinese_figure_note_satisfies_figure_analysis():
     result = validate_slide_markdown(
         "# Slide 1\n\n<details>\n    - 说明：图中左侧是 A。\n<summary>图示识别内容</summary>\n\n</details>\n",

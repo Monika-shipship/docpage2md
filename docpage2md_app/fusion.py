@@ -8,7 +8,12 @@ from typing import Any, Callable
 
 from .artifacts import sha256_text
 from .figures import analyze_figure_description
-from .formula_quality import assess_formula_text, contains_unicode_math_symbols, normalize_inline_math_text
+from .formula_quality import (
+    assess_formula_text,
+    contains_unicode_math_symbols,
+    has_spaced_math_operator_artifact,
+    normalize_inline_math_text,
+)
 from .fusion_prompt import build_figure_context_payload
 from .fusion_prompt import FUSION_ALLOWED_ACTIONS
 from .ir import PAGE_IR_SCHEMA_VERSION
@@ -683,6 +688,8 @@ def _candidate_warnings(block: dict[str, Any], text: str) -> list[str]:
     warnings = []
     if contains_unicode_math_symbols(text):
         warnings.append("has_raw_unicode_math")
+    if has_spaced_math_operator_artifact(text):
+        warnings.append("spaced_math_operator_artifact")
     if block.get("type") in {"formula_block", "formula_inline"}:
         quality = assess_formula_text(text)
         for warning in quality.warnings:
@@ -804,8 +811,10 @@ def _severe_warning_count(candidate: dict[str, Any]) -> int:
         "formula_truncated",
         "formula_isolated_operator",
         "formula_brace_unbalanced",
+        "formula_repeated_token_artifact",
         "latex_left_right_unbalanced",
         "latex_frac_missing_braces",
+        "spaced_math_operator_artifact",
         "table_unreliable",
         "empty_candidate",
     }
