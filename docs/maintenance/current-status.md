@@ -44,6 +44,7 @@ Current GUI details:
 - PaddleOCR is selectable as a parser engine, default model `PaddleOCR-VL-1.6`, async endpoint `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`, default PDF chunk size 100 pages.
 - Dual parser is selectable as `MinerU + PaddleOCR 双引擎融合`; it supports local files/folders, artifact pairs, and automatic local PDF chunked merge. Remote URL dual mode is still not supported directly. It writes `ir/mineru_document_ir.json`, `ir/paddleocr_document_ir.json`, `ir/fused_document_ir.json` and compatibility `ir/document_ir.json` only in `standard` / `debug` retention.
 - Default output retention is `slim`: keep Markdown, referenced assets, `.meta.json`, `process.log` and `run_report.json`; skip raw artifact copies, skip IR, and clean generated parser cache after success. `standard` keeps IR; `debug` keeps raw artifacts/cache.
+- Local PDF inputs with a partial page range are physically cropped with `pypdf` before upload. MinerU/PaddleOCR receive only the selected pages, PaddleOCR 50 MB validation uses the cropped upload file, and `run_report.json` task manifests keep a `physical_pdf_crop` audit with original pages, uploaded pages and size reduction.
 - Dual local multi-file mode now schedules parser work across files: `parser_workers` controls concurrent file submissions/waits, each file still submits MinerU and PaddleOCR concurrently, and `doc_workers` controls how many ready documents enter fusion/enrichment at once. Long local PDFs auto-split by `min(mineru_page_chunk_size, paddleocr_page_chunk_size)`, defaulting to 100 pages, then merge chunk outputs back into one final document.
 - The run tab exposes concurrency presets: `保守 3/3`, `均衡 6/6`, `高并发 12/12`, `极速 60/60` and `自定义`. The raw Parser/Document/Vision/Brain worker fields remain visible for exact control; presets only change Vision/Brain.
 - The run tab exposes `Brain 模式`: default fast mode disables model thinking for Brain JSON ops; high-quality mode can enable thinking for difficult pages.
@@ -169,7 +170,7 @@ python docpage2md.py --engine-mode hybrid --model-profile cheap --input-file ".\
 - `python docpage2md.py --help`: passed.
 - `python -m docpage2md_app --help`: passed.
 - `python docpage2md.py --version`: passed.
-- `python -m pytest -q`: 374 passed.
+- `python -m pytest -q`: 378 passed.
 - `python scripts\build_windows_exe.py --dry-run`: passed.
 - `python scripts\build_windows_exe.py --distpath %TEMP%\docpage2md_dist_...`: passed; frozen `--docpage2md-cli --version` smoke passed, one-dir size about 68.5 MB after excluding dev/Notebook packages.
 - Windows release package now includes `使用说明.md` next to `DocPage2MD.exe`; users should unzip the whole `DocPage2MD` folder instead of copying the exe alone.

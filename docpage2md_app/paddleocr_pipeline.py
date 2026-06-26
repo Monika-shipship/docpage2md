@@ -9,7 +9,7 @@ from .artifacts import RUN_REPORT_SCHEMA_VERSION, now_iso, sha256_text
 from .config import AppConfig
 from .content_inventory import build_content_inventory
 from .confusion import contextual_ocr_corrections_disabled_report
-from .files import merge_markdowns, write_json, write_text_atomic
+from .files import merge_markdowns, read_json, write_json, write_text_atomic
 from .hybrid_enrichment import HYBRID_ENRICHMENT_VERSION, enrich_mineru_document_ir
 from .output_retention import paddleocr_evidence_report, retention_report, should_copy_paddleocr_raw_artifacts, should_write_ir
 from .paddleocr_adapter import (
@@ -140,6 +140,7 @@ def process_paddleocr_artifact_task(
     finalize_run_report(report)
     report["engine_mode"] = mode
     report["paddleocr"]["artifact_manifest"] = artifacts.to_manifest()
+    report["paddleocr"]["task_manifest"] = _read_task_manifest(artifacts.root / "paddleocr_task_manifest.json")
     if enrichment:
         report["hybrid_enrichment"] = {
             "version": HYBRID_ENRICHMENT_VERSION,
@@ -211,6 +212,7 @@ def _initial_report(
         },
         "paddleocr": {
             "artifact_manifest": artifacts.to_manifest(),
+            "task_manifest": _read_task_manifest(artifacts.root / "paddleocr_task_manifest.json"),
             "model": config.paddleocr_model,
             "source": document_ir.get("source"),
             "evidence": paddleocr_evidence_report(config),
@@ -388,6 +390,16 @@ def _copy_paddleocr_raw(artifacts: PaddleOCRArtifacts, output_root: Path) -> Non
             shutil.copy2(path, dest)
         elif path.is_dir():
             shutil.copytree(path, dest, dirs_exist_ok=True)
+
+
+def _read_task_manifest(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = read_json(path)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _page_assets(blocks: list[dict[str, Any]]) -> list[dict[str, str]]:

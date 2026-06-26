@@ -35,6 +35,11 @@
   - 超过双引擎单段页数时，按 `min(mineru_page_chunk_size, paddleocr_page_chunk_size)` 自动拆分，默认每段 100 页。
   - 每段分别并发提交 MinerU 和 PaddleOCR，再融合/精修，最终合并为同一个 `Slide_XX.md`、`*_FULL.md` 和 `run_report.json`。
   - `run_report.json["dual_parser"]` 记录 `chunks` 和 `chunked_merge` 审计信息。
+- 新增本地 PDF 页码范围物理裁剪：
+  - 当用户只选择部分页时，先用 `pypdf` 生成只包含选中页的临时 PDF，再上传到 MinerU/PaddleOCR。
+  - 裁剪后 API 侧不再传原始 `page_ranges`，避免上传整份大 PDF。
+  - PaddleOCR 的 50 MB 本地文件限制按裁剪后临时 PDF 检查。
+  - MinerU/PaddleOCR task manifest 和 `run_report.json` 会记录 `physical_pdf_crop`，包括原始页码、上传页码映射、原始大小和裁剪后大小。
 - 新增统一应用版本号：
   - `docpage2md_app.__version__` 导出 `0.1.0`。
   - CLI 增加 `--version`，同时显示应用版本和 pipeline 兼容版本。

@@ -7,7 +7,7 @@ from .artifacts import RUN_REPORT_SCHEMA_VERSION, now_iso, sha256_text
 from .config import AppConfig
 from .content_inventory import build_content_inventory
 from .confusion import contextual_ocr_corrections_disabled_report
-from .files import merge_markdowns, write_json, write_text_atomic
+from .files import merge_markdowns, read_json, write_json, write_text_atomic
 from .hybrid_enrichment import HYBRID_ENRICHMENT_VERSION, enrich_mineru_document_ir
 from .mineru_adapter import (
     MINERU_ADAPTER_VERSION,
@@ -138,6 +138,7 @@ def process_mineru_artifact_task(
     finalize_run_report(report)
     report["engine_mode"] = mode
     report["mineru"]["artifact_manifest"] = artifacts.to_manifest()
+    report["mineru"]["task_manifest"] = _read_task_manifest(artifacts.root / "mineru_task_manifest.json")
     if enrichment:
         report["hybrid_enrichment"] = {
             "version": HYBRID_ENRICHMENT_VERSION,
@@ -207,6 +208,7 @@ def _initial_report(
         },
         "mineru": {
             "artifact_manifest": artifacts.to_manifest(),
+            "task_manifest": _read_task_manifest(artifacts.root / "mineru_task_manifest.json"),
             "model_version": config.mineru_model_version,
             "source": document_ir.get("source"),
         },
@@ -383,6 +385,16 @@ def _copy_mineru_raw(artifacts: MinerUArtifacts, output_root: Path):
             shutil.copy2(path, dest)
         elif path.is_dir() and path.name == "images":
             shutil.copytree(path, dest, dirs_exist_ok=True)
+
+
+def _read_task_manifest(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = read_json(path)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _page_assets(blocks: list[dict[str, Any]]) -> list[dict[str, str]]:

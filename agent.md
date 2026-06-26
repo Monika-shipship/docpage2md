@@ -63,6 +63,7 @@ PaddleOCR implementation notes:
 - Default model: `PaddleOCR-VL-1.6`.
 - Default async endpoint: `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`.
 - Local PDF/page processing defaults to 100-page chunks.
+- Local PDF uploads with a non-empty partial `--page-ranges` must be physically cropped with `pypdf` before MinerU/PaddleOCR upload. The API `page_ranges` is cleared for the cropped upload, and task manifests record `physical_pdf_crop`. Do not regress this to uploading the full PDF plus a remote page-range parameter.
 - Generated artifacts are saved under `.paddleocr_cache/.../artifact` during processing. Default `output_retention=slim` cleans generated parser cache after successful processing and does not copy final `paddleocr_raw/`; `debug` preserves raw artifacts/cache.
 - PaddleOCR evidence is controlled separately by `--paddleocr-evidence-level fast|standard|debug|audit`. Default `standard` keeps structured evidence without requesting `outputImages`; `debug` / `audit` request `visualize=true` and force final `paddleocr_raw/` preservation even when output retention is slim. Legacy `--paddleocr-visualize true/false` overrides only the API `visualize` flag.
 - Do not commit PaddleOCR token values. Local ignored token note may be `.env.paddleocr.local.md`.
@@ -74,6 +75,7 @@ Dual engine implementation notes:
 - CLI supports local file(s)/folder and the artifact pair `--mineru-artifact-dir` + `--paddleocr-artifact-dir`.
 - Remote URL dual mode is not supported yet; generate both artifacts first, then run artifact fusion.
 - Dual local PDFs now auto-split when the selected page count exceeds the dual chunk size. The effective chunk size is `min(mineru_page_chunk_size, paddleocr_page_chunk_size)`, defaulting to 100 pages. Each chunk runs MinerU and PaddleOCR in parallel, then chunk outputs are merged back into one final document.
+- In dual local mode, each selected range/chunk is physically cropped once and the same cropped upload file is shared by the concurrent MinerU and PaddleOCR submissions. This preserves dual parser parallelism while avoiding full-PDF uploads for small selected ranges.
 - Fusion code lives in `docpage2md_app/fusion.py`, `docpage2md_app/fusion_prompt.py`, `docpage2md_app/dual_ir.py` and `docpage2md_app/dual_pipeline.py`.
 - The fusion layer writes `ir/mineru_document_ir.json`, `ir/paddleocr_document_ir.json`, `ir/fused_document_ir.json` and compatibility `ir/document_ir.json` only in `standard` / `debug` retention. Default `slim` keeps final Markdown, assets, metadata, logs and report.
 - Fusion uses candidate groups and whitelist actions only: `choose_block`, `merge_blocks`, `keep_both`, `mark_uncertain`, `attach_image`, `replace_formula`, `convert_text_to_formula`, `convert_text_to_figure_note`.

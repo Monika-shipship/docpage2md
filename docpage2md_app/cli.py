@@ -27,6 +27,7 @@ from .input_inspection import (
     PADDLEOCR_URL_FILE_LIMIT_BYTES,
     build_page_chunks,
     estimate_pdf_pages,
+    parse_page_selection,
     validate_mineru_model_version_for_paths,
 )
 from .model_profiles import apply_model_profile
@@ -38,6 +39,7 @@ from .output_retention import (
     should_copy_raw_artifacts,
     should_write_ir,
 )
+from .pdf_crop import PreparedPdfUpload, cleanup_prepared_pdf_upload, prepare_pdf_upload_for_page_ranges
 from .run_logger import RunLogger, safe_progress
 from .versioning import DOCPAGE2MD_PIPELINE_VERSION, DOCPAGE2MD_VERSION
 
@@ -925,7 +927,7 @@ def _run_mineru_cli(args, config: AppConfig) -> int:
             return 0
 
         split_plans = _auto_split_plans_for_local_files(local_files, args, config)
-        if split_plans:
+        if split_plans or args.page_ranges:
             return _run_mixed_mineru_local_files(
                 client,
                 local_files,
@@ -1060,22 +1062,30 @@ def _run_paddleocr_cli(args, config: AppConfig) -> int:
 
         processed_count = 0
         for source in local_files:
-            _validate_paddleocr_size(source)
-            safe_progress(run_logger, f"Submitting local file to PaddleOCR: {source.name} ({source.stat().st_size} bytes)")
-            job_id = client.submit_local_file(source, page_ranges=args.page_ranges)
-            safe_progress(run_logger, f"PaddleOCR task submitted: job_id={job_id}, file={source.name}")
-            status = client.wait_for_job(job_id)
-            processed = _download_and_process_paddleocr_result(
-                client,
-                status,
-                source=str(source),
-                config=config,
-                args=args,
-                mode=mode,
-                doc_name=doc_name if len(local_files) == 1 else None,
-                page_ranges=args.page_ranges,
-                progress=run_logger,
-            )
+            prepared = _prepare_local_pdf_upload(source, args, progress=run_logger, label="PaddleOCR")
+            try:
+                _validate_paddleocr_size(prepared.upload_path)
+                safe_progress(
+                    run_logger,
+                    f"Submitting local file to PaddleOCR: {source.name} upload={prepared.upload_path.name} ({prepared.upload_path.stat().st_size} bytes)",
+                )
+                job_id = client.submit_local_file(prepared.upload_path, page_ranges=prepared.api_page_ranges)
+                safe_progress(run_logger, f"PaddleOCR task submitted: job_id={job_id}, file={source.name}")
+                status = client.wait_for_job(job_id)
+                processed = _download_and_process_paddleocr_result(
+                    client,
+                    status,
+                    source=str(source),
+                    config=config,
+                    args=args,
+                    mode=mode,
+                    doc_name=doc_name if len(local_files) == 1 else None,
+                    page_ranges=args.page_ranges,
+                    physical_pdf_crop=prepared.physical_pdf_crop,
+                    progress=run_logger,
+                )
+            finally:
+                cleanup_prepared_pdf_upload(prepared)
             processed_count += 1
             safe_progress(run_logger, f"PaddleOCR API processed: {processed['page_count']} pages -> {processed['output_dir']}")
             print(f"PaddleOCR API 处理完成：共 {processed['page_count']} 页 -> {processed['output_dir']}")
@@ -1144,8 +1154,6 @@ def _run_dual_cli(args, config: AppConfig) -> int:
         validate_mineru_model_version_for_paths(local_files, config.mineru_model_version)
         _validate_dual_page_limits(local_files, args, config)
         split_plans = _auto_split_dual_plans_for_local_files(local_files, args, config, progress=run_logger)
-        for source in local_files:
-            _validate_paddleocr_size(source)
         non_chunked_sources = [source for source in local_files if source not in split_plans]
         parser_workers = min(max(1, len(non_chunked_sources)), max(1, config.parser_workers))
         doc_workers = min(len(local_files), max(1, config.max_docpage_workers))
@@ -1239,10 +1247,11 @@ def _prepare_dual_artifacts_for_source(
     """Run MinerU and PaddleOCR parser stages concurrently for one dual-hybrid source."""
 
     source_path = Path(source)
+    prepared = _prepare_local_pdf_upload(source_path, args, progress=progress, label="Dual parser")
 
     def _mineru_stage() -> Path:
         safe_progress(progress, f"Dual MinerU submit: {source_path.name}")
-        batch_id = mineru_client.submit_local_files([source_path], page_ranges=args.page_ranges)
+        batch_id = mineru_client.submit_local_files([prepared.upload_path], page_ranges=prepared.api_page_ranges)
         safe_progress(progress, f"Dual MinerU batch submitted: batch_id={batch_id}")
         mineru_result = mineru_client.wait_for_batch_results(batch_id, expected_count=1)[0]
         return _download_mineru_artifact_only(
@@ -1252,12 +1261,14 @@ def _prepare_dual_artifacts_for_source(
             config=config,
             args=args,
             task_ref={"task_id": mineru_result.task_id, "batch_id": batch_id},
+            physical_pdf_crop=prepared.physical_pdf_crop,
             progress=progress,
         )
 
     def _paddleocr_stage() -> Path:
         safe_progress(progress, f"Dual PaddleOCR submit: {source_path.name}")
-        job_id = paddle_client.submit_local_file(source_path, page_ranges=args.page_ranges)
+        _validate_paddleocr_size(prepared.upload_path)
+        job_id = paddle_client.submit_local_file(prepared.upload_path, page_ranges=prepared.api_page_ranges)
         safe_progress(progress, f"Dual PaddleOCR job submitted: job_id={job_id}")
         paddle_status = paddle_client.wait_for_job(job_id)
         return _download_paddleocr_artifact_only(
@@ -1267,16 +1278,20 @@ def _prepare_dual_artifacts_for_source(
             config=config,
             args=args,
             page_ranges=args.page_ranges,
+            physical_pdf_crop=prepared.physical_pdf_crop,
             progress=progress,
         )
 
     started = time.monotonic()
     safe_progress(progress, f"Dual parser parallel stages start: source={source_path.name}")
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        mineru_future = executor.submit(_mineru_stage)
-        paddle_future = executor.submit(_paddleocr_stage)
-        mineru_artifact = mineru_future.result()
-        paddle_artifact = paddle_future.result()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            mineru_future = executor.submit(_mineru_stage)
+            paddle_future = executor.submit(_paddleocr_stage)
+            mineru_artifact = mineru_future.result()
+            paddle_artifact = paddle_future.result()
+    finally:
+        cleanup_prepared_pdf_upload(prepared)
     safe_progress(progress, f"Dual parser parallel stages done: source={source_path.name}, elapsed={time.monotonic() - started:.1f}s")
     return mineru_artifact, paddle_artifact
 
@@ -1306,6 +1321,21 @@ def _auto_split_dual_plans_for_local_files(local_files: list[Path], args, config
 
 def _dual_page_chunk_size(config: AppConfig) -> int:
     return max(1, min(int(config.mineru_page_chunk_size), int(config.paddleocr_page_chunk_size)))
+
+
+def _prepare_local_pdf_upload(source: Path, args, *, progress=None, label: str = "API") -> PreparedPdfUpload:
+    prepared = prepare_pdf_upload_for_page_ranges(source, args.page_ranges)
+    if prepared.was_cropped:
+        audit = prepared.physical_pdf_crop or {}
+        safe_progress(
+            progress,
+            (
+                f"{label} upload PDF physically cropped: source={source.name}, "
+                f"page_ranges={audit.get('requested_page_ranges')}, pages={audit.get('selected_page_count')}, "
+                f"original_bytes={audit.get('original_size_bytes')}, upload_bytes={audit.get('cropped_size_bytes')}"
+            ),
+        )
+    return prepared
 
 
 def _run_chunked_dual_pdf(
@@ -1378,6 +1408,8 @@ def _run_chunked_dual_pdf(
             "mineru_batch_id": mineru_manifest.get("batch_id"),
             "paddleocr_job_id": paddle_manifest.get("job_id"),
             "paddleocr_trace_id": paddle_manifest.get("trace_id"),
+            "mineru_physical_pdf_crop": mineru_manifest.get("physical_pdf_crop"),
+            "paddleocr_physical_pdf_crop": paddle_manifest.get("physical_pdf_crop"),
             "mineru_artifact_dir": str(mineru_artifact),
             "paddleocr_artifact_dir": str(paddle_artifact),
             "output_dir": processed.get("output_dir"),
@@ -1566,7 +1598,6 @@ def _run_mixed_paddleocr_local_files(
         ),
     )
     for source in local_files:
-        _validate_paddleocr_size(source)
         if source in split_plans:
             code = _run_chunked_paddleocr_pdf(
                 client,
@@ -1582,21 +1613,30 @@ def _run_mixed_paddleocr_local_files(
                 return code
             processed_count += 1
             continue
-        safe_progress(progress, f"Submitting one local file to PaddleOCR: {source.name} ({source.stat().st_size} bytes)")
-        job_id = client.submit_local_file(source, page_ranges=args.page_ranges)
-        safe_progress(progress, f"PaddleOCR task submitted: job_id={job_id}, file={source.name}")
-        status = client.wait_for_job(job_id)
-        processed = _download_and_process_paddleocr_result(
-            client,
-            status,
-            source=str(source),
-            config=config,
-            args=args,
-            mode=mode,
-            doc_name=doc_name if len(local_files) == 1 else None,
-            page_ranges=args.page_ranges,
-            progress=progress,
-        )
+        prepared = _prepare_local_pdf_upload(source, args, progress=progress, label="PaddleOCR")
+        try:
+            _validate_paddleocr_size(prepared.upload_path)
+            safe_progress(
+                progress,
+                f"Submitting one local file to PaddleOCR: {source.name} upload={prepared.upload_path.name} ({prepared.upload_path.stat().st_size} bytes)",
+            )
+            job_id = client.submit_local_file(prepared.upload_path, page_ranges=prepared.api_page_ranges)
+            safe_progress(progress, f"PaddleOCR task submitted: job_id={job_id}, file={source.name}")
+            status = client.wait_for_job(job_id)
+            processed = _download_and_process_paddleocr_result(
+                client,
+                status,
+                source=str(source),
+                config=config,
+                args=args,
+                mode=mode,
+                doc_name=doc_name if len(local_files) == 1 else None,
+                page_ranges=args.page_ranges,
+                physical_pdf_crop=prepared.physical_pdf_crop,
+                progress=progress,
+            )
+        finally:
+            cleanup_prepared_pdf_upload(prepared)
         processed_count += 1
         safe_progress(progress, f"PaddleOCR API processed: {processed['page_count']} pages -> {processed['output_dir']}")
         print(f"PaddleOCR API 处理完成：共 {processed['page_count']} 页 -> {processed['output_dir']}")
@@ -1638,20 +1678,28 @@ def _run_chunked_paddleocr_pdf(
                 f"page_ranges={chunk.page_ranges}, pages={chunk.page_count}"
             ),
         )
-        job_id = client.submit_local_file(source, page_ranges=chunk.page_ranges)
-        safe_progress(progress, f"PaddleOCR chunk submitted: chunk={chunk.index}, job_id={job_id}")
-        status = client.wait_for_job(job_id)
-        processed = _download_and_process_paddleocr_result(
-            client,
-            status,
-            source=str(source),
-            config=config,
-            args=args,
-            mode=mode,
-            doc_name=chunk_doc_name,
-            page_ranges=chunk.page_ranges,
-            progress=progress,
-        )
+        chunk_args = argparse.Namespace(**vars(args))
+        chunk_args.page_ranges = chunk.page_ranges
+        prepared = _prepare_local_pdf_upload(source, chunk_args, progress=progress, label="PaddleOCR chunk")
+        try:
+            _validate_paddleocr_size(prepared.upload_path)
+            job_id = client.submit_local_file(prepared.upload_path, page_ranges=prepared.api_page_ranges)
+            safe_progress(progress, f"PaddleOCR chunk submitted: chunk={chunk.index}, job_id={job_id}")
+            status = client.wait_for_job(job_id)
+            processed = _download_and_process_paddleocr_result(
+                client,
+                status,
+                source=str(source),
+                config=config,
+                args=chunk_args,
+                mode=mode,
+                doc_name=chunk_doc_name,
+                page_ranges=chunk.page_ranges,
+                physical_pdf_crop=prepared.physical_pdf_crop,
+                progress=progress,
+            )
+        finally:
+            cleanup_prepared_pdf_upload(prepared)
         chunk_audit.append(
             {
                 "index": chunk.index,
@@ -1660,6 +1708,7 @@ def _run_chunked_paddleocr_pdf(
                 "first_page": chunk.first_page,
                 "last_page": chunk.last_page,
                 "job_id": job_id,
+                "physical_pdf_crop": prepared.physical_pdf_crop,
                 "output_dir": processed.get("output_dir"),
                 "status": processed.get("status"),
             }
@@ -1769,6 +1818,7 @@ def _download_and_process_paddleocr_result(
     mode: str,
     doc_name: str | None,
     page_ranges: str | None,
+    physical_pdf_crop: dict | None = None,
     progress=None,
 ) -> dict:
     from .paddleocr_cache import cache_key_for_source, task_cache_dir, write_task_manifest
@@ -1788,6 +1838,7 @@ def _download_and_process_paddleocr_result(
         model=config.paddleocr_model,
         job_id=status.job_id,
         trace_id=status.trace_id,
+        physical_pdf_crop=physical_pdf_crop,
     )
     safe_progress(progress, f"Processing PaddleOCR artifact into Markdown: {artifact_dir}")
     processed = process_paddleocr_artifact_task(
@@ -1853,22 +1904,30 @@ def _run_mixed_mineru_local_files(
                 return code
             processed_count += 1
             continue
-        safe_progress(progress, f"Submitting one local file to MinerU: {source.name} ({source.stat().st_size} bytes)")
-        batch_id = client.submit_local_files([source], page_ranges=args.page_ranges)
-        safe_progress(progress, f"MinerU batch submitted: batch_id={batch_id}, files=1")
-        results = client.wait_for_batch_results(batch_id, expected_count=1)
-        result = results[0]
-        processed = _download_and_process_mineru_result(
-            client,
-            result,
-            source=str(source),
-            config=config,
-            args=args,
-            mode=mode,
-            doc_name=doc_name if len(local_files) == 1 else None,
-            task_ref={"task_id": result.task_id, "batch_id": batch_id},
-            progress=progress,
-        )
+        prepared = _prepare_local_pdf_upload(source, args, progress=progress, label="MinerU")
+        try:
+            safe_progress(
+                progress,
+                f"Submitting one local file to MinerU: {source.name} upload={prepared.upload_path.name} ({prepared.upload_path.stat().st_size} bytes)",
+            )
+            batch_id = client.submit_local_files([prepared.upload_path], page_ranges=prepared.api_page_ranges)
+            safe_progress(progress, f"MinerU batch submitted: batch_id={batch_id}, files=1")
+            results = client.wait_for_batch_results(batch_id, expected_count=1)
+            result = results[0]
+            processed = _download_and_process_mineru_result(
+                client,
+                result,
+                source=str(source),
+                config=config,
+                args=args,
+                mode=mode,
+                doc_name=doc_name if len(local_files) == 1 else None,
+                task_ref={"task_id": result.task_id, "batch_id": batch_id},
+                physical_pdf_crop=prepared.physical_pdf_crop,
+                progress=progress,
+            )
+        finally:
+            cleanup_prepared_pdf_upload(prepared)
         processed_count += 1
         print(f"MinerU API 处理完成：共 {processed['page_count']} 页 -> {processed['output_dir']}")
     print(f"MinerU 本地任务完成：{processed_count}/{len(local_files)} 个文件")
@@ -1910,21 +1969,26 @@ def _run_chunked_mineru_pdf(
                 f"page_ranges={chunk.page_ranges}, pages={chunk.page_count}"
             ),
         )
-        batch_id = client.submit_local_files([source], page_ranges=chunk.page_ranges)
-        safe_progress(progress, f"MinerU chunk batch submitted: chunk={chunk.index}, batch_id={batch_id}")
-        results = client.wait_for_batch_results(batch_id, expected_count=1)
-        result = results[0]
-        processed = _download_and_process_mineru_result(
-            client,
-            result,
-            source=str(source),
-            config=config,
-            args=chunk_args,
-            mode=mode,
-            doc_name=chunk_doc_name,
-            task_ref={"task_id": result.task_id, "batch_id": batch_id},
-            progress=progress,
-        )
+        prepared = _prepare_local_pdf_upload(source, chunk_args, progress=progress, label="MinerU chunk")
+        try:
+            batch_id = client.submit_local_files([prepared.upload_path], page_ranges=prepared.api_page_ranges)
+            safe_progress(progress, f"MinerU chunk batch submitted: chunk={chunk.index}, batch_id={batch_id}")
+            results = client.wait_for_batch_results(batch_id, expected_count=1)
+            result = results[0]
+            processed = _download_and_process_mineru_result(
+                client,
+                result,
+                source=str(source),
+                config=config,
+                args=chunk_args,
+                mode=mode,
+                doc_name=chunk_doc_name,
+                task_ref={"task_id": result.task_id, "batch_id": batch_id},
+                physical_pdf_crop=prepared.physical_pdf_crop,
+                progress=progress,
+            )
+        finally:
+            cleanup_prepared_pdf_upload(prepared)
         chunk_audit.append(
             {
                 "index": chunk.index,
@@ -1934,6 +1998,7 @@ def _run_chunked_mineru_pdf(
                 "last_page": chunk.last_page,
                 "task_id": result.task_id,
                 "batch_id": batch_id,
+                "physical_pdf_crop": prepared.physical_pdf_crop,
                 "output_dir": processed.get("output_dir"),
                 "status": processed.get("status"),
             }
@@ -2066,6 +2131,9 @@ def _cleanup_chunk_output_dirs(chunk_dirs: list[Path], final_output_dir: Path, *
 
 
 def _final_slide_no_for_chunk_slide(chunk, source_slide: int) -> int:
+    original_pages = parse_page_selection(str(getattr(chunk, "page_ranges", "") or ""), total_pages=None)
+    if original_pages and 1 <= source_slide <= len(original_pages):
+        return original_pages[source_slide - 1]
     if chunk.first_page <= source_slide <= chunk.last_page:
         return source_slide
     if 1 <= source_slide <= chunk.page_count:
@@ -2089,6 +2157,7 @@ def _download_and_process_mineru_result(
     mode: str,
     doc_name: str | None,
     task_ref: dict[str, str | None],
+    physical_pdf_crop: dict | None = None,
     progress=None,
 ) -> dict:
     from .mineru_cache import cache_key_for_source, task_cache_dir, unzip_mineru_result, write_task_manifest
@@ -2115,6 +2184,7 @@ def _download_and_process_mineru_result(
         full_zip_url=result.full_zip_url,
         file_name=getattr(result, "file_name", None),
         data_id=getattr(result, "data_id", None),
+        physical_pdf_crop=physical_pdf_crop,
         **task_ref,
     )
     safe_progress(progress, f"Processing MinerU artifact into Markdown: {artifact_dir}")
@@ -2138,6 +2208,7 @@ def _download_mineru_artifact_only(
     config: AppConfig,
     args,
     task_ref: dict[str, str | None],
+    physical_pdf_crop: dict | None = None,
     progress=None,
 ) -> Path:
     from .mineru_cache import cache_key_for_source, task_cache_dir, unzip_mineru_result, write_task_manifest
@@ -2158,6 +2229,7 @@ def _download_mineru_artifact_only(
         full_zip_url=result.full_zip_url,
         file_name=getattr(result, "file_name", None),
         data_id=getattr(result, "data_id", None),
+        physical_pdf_crop=physical_pdf_crop,
         **task_ref,
     )
     safe_progress(progress, f"MinerU artifact ready for dual mode: {artifact_dir}")
@@ -2172,6 +2244,7 @@ def _download_paddleocr_artifact_only(
     config: AppConfig,
     args,
     page_ranges: str | None,
+    physical_pdf_crop: dict | None = None,
     progress=None,
 ) -> Path:
     from .paddleocr_cache import cache_key_for_source, task_cache_dir, write_task_manifest
@@ -2189,6 +2262,7 @@ def _download_paddleocr_artifact_only(
         model=config.paddleocr_model,
         job_id=status.job_id,
         trace_id=status.trace_id,
+        physical_pdf_crop=physical_pdf_crop,
     )
     safe_progress(progress, f"PaddleOCR artifact ready for dual mode: {artifact_dir}")
     return artifact_dir
@@ -2312,7 +2386,6 @@ def _validate_explicit_paddleocr_file(path: str | Path) -> Path:
         raise ValueError(f"PaddleOCR input file does not exist: {file_path}")
     if not _is_paddleocr_supported_file(file_path):
         raise ValueError(f"Unsupported PaddleOCR input file type: {file_path.suffix}. Supported: .pdf and common image files")
-    _validate_paddleocr_size(file_path)
     return file_path.resolve()
 
 

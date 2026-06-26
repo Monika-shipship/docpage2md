@@ -210,6 +210,15 @@ def translate_progress_message(message: str) -> str:
         return f"双引擎分段审计已写入：{match.group(1)}"
     if match := re.search(r"Dual parser artifacts ready: source=([^,]+), mineru=([^,]+), paddleocr=(.+)", message):
         return f"双引擎解析结果已就绪：文件={match.group(1)}，MinerU={match.group(2)}，PaddleOCR={match.group(3)}"
+    if match := re.search(
+        r"(.+?) upload PDF physically cropped: source=([^,]+), page_ranges=([^,]+), pages=(\d+), original_bytes=(\d+), upload_bytes=(\d+)",
+        message,
+    ):
+        return (
+            f"{_upload_label(match.group(1))}上传 PDF 已物理裁剪：源文件={match.group(2)}，页码={match.group(3)}，"
+            f"上传页数={match.group(4)}，原始大小={_format_bytes(int(match.group(5)))}，"
+            f"上传大小={_format_bytes(int(match.group(6)))}"
+        )
     if match := re.search(r"Dual document processing start: source=(.+)", message):
         return f"开始融合精修文档：文件={match.group(1)}"
     if match := re.search(r"Dual document done: source=([^,]+), pages=(\d+), output=(.+)", message):
@@ -291,6 +300,11 @@ def translate_progress_message(message: str) -> str:
         return f"MinerU 批量解析完成：batch_id={match.group(1)}，文件数={match.group(2)}"
     if match := re.search(r"MinerU mixed local processing start: files=(\d+), chunked_files=(\d+)", message):
         return f"开始处理本地文件：文件数={match.group(1)}，需要自动分段的文件数={match.group(2)}"
+    if match := re.search(r"Submitting one local file to MinerU: (.+?) upload=([^ ]+) \((\d+) bytes\)", message):
+        return (
+            f"正在提交单个本地文件到 MinerU：源文件={match.group(1)}，"
+            f"上传文件={match.group(2)}，大小={_format_bytes(int(match.group(3)))}"
+        )
     if match := re.search(r"Submitting one local file to MinerU: (.+?) \((\d+) bytes\)", message):
         return f"正在提交单个本地文件到 MinerU：{match.group(1)}，大小={_format_bytes(int(match.group(2)))}"
     if match := re.search(r"MinerU chunked PDF start: source=([^,]+), chunks=(\d+), selected_pages=(\d+), chunk_size=(\d+)", message):
@@ -469,8 +483,18 @@ def translate_progress_message(message: str) -> str:
         return "已复制 PaddleOCR 原始结果"
     if match := re.search(r"Submitting remote URL to PaddleOCR: (.+)", message):
         return f"正在提交远程 URL 到 PaddleOCR：{match.group(1)}"
+    if match := re.search(r"Submitting local file to PaddleOCR: (.+?) upload=([^ ]+) \((\d+) bytes\)", message):
+        return (
+            f"正在提交本地文件到 PaddleOCR：源文件={match.group(1)}，"
+            f"上传文件={match.group(2)}，大小={_format_bytes(int(match.group(3)))}"
+        )
     if match := re.search(r"Submitting local file to PaddleOCR: (.+?) \((\d+) bytes\)", message):
         return f"正在提交本地文件到 PaddleOCR：{match.group(1)}，大小={_format_bytes(int(match.group(2)))}"
+    if match := re.search(r"Submitting one local file to PaddleOCR: (.+?) upload=([^ ]+) \((\d+) bytes\)", message):
+        return (
+            f"正在提交单个本地文件到 PaddleOCR：源文件={match.group(1)}，"
+            f"上传文件={match.group(2)}，大小={_format_bytes(int(match.group(3)))}"
+        )
     if match := re.search(r"Submitting one local file to PaddleOCR: (.+?) \((\d+) bytes\)", message):
         return f"正在提交单个本地文件到 PaddleOCR：{match.group(1)}，大小={_format_bytes(int(match.group(2)))}"
     if match := re.search(r"PaddleOCR submit local file: source=([^,]+), model=([^,]+), page_ranges=(.+)", message):
@@ -558,6 +582,18 @@ def _bool_label(value: str) -> str:
 
 def _block_type_label(value: str) -> str:
     return _BLOCK_TYPE_LABELS.get(value, value)
+
+
+def _upload_label(value: str) -> str:
+    labels = {
+        "API": "API",
+        "Dual parser": "双引擎解析",
+        "MinerU": "MinerU",
+        "MinerU chunk": "MinerU 分段",
+        "PaddleOCR": "PaddleOCR",
+        "PaddleOCR chunk": "PaddleOCR 分段",
+    }
+    return labels.get(value, value)
 
 
 def _translate_fields(value: str) -> str:

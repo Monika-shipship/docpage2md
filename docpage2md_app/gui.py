@@ -3637,16 +3637,18 @@ class DocPage2MdGui:
                 if layout_engine == "paddleocr":
                     if path.suffix.lower() != ".pdf" and path.suffix.lower() not in IMAGE_SUFFIXES:
                         raise ValueError(f"PaddleOCR 当前支持 PDF 和图片，不支持: {path.suffix}")
-                    if path.stat().st_size > PADDLEOCR_LOCAL_FILE_LIMIT_BYTES:
-                        raise ValueError(f"PaddleOCR 本地上传单文件限制为 50MB：{path.name}")
+                    if path.suffix.lower() != ".pdf" or not options.page_ranges.strip():
+                        if path.stat().st_size > PADDLEOCR_LOCAL_FILE_LIMIT_BYTES:
+                            raise ValueError(f"PaddleOCR 本地上传单文件限制为 50MB：{path.name}")
                 elif layout_engine == "dual":
                     if path.suffix.lower() != ".pdf" and path.suffix.lower() not in IMAGE_SUFFIXES:
                         raise ValueError(f"双引擎融合当前支持 PDF 和图片，不支持: {path.suffix}")
                     if path.suffix.lower() not in MINERU_SUPPORTED_SUFFIXES:
                         supported = ", ".join(sorted(MINERU_SUPPORTED_SUFFIXES))
                         raise ValueError(f"双引擎融合要求 MinerU 也支持该文件类型: {path.suffix}。MinerU 支持: {supported}")
-                    if path.stat().st_size > PADDLEOCR_LOCAL_FILE_LIMIT_BYTES:
-                        raise ValueError(f"PaddleOCR 本地上传单文件限制为 50MB：{path.name}")
+                    if path.suffix.lower() != ".pdf" or not options.page_ranges.strip():
+                        if path.stat().st_size > PADDLEOCR_LOCAL_FILE_LIMIT_BYTES:
+                            raise ValueError(f"PaddleOCR 本地上传单文件限制为 50MB：{path.name}")
                 else:
                     if path.suffix.lower() not in MINERU_SUPPORTED_SUFFIXES:
                         supported = ", ".join(sorted(MINERU_SUPPORTED_SUFFIXES))

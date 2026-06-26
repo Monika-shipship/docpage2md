@@ -10,7 +10,7 @@ from .config import AppConfig
 from .content_inventory import build_content_inventory
 from .confusion import contextual_ocr_corrections_disabled_report
 from .dual_ir import DUAL_ADAPTER_VERSION
-from .files import merge_markdowns, write_json, write_text_atomic
+from .files import merge_markdowns, read_json, write_json, write_text_atomic
 from .fusion import fuse_document_irs
 from .hybrid_enrichment import HYBRID_ENRICHMENT_VERSION, enrich_mineru_document_ir
 from .mineru_adapter import adapt_mineru_artifacts
@@ -254,10 +254,12 @@ def _initial_report(
             "source": document_ir.get("source"),
             "mineru": {
                 "artifact_manifest": mineru_artifacts.to_manifest(),
+                "task_manifest": _read_task_manifest(mineru_artifacts.root / "mineru_task_manifest.json"),
                 "model_version": config.mineru_model_version,
             },
             "paddleocr": {
                 "artifact_manifest": paddleocr_artifacts.to_manifest(),
+                "task_manifest": _read_task_manifest(paddleocr_artifacts.root / "paddleocr_task_manifest.json"),
                 "model": config.paddleocr_model,
                 "evidence": paddleocr_evidence_report(config),
             },
@@ -265,10 +267,12 @@ def _initial_report(
         },
         "mineru": {
             "artifact_manifest": mineru_artifacts.to_manifest(),
+            "task_manifest": _read_task_manifest(mineru_artifacts.root / "mineru_task_manifest.json"),
             "model_version": config.mineru_model_version,
         },
         "paddleocr": {
             "artifact_manifest": paddleocr_artifacts.to_manifest(),
+            "task_manifest": _read_task_manifest(paddleocr_artifacts.root / "paddleocr_task_manifest.json"),
             "model": config.paddleocr_model,
             "evidence": paddleocr_evidence_report(config),
         },
@@ -424,3 +428,13 @@ def _doc_name(source_path: str | None, artifact_root: Path) -> str:
         if stem:
             return stem
     return artifact_root.name or "dual_hybrid_task"
+
+
+def _read_task_manifest(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = read_json(path)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}

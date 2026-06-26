@@ -122,7 +122,7 @@ python -m docpage2md_app.gui
 5. Markdown 精修选“开启 DocPage2MD 精修”。
 6. 模型档位选“均衡（推荐）”。
 7. MinerU 模型保持默认 `vlm`。
-8. 页码范围先填 `1-3` 做小样本测试；确认效果后留空跑全量。
+8. 页码范围先填 `1-3` 做小样本测试；确认效果后留空跑全量。本地 PDF 只选部分页时，程序会先在本机裁出临时小 PDF，再上传给 MinerU/PaddleOCR，避免把整份大 PDF 传上去。
 9. 点击“刷新估算”，查看 Vision/Brain 费用估算。
 10. 点击“开始处理”。
 
@@ -162,6 +162,8 @@ input_docs/
 - 已解压的 MinerU artifact 目录
 - 已解压/下载好的 PaddleOCR artifact 目录
 - 远程文件 URL
+
+本地 PDF 填写页码范围时，DocPage2MD 会用 `pypdf` 先生成只包含选中页的临时 PDF，再把这个小 PDF 上传到 MinerU/PaddleOCR；API 侧不再额外传原始页码范围。`run_report.json` 的任务 manifest 会记录 `physical_pdf_crop`，包括原始页码、上传页码映射、原始大小和裁剪后大小。远程 URL、Office 或页数未知文件不会盲目本地裁剪。
 
 旧版 `vision_only` 还支持页面图片目录：
 
@@ -227,7 +229,7 @@ PaddleOCR 默认使用异步接口：
 https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 ```
 
-本地文件大小按平台文档限制为 50 MB；URL 文件按 200 MB 提示；每日按每模型 3000 页额度提示。PDF 默认按 100 页分段提交，避免超过平台建议范围后只解析前 100 页。PaddleOCR 和 MinerU 一样在成本估算里只显示平台额度/限制，不计入 Vision/Brain token 费用。
+本地文件大小按平台文档限制为 50 MB；URL 文件按 200 MB 提示；每日按每模型 3000 页额度提示。本地 PDF 如果只选部分页，会先裁剪成临时小 PDF，再按裁剪后大小检查 50 MB 限制并上传。PDF 默认按 100 页分段提交，避免超过平台建议范围后只解析前 100 页。PaddleOCR 和 MinerU 一样在成本估算里只显示平台额度/限制，不计入 Vision/Brain token 费用。
 
 CLI 示例：
 
@@ -249,7 +251,8 @@ PaddleOCR 默认精简输出包含 `assets/`、`Slide_XX.md`、`*_FULL.md`、`pr
 - 本地单文件、多文件、文件夹。
 - 已有 artifact：同时提供 `--mineru-artifact-dir` 和 `--paddleocr-artifact-dir`。
 - 多文件本地输入会按 `--parser-workers` 跨文件并发提交/等待解析；同一文件内部 MinerU 与 PaddleOCR 也并发。
-- 本地 PDF 超过单段页数时会自动按双引擎共同限制分段，默认每段 100 页；每段分别完成 MinerU + PaddleOCR 解析和融合后，会自动合并回同一个最终输出目录。
+- 本地 PDF 只选部分页时，先物理裁剪选中页再上传；例如 `--page-ranges 5-20` 只上传 16 页临时 PDF，不上传整份原 PDF。
+- 本地 PDF 超过单段页数时会自动按双引擎共同限制分段，默认每段 100 页；每段会先裁剪出对应 chunk 临时 PDF，再分别完成 MinerU + PaddleOCR 解析和融合，最后自动合并回同一个最终输出目录。
 - 默认精简输出保留 Markdown、assets、日志和报告；`standard` 保留 `ir/mineru_document_ir.json`、`ir/paddleocr_document_ir.json`、`ir/fused_document_ir.json`；`debug` 再保留 `mineru_raw/`、`paddleocr_raw/` 和解析 cache。若 PaddleOCR 证据档位为 `debug/audit`，即使全局是精简模式，也会保留 `paddleocr_raw/` 以便查看可视化证据。
 - `run_report.json` 记录候选组、融合决策、被拒绝操作和不确定项。
 
@@ -419,11 +422,12 @@ python docpage2md.py --list-all-models
 `hybrid` 是真实并行：
 
 1. 本地多文件双引擎任务会先按“解析并发”同时提交/等待 MinerU 和 PaddleOCR；同一个文件内部 MinerU 与 PaddleOCR 也并发。
-2. 已拿到 artifact 的文档进入“文档并发”队列；默认 `1`，避免多份文档叠加出过多 Vision/Brain 请求。
-3. MinerU 解析一个 PDF 后会一次返回整份文档的页面、layout 和 crop。
-4. crop Vision 阶段会把所有可识别裁剪块放进线程池，默认并发 `60`。
-5. Brain 阶段会把所有页面放进线程池，默认并发 `60`。
-6. 实际 worker 数为 `min(任务数, 配置并发数)`。
+2. 本地 PDF 有页码范围时，先裁剪出选中页临时 PDF，再进入解析器提交；这减少上传耗时，不改变后续并发。
+3. 已拿到 artifact 的文档进入“文档并发”队列；默认 `1`，避免多份文档叠加出过多 Vision/Brain 请求。
+4. MinerU 解析一个 PDF 后会一次返回整份文档的页面、layout 和 crop。
+5. crop Vision 阶段会把所有可识别裁剪块放进线程池，默认并发 `60`。
+6. Brain 阶段会把所有页面放进线程池，默认并发 `60`。
+7. 实际 worker 数为 `min(任务数, 配置并发数)`。
 
 所以 11 页 PDF 的 Brain 阶段最多只有 11 个并发请求；把上限设成 `100` 或 `200` 不会凭空产生更多页级任务。GUI 日志会显示“实际并发”和“配置上限”。
 

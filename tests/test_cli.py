@@ -3,6 +3,8 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+from pypdf import PdfReader, PdfWriter
+
 from docpage2md_app import cli
 from docpage2md_app.config import AppConfig
 from docpage2md_app.files import read_json, write_json
@@ -707,6 +709,89 @@ def test_cli_dual_prepares_mineru_and_paddleocr_artifacts_in_parallel(monkeypatc
     assert result == (mineru_artifact, paddle_artifact)
     assert mineru_started.is_set()
     assert paddle_started.is_set()
+
+
+def test_cli_dual_page_range_uploads_cropped_pdf_to_both_parsers(monkeypatch, tmp_path):
+    pdf = tmp_path / "notes.pdf"
+    writer = PdfWriter()
+    for _ in range(4):
+        writer.add_blank_page(width=72, height=72)
+    with pdf.open("wb") as handle:
+        writer.write(handle)
+
+    args = cli.parse_args(
+        [
+            "--engine-mode",
+            "dual_hybrid",
+            "--input-file",
+            str(pdf),
+            "--page-ranges",
+            "2-3",
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+    config = cli.build_config(args)
+    mineru_artifact = tmp_path / "mineru_artifact"
+    paddle_artifact = tmp_path / "paddle_artifact"
+    submitted_paths: list[Path] = []
+    crop_audits = []
+
+    class FakeMinerUClient:
+        def submit_local_files(self, files, *, page_ranges=None):
+            assert page_ranges is None
+            upload_path = Path(files[0])
+            assert upload_path != pdf
+            assert len(PdfReader(str(upload_path)).pages) == 2
+            submitted_paths.append(upload_path)
+            return "batch-1"
+
+        def wait_for_batch_results(self, batch_id, *, expected_count):
+            return [SimpleNamespace(task_id="task-1", full_zip_url="https://example.com/mineru.zip")]
+
+    class FakePaddleOCRClient:
+        def submit_local_file(self, path, *, page_ranges=None):
+            assert page_ranges is None
+            upload_path = Path(path)
+            assert upload_path != pdf
+            assert len(PdfReader(str(upload_path)).pages) == 2
+            submitted_paths.append(upload_path)
+            return "job-1"
+
+        def wait_for_job(self, job_id):
+            return SimpleNamespace(job_id="job-1", trace_id="trace-1")
+
+    def fake_download_mineru(*_args, **kwargs):
+        crop_audits.append(kwargs.get("physical_pdf_crop"))
+        return mineru_artifact
+
+    def fake_download_paddle(*_args, **kwargs):
+        crop_audits.append(kwargs.get("physical_pdf_crop"))
+        return paddle_artifact
+
+    monkeypatch.setattr(cli, "_download_mineru_artifact_only", fake_download_mineru)
+    monkeypatch.setattr(cli, "_download_paddleocr_artifact_only", fake_download_paddle)
+
+    result = cli._prepare_dual_artifacts_for_source(
+        FakeMinerUClient(),
+        FakePaddleOCRClient(),
+        config=config,
+        args=args,
+        source=pdf,
+        progress=None,
+    )
+
+    assert result == (mineru_artifact, paddle_artifact)
+    assert len(submitted_paths) == 2
+    assert all(not path.exists() for path in submitted_paths)
+    assert [audit["selected_pages"] for audit in crop_audits] == [[2, 3], [2, 3]]
+
+
+def test_cli_chunk_slide_mapping_handles_non_contiguous_ranges():
+    chunk = build_page_chunks(10, "2,4", chunk_size=2)[0]
+
+    assert cli._final_slide_no_for_chunk_slide(chunk, 1) == 2
+    assert cli._final_slide_no_for_chunk_slide(chunk, 2) == 4
 
 
 def test_interactive_default_starts_with_hybrid_mineru_pdf(monkeypatch):
