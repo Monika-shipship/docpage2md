@@ -37,7 +37,7 @@ PaddleOCR 已作为 DocPage2MD 的正式可选解析引擎接入。它和 MinerU
 - 与同一文件的 `mineru_only` / `mineru_hybrid` 继续做公式质量、表格质量和图片切分质量对比。
 - 根据更多真实失败码继续补充更细的错误提示。
 - 根据真实返回字段继续完善 PaddleOCR artifact 解析。
-- 实现长 PDF 的 `dual_hybrid` chunked merge。目前双引擎模式会阻止超过 PaddleOCR chunk size 的 PDF，避免错误地只处理前一段。
+- 继续用真实长 PDF 验收 `dual_hybrid` chunked merge。当前已支持本地 PDF 按 `min(mineru_page_chunk_size, paddleocr_page_chunk_size)` 自动分段并合并，默认每段 100 页。
 
 ## 已阅读的本地文档
 
@@ -215,7 +215,7 @@ MinerU + PaddleOCR 双引擎融合精修
 当前限制：
 
 - 远程 URL 暂不直接支持双引擎，可先分别生成 artifact 后融合。
-- 长 PDF 暂不做双引擎自动分段合并；超过 PaddleOCR chunk size 时阻止运行。
+- 本地长 PDF 已支持双引擎自动分段合并；远程 URL 和页数未知的 Office 输入仍建议先分别生成 artifact 后融合。
 - 融合决策默认是离线保守策略；AI 结构化裁决的 prompt 和白名单边界已准备好，但真实 Brain 裁决还需要更多质量回归后再打开。
 
 ### 核心原则
@@ -526,7 +526,7 @@ HTTP 假服务测试：
 
 - 已实现 bbox/text/type candidate grouping，而不是只把 PaddleOCR 作为整页证据。
 - 已记录每个候选组的 choose/merge/keep-both/mark-uncertain 审计。
-- 待实现 `dual_hybrid` 自动 chunked merge。
+- 已实现本地 PDF 的 `dual_hybrid` 自动 chunked merge，默认按 100 页拆分并合并最终输出。
 - 待在更多真实样本上评估是否启用 Brain 结构化融合裁决。
 - 用真实长 PDF 和复杂公式页比较 `mineru_hybrid`、`paddleocr_hybrid`、`dual_hybrid` 的质量和耗时。
 

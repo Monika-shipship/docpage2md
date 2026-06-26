@@ -249,13 +249,14 @@ PaddleOCR 默认精简输出包含 `assets/`、`Slide_XX.md`、`*_FULL.md`、`pr
 - 本地单文件、多文件、文件夹。
 - 已有 artifact：同时提供 `--mineru-artifact-dir` 和 `--paddleocr-artifact-dir`。
 - 多文件本地输入会按 `--parser-workers` 跨文件并发提交/等待解析；同一文件内部 MinerU 与 PaddleOCR 也并发。
+- 本地 PDF 超过单段页数时会自动按双引擎共同限制分段，默认每段 100 页；每段分别完成 MinerU + PaddleOCR 解析和融合后，会自动合并回同一个最终输出目录。
 - 默认精简输出保留 Markdown、assets、日志和报告；`standard` 保留 `ir/mineru_document_ir.json`、`ir/paddleocr_document_ir.json`、`ir/fused_document_ir.json`；`debug` 再保留 `mineru_raw/`、`paddleocr_raw/` 和解析 cache。若 PaddleOCR 证据档位为 `debug/audit`，即使全局是精简模式，也会保留 `paddleocr_raw/` 以便查看可视化证据。
 - `run_report.json` 记录候选组、融合决策、被拒绝操作和不确定项。
 
 当前限制：
 
 - 不直接支持远程 URL 双引擎；可先分别生成 artifact 后再融合。
-- 超过 PaddleOCR 分段页数的 PDF 暂不自动做双引擎 chunk merge；先用 `--page-ranges` 分段运行。
+- Office/远程 URL 页数未知时不会盲目双引擎分段；如平台返回超限，请先转成本地 PDF 或分别生成 artifact 后再融合。
 
 CLI 示例：
 
@@ -438,6 +439,7 @@ python docpage2md.py --engine-mode dual_hybrid --input-files a.pdf b.pdf --parse
 
 - `--parser-workers`：多文件上传/等待解析并发，默认 `8`。
 - `--doc-workers`：多文件文档级处理并发，默认 `1`。调高后每份文档内部仍会继续使用 Vision/Brain 并发。
+- `dual_hybrid` 长 PDF 会按 `min(--mineru-page-chunk-size, --paddleocr-page-chunk-size)` 自动分段；默认就是 PaddleOCR 的 `100` 页。只填写 `--page-ranges 1-23` 时只处理选中的 23 页。
 - `--output-retention slim|standard|debug`：默认 `slim`。`standard` 保留 IR；`debug` 保留 raw artifact 和解析 cache。
 
 ## 日志、缓存和安全

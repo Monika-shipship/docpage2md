@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from docpage2md_app import cli
 from docpage2md_app.config import AppConfig
-from docpage2md_app.files import write_json
+from docpage2md_app.files import read_json, write_json
 from docpage2md_app.input_inspection import build_page_chunks
 
 
@@ -35,6 +35,15 @@ def test_cli_build_config_exposes_ocr_confusion_opt_in(tmp_path):
     config = cli.build_config(args)
 
     assert config.fix_ocr_confusion is True
+
+
+def test_cli_version_prints_app_and_pipeline_versions(capsys):
+    code = cli.main(["--version"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "DocPage2MD 0.1.0" in captured.out
+    assert "pipeline" in captured.out
 
 
 def test_cli_build_config_exposes_retention_and_scheduler_workers(tmp_path):
@@ -475,18 +484,85 @@ def test_cli_blocks_oversized_paddleocr_url(monkeypatch):
         raise AssertionError("Expected oversized PaddleOCR URL to fail")
 
 
-def test_cli_dual_rejects_pdf_that_needs_chunking(tmp_path):
+def test_cli_dual_creates_chunk_plan_for_pdf_that_needs_chunking(tmp_path):
     pdf = tmp_path / "long.pdf"
-    pdf.write_bytes(b"%PDF\n" + b"\n".join([b"<< /Type /Page >>"] * 101))
+    pdf.write_bytes(b"%PDF\n" + b"\n".join([b"<< /Type /Page >>"] * 251))
     args = cli.parse_args(["--engine-mode", "dual_hybrid", "--input-file", str(pdf), "--output", str(tmp_path / "out")])
     config = cli.build_config(args)
 
-    try:
-        cli._validate_dual_page_limits([pdf], args, config)
-    except ValueError as exc:
-        assert "暂不自动分段" in str(exc)
-    else:
-        raise AssertionError("Expected dual hybrid oversized PDF to fail")
+    cli._validate_dual_page_limits([pdf], args, config)
+    plans = cli._auto_split_dual_plans_for_local_files([pdf], args, config)
+
+    assert [chunk.page_ranges for chunk in plans[pdf]] == ["1-100", "101-200", "201-251"]
+
+
+def test_cli_dual_selected_short_range_does_not_chunk_long_pdf(tmp_path):
+    pdf = tmp_path / "long.pdf"
+    pdf.write_bytes(b"%PDF\n" + b"\n".join([b"<< /Type /Page >>"] * 251))
+    args = cli.parse_args(
+        [
+            "--engine-mode",
+            "dual_hybrid",
+            "--input-file",
+            str(pdf),
+            "--page-ranges",
+            "1-23",
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+    config = cli.build_config(args)
+
+    cli._validate_dual_page_limits([pdf], args, config)
+    plans = cli._auto_split_dual_plans_for_local_files([pdf], args, config)
+
+    assert plans == {}
+
+
+def test_cli_merge_dual_chunk_outputs_rewrites_slides_assets_and_report(tmp_path):
+    config = AppConfig(output_folder=str(tmp_path / "out"), output_retention="standard")
+    output_dir = tmp_path / "out" / "doc"
+    chunks = build_page_chunks(122, chunk_size=100)
+    chunk_audit = []
+    for index, slide_no in [(1, 1), (2, 1)]:
+        chunk_dir = tmp_path / "out" / f"doc__chunk_{index:03d}"
+        chunk_dir.mkdir(parents=True)
+        (chunk_dir / "assets").mkdir()
+        (chunk_dir / "assets" / "img.png").write_bytes(b"img")
+        (chunk_dir / "ir").mkdir()
+        write_json(chunk_dir / "ir" / "document_ir.json", {"chunk": index})
+        (chunk_dir / f"Slide_{slide_no:02d}.md").write_text(f"# Slide {slide_no}\n\n![x](assets/img.png)\n", encoding="utf-8")
+        write_json(chunk_dir / f"Slide_{slide_no:02d}.meta.json", {"slide_no": slide_no, "status": "ok"})
+        write_json(
+            chunk_dir / "run_report.json",
+            {
+                "doc_name": f"doc__chunk_{index:03d}",
+                "engine_mode": "dual_hybrid",
+                "status": "running",
+                "pages": [
+                    {
+                        "slide_no": slide_no,
+                        "final": {"status": "ok", "path": str(chunk_dir / f"Slide_{slide_no:02d}.md")},
+                        "validation": {"warnings": []},
+                    }
+                ],
+                "dual_parser": {"strategy": "candidate_group_checked_ops"},
+                "summary": {},
+            },
+        )
+        chunk_audit.append({"index": index, "page_ranges": chunks[index - 1].page_ranges, "output_dir": str(chunk_dir), "status": "ok"})
+
+    cli._merge_dual_chunk_outputs(output_dir, "doc", chunk_audit, chunks, progress=None, config=config)
+
+    assert (output_dir / "Slide_01.md").exists()
+    assert (output_dir / "Slide_101.md").exists()
+    assert "assets/chunk_002/img.png" in (output_dir / "Slide_101.md").read_text(encoding="utf-8")
+    assert (output_dir / "ir" / "chunk_001" / "document_ir.json").exists()
+    report = read_json(output_dir / "run_report.json")
+    assert report["engine_mode"] == "dual_hybrid"
+    assert report["doc_name"] == "doc"
+    assert [page["slide_no"] for page in report["pages"]] == [1, 101]
+    assert report["dual_parser"]["chunked_merge"]["copied_slides"] == [1, 101]
 
 
 def test_cli_dual_prepares_mineru_and_paddleocr_artifacts_in_parallel(monkeypatch, tmp_path):

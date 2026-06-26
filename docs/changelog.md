@@ -31,6 +31,16 @@
   - 默认 `standard` 不请求可视化图，只保存可复现处理所需的结构化结果和必要图片资源。
   - `debug` / `audit` 请求 PaddleOCR `visualize=true`，并强制最终输出保留 `paddleocr_raw/`；`audit` 额外保存下载审计。
   - 旧参数 `--paddleocr-visualize true/false` 保留为兼容覆盖项。
+- 新增 `dual_hybrid` 本地 PDF 自动跨段合并：
+  - 超过双引擎单段页数时，按 `min(mineru_page_chunk_size, paddleocr_page_chunk_size)` 自动拆分，默认每段 100 页。
+  - 每段分别并发提交 MinerU 和 PaddleOCR，再融合/精修，最终合并为同一个 `Slide_XX.md`、`*_FULL.md` 和 `run_report.json`。
+  - `run_report.json["dual_parser"]` 记录 `chunks` 和 `chunked_merge` 审计信息。
+- 新增统一应用版本号：
+  - `docpage2md_app.__version__` 导出 `0.1.0`。
+  - CLI 增加 `--version`，同时显示应用版本和 pipeline 兼容版本。
+- 优化 Tkinter GUI 页码输入流畅性：
+  - 页码输入、命令预览、运行摘要和输入表格刷新改为 debounce。
+  - PDF 页数按路径、大小和修改时间缓存；首次读取在后台线程完成，避免输入页码时卡住主线程。
 
 ### Verified
 

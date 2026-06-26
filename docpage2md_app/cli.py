@@ -35,8 +35,10 @@ from .output_retention import (
     output_retention_mode,
     should_copy_paddleocr_raw_artifacts,
     should_copy_raw_artifacts,
+    should_write_ir,
 )
 from .run_logger import RunLogger, safe_progress
+from .versioning import DOCPAGE2MD_PIPELINE_VERSION, DOCPAGE2MD_VERSION
 
 
 MINERU_SUPPORTED_SUFFIXES = {
@@ -61,6 +63,7 @@ MINERU_SUPPORTED_SUFFIXES = {
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="DocPage2MD (MinerU / vision document pages to Markdown)")
+    parser.add_argument("--version", action="store_true", help="显示 DocPage2MD 应用版本和 pipeline 兼容版本")
     parser.add_argument("-n", "--name", type=str, default="default", help="任务会话名称")
     parser.add_argument("-o", "--output", type=str, default="./markdown_output", help="输出目录路径")
     parser.add_argument(
@@ -541,6 +544,9 @@ def _display_model_diff(console, diff: dict, errors: list[dict]) -> None:
 def main(argv=None):
     configure_stdio()
     args = parse_args(argv)
+    if args.version:
+        print(f"DocPage2MD {DOCPAGE2MD_VERSION} (pipeline {DOCPAGE2MD_PIPELINE_VERSION})")
+        return 0
     if args.eval_fixtures:
         from .eval import run_offline_eval
 
@@ -1136,16 +1142,18 @@ def _run_dual_cli(args, config: AppConfig) -> int:
     try:
         validate_mineru_model_version_for_paths(local_files, config.mineru_model_version)
         _validate_dual_page_limits(local_files, args, config)
+        split_plans = _auto_split_dual_plans_for_local_files(local_files, args, config, progress=run_logger)
         for source in local_files:
             _validate_paddleocr_size(source)
-        parser_workers = min(len(local_files), max(1, config.parser_workers))
+        non_chunked_sources = [source for source in local_files if source not in split_plans]
+        parser_workers = min(max(1, len(non_chunked_sources)), max(1, config.parser_workers))
         doc_workers = min(len(local_files), max(1, config.max_docpage_workers))
         safe_progress(
             run_logger,
             (
                 f"Dual local scheduler start: files={len(local_files)}, parser_workers={parser_workers}, "
-                f"doc_workers={doc_workers}, per_file_engines=2, vision_workers={config.vision_batch_workers}, "
-                f"brain_workers={config.brain_batch_workers}"
+                f"doc_workers={doc_workers}, chunked_files={len(split_plans)}, per_file_engines=2, "
+                f"vision_workers={config.vision_batch_workers}, brain_workers={config.brain_batch_workers}"
             ),
         )
 
@@ -1181,8 +1189,20 @@ def _run_dual_cli(args, config: AppConfig) -> int:
 
         processed_count = 0
         with ThreadPoolExecutor(max_workers=parser_workers) as parser_executor, ThreadPoolExecutor(max_workers=doc_workers) as doc_executor:
-            parser_futures = {parser_executor.submit(_prepare_source, source): source for source in local_files}
-            doc_futures = {}
+            parser_futures = {parser_executor.submit(_prepare_source, source): source for source in non_chunked_sources}
+            doc_futures = {
+                doc_executor.submit(
+                    _run_chunked_dual_pdf,
+                    source,
+                    split_plans[source],
+                    args=args,
+                    config=config,
+                    doc_name=doc_name if len(local_files) == 1 else None,
+                    progress=run_logger,
+                ): source
+                for source in local_files
+                if source in split_plans
+            }
             for future in as_completed(parser_futures):
                 source, mineru_artifact, paddle_artifact = future.result()
                 safe_progress(
@@ -1258,6 +1278,256 @@ def _prepare_dual_artifacts_for_source(
         paddle_artifact = paddle_future.result()
     safe_progress(progress, f"Dual parser parallel stages done: source={source_path.name}, elapsed={time.monotonic() - started:.1f}s")
     return mineru_artifact, paddle_artifact
+
+
+def _auto_split_dual_plans_for_local_files(local_files: list[Path], args, config: AppConfig, *, progress=None) -> dict[Path, list]:
+    plans: dict[Path, list] = {}
+    chunk_size = _dual_page_chunk_size(config)
+    for source in local_files:
+        if source.suffix.lower() != ".pdf":
+            continue
+        total_pages = estimate_pdf_pages(source)
+        if not total_pages:
+            safe_progress(progress, f"Dual PDF page count unknown: {source.name}")
+            continue
+        chunks = build_page_chunks(total_pages, args.page_ranges or "", chunk_size=chunk_size)
+        if len(chunks) > 1:
+            plans[source] = chunks
+            safe_progress(
+                progress,
+                (
+                    f"Dual chunk plan: source={source.name}, total_pages={total_pages}, "
+                    f"selected_pages={sum(chunk.page_count for chunk in chunks)}, chunks={len(chunks)}, chunk_size={chunk_size}"
+                ),
+            )
+    return plans
+
+
+def _dual_page_chunk_size(config: AppConfig) -> int:
+    return max(1, min(int(config.mineru_page_chunk_size), int(config.paddleocr_page_chunk_size)))
+
+
+def _run_chunked_dual_pdf(
+    source: Path,
+    chunks,
+    *,
+    args,
+    config: AppConfig,
+    doc_name: str | None,
+    progress,
+) -> dict:
+    from .dual_pipeline import process_dual_artifact_task
+    from .files import merge_markdowns, read_json, write_json
+    from .mineru_client import MinerUClient
+    from .paddleocr_client import PaddleOCRClient
+
+    output_name = doc_name or source.stem
+    output_dir = Path(config.output_folder) / output_name
+    total_pages = sum(chunk.page_count for chunk in chunks)
+    chunk_workers = min(len(chunks), max(1, config.parser_workers))
+    safe_progress(
+        progress,
+        (
+            f"Dual chunked PDF start: source={source.name}, chunks={len(chunks)}, "
+            f"selected_pages={total_pages}, chunk_size={_dual_page_chunk_size(config)}, chunk_workers={chunk_workers}"
+        ),
+    )
+
+    def _process_chunk(chunk) -> dict:
+        chunk_args = argparse.Namespace(**vars(args))
+        chunk_args.page_ranges = chunk.page_ranges
+        chunk_doc_name = f"{output_name}__chunk_{chunk.index:03d}"
+        safe_progress(
+            progress,
+            (
+                f"Dual chunk {chunk.index}/{len(chunks)} submit: "
+                f"page_ranges={chunk.page_ranges}, pages={chunk.page_count}"
+            ),
+        )
+        mineru_client = MinerUClient(config, progress=progress)
+        paddle_client = PaddleOCRClient(config, progress=progress)
+        mineru_artifact, paddle_artifact = _prepare_dual_artifacts_for_source(
+            mineru_client,
+            paddle_client,
+            config=config,
+            args=chunk_args,
+            source=source,
+            progress=progress,
+        )
+        mineru_manifest = _read_json_if_exists(mineru_artifact / "mineru_task_manifest.json")
+        paddle_manifest = _read_json_if_exists(paddle_artifact / "paddleocr_task_manifest.json")
+        processed = process_dual_artifact_task(
+            mineru_artifact,
+            paddle_artifact,
+            config,
+            doc_name=chunk_doc_name,
+            source_path=str(source),
+            progress=progress,
+        )
+        cleanup_cache_for_artifact_dir(mineru_artifact, config, expected_cache_root_name=".mineru_cache", progress=progress)
+        cleanup_cache_for_artifact_dir(paddle_artifact, config, expected_cache_root_name=".paddleocr_cache", progress=progress)
+        safe_progress(progress, f"Dual chunk processed: chunk={chunk.index}/{len(chunks)}, pages={processed.get('page_count')}")
+        return {
+            "index": chunk.index,
+            "page_ranges": chunk.page_ranges,
+            "page_count": chunk.page_count,
+            "first_page": chunk.first_page,
+            "last_page": chunk.last_page,
+            "mineru_task_id": mineru_manifest.get("task_id"),
+            "mineru_batch_id": mineru_manifest.get("batch_id"),
+            "paddleocr_job_id": paddle_manifest.get("job_id"),
+            "paddleocr_trace_id": paddle_manifest.get("trace_id"),
+            "mineru_artifact_dir": str(mineru_artifact),
+            "paddleocr_artifact_dir": str(paddle_artifact),
+            "output_dir": processed.get("output_dir"),
+            "report_path": processed.get("report_path"),
+            "status": processed.get("status"),
+        }
+
+    chunk_audit: list[dict] = []
+    with ThreadPoolExecutor(max_workers=chunk_workers) as executor:
+        futures = {executor.submit(_process_chunk, chunk): chunk for chunk in chunks}
+        for future in as_completed(futures):
+            chunk_audit.append(future.result())
+    chunk_audit.sort(key=lambda item: int(item.get("index") or 0))
+
+    safe_progress(progress, "Dual chunked merge start: combining chunk outputs into final document")
+    _merge_dual_chunk_outputs(output_dir, output_name, chunk_audit, chunks, progress=progress, config=config)
+    merge_markdowns(output_dir, output_name)
+    report_path = output_dir / "run_report.json"
+    final_status = "ok"
+    if report_path.exists():
+        report = read_json(report_path)
+        report.setdefault("dual_parser", {})
+        report["dual_parser"]["chunks"] = chunk_audit
+        report["dual_parser"]["chunked_merge"] = {
+            "enabled": True,
+            "chunk_count": len(chunks),
+            "selected_page_count": total_pages,
+            "chunk_size": _dual_page_chunk_size(config),
+            "merged_full_markdown": str(output_dir / f"{output_name}_FULL.md"),
+        }
+        write_json(report_path, report)
+        final_status = str(report.get("status") or final_status)
+        safe_progress(progress, f"Dual chunk audit written: {report_path}")
+    print(f"双引擎融合分段任务完成：{len(chunks)} 段，约 {total_pages} 页 -> {output_dir}")
+    return {
+        "doc_name": output_name,
+        "output_dir": str(output_dir),
+        "report_path": str(report_path),
+        "page_count": total_pages,
+        "status": final_status,
+    }
+
+
+def _merge_dual_chunk_outputs(output_dir: Path, output_name: str, chunk_audit: list[dict], chunks, *, progress, config: AppConfig | None = None) -> None:
+    from .files import natural_sort_key, read_json, write_json, write_text_atomic
+    from .reporting import finalize_run_report
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "assets").mkdir(parents=True, exist_ok=True)
+    copy_ir = config is None or should_write_ir(config)
+    copy_mineru_raw = config is None or should_copy_raw_artifacts(config)
+    copy_paddleocr_raw = config is None or should_copy_paddleocr_raw_artifacts(config)
+    if copy_ir:
+        (output_dir / "ir").mkdir(parents=True, exist_ok=True)
+    if copy_mineru_raw:
+        (output_dir / "mineru_raw").mkdir(parents=True, exist_ok=True)
+    if copy_paddleocr_raw:
+        (output_dir / "paddleocr_raw").mkdir(parents=True, exist_ok=True)
+
+    first_report: dict | None = None
+    merged_pages: list[dict] = []
+    copied_slide_numbers: list[int] = []
+    chunk_dirs_to_cleanup: list[Path] = []
+    chunk_by_index = {chunk.index: chunk for chunk in chunks}
+    for audit in chunk_audit:
+        index = int(audit["index"])
+        chunk = chunk_by_index[index]
+        chunk_dir = Path(str(audit.get("output_dir") or ""))
+        if not chunk_dir.exists():
+            continue
+        chunk_dirs_to_cleanup.append(chunk_dir)
+        chunk_asset_prefix = f"chunk_{index:03d}"
+        _copy_chunk_subdir(chunk_dir / "assets", output_dir / "assets" / chunk_asset_prefix)
+        if copy_ir:
+            _copy_chunk_subdir(chunk_dir / "ir", output_dir / "ir" / chunk_asset_prefix)
+        if copy_mineru_raw:
+            _copy_chunk_subdir(chunk_dir / "mineru_raw", output_dir / "mineru_raw" / chunk_asset_prefix)
+        if copy_paddleocr_raw:
+            _copy_chunk_subdir(chunk_dir / "paddleocr_raw", output_dir / "paddleocr_raw" / chunk_asset_prefix)
+
+        chunk_report = read_json(chunk_dir / "run_report.json") if (chunk_dir / "run_report.json").exists() else {}
+        if first_report is None and chunk_report:
+            first_report = chunk_report
+        for slide_path in sorted(chunk_dir.glob("Slide_*.md"), key=natural_sort_key):
+            match = re.match(r"Slide_(\d+)\.md$", slide_path.name)
+            if not match:
+                continue
+            source_slide = int(match.group(1))
+            final_slide = _final_slide_no_for_chunk_slide(chunk, source_slide)
+            markdown = _rewrite_chunk_markdown(slide_path.read_text(encoding="utf-8"), final_slide, chunk_asset_prefix)
+            write_text_atomic(output_dir / f"Slide_{final_slide:02d}.md", markdown)
+            meta_path = chunk_dir / f"Slide_{source_slide:02d}.meta.json"
+            if meta_path.exists():
+                meta = read_json(meta_path)
+                meta["slide_no"] = final_slide
+                write_json(output_dir / f"Slide_{final_slide:02d}.meta.json", meta)
+            copied_slide_numbers.append(final_slide)
+
+        for page in chunk_report.get("pages") or []:
+            page = dict(page)
+            source_slide = int(page.get("slide_no") or 0)
+            if source_slide:
+                final_slide = _final_slide_no_for_chunk_slide(chunk, source_slide)
+                page["slide_no"] = final_slide
+                final = dict(page.get("final") or {})
+                final["path"] = str(output_dir / f"Slide_{final_slide:02d}.md")
+                final["included_in_full"] = True
+                page["final"] = final
+            merged_pages.append(page)
+
+    if first_report is None:
+        return
+    report = dict(first_report)
+    report["doc_name"] = output_name
+    report["engine_mode"] = "dual_hybrid"
+    report["pages"] = sorted(merged_pages, key=lambda page: int(page.get("slide_no") or 0))
+    report.setdefault("cost", {"estimated": None, "actual_tokens": None})
+    report["dual_parser"] = dict(report.get("dual_parser") or {})
+    report["dual_parser"]["chunks"] = chunk_audit
+    report["dual_parser"]["chunked_merge"] = {
+        "enabled": True,
+        "copied_slides": sorted(set(copied_slide_numbers)),
+    }
+    report["fusion"] = {
+        "strategy": "chunked_dual_hybrid",
+        "chunks": [
+            {
+                "index": int(audit.get("index") or 0),
+                "page_ranges": audit.get("page_ranges"),
+                "status": audit.get("status"),
+                "report_path": audit.get("report_path"),
+            }
+            for audit in chunk_audit
+        ],
+    }
+    finalize_run_report(report)
+    write_json(output_dir / "run_report.json", report)
+    safe_progress(progress, f"Dual chunked merge copied slides: count={len(set(copied_slide_numbers))}")
+    _cleanup_chunk_output_dirs(chunk_dirs_to_cleanup, output_dir, config=config, progress=progress)
+
+
+def _read_json_if_exists(path: Path) -> dict:
+    from .files import read_json
+
+    if not path.exists():
+        return {}
+    try:
+        data = read_json(path)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _auto_split_paddleocr_plans_for_local_files(local_files: list[Path], args, config: AppConfig, *, progress=None) -> dict[Path, list]:
@@ -2021,12 +2291,7 @@ def _validate_dual_page_limits(local_files: list[Path], args, config: AppConfig)
         total_pages = estimate_pdf_pages(source)
         if not total_pages:
             continue
-        chunks = build_page_chunks(total_pages, args.page_ranges or "", chunk_size=config.paddleocr_page_chunk_size)
-        if len(chunks) > 1:
-            raise ValueError(
-                f"双引擎融合当前暂不自动分段：{source.name} 选中约 {sum(chunk.page_count for chunk in chunks)} 页，"
-                f"超过 PaddleOCR 单段 {config.paddleocr_page_chunk_size} 页。请用 --page-ranges 分段运行。"
-            )
+        build_page_chunks(total_pages, args.page_ranges or "", chunk_size=_dual_page_chunk_size(config))
 
 
 def _validate_explicit_mineru_file(path: str | Path) -> Path:

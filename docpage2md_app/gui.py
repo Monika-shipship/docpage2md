@@ -1766,6 +1766,10 @@ class DocPage2MdGui:
         self.log_buffer: list[str] = []
         self._syncing_models = False
         self._syncing_concurrency = False
+        self._debounce_after_ids: dict[str, str] = {}
+        self._page_count_cache: dict[str, dict[str, int | float | None]] = {}
+        self._page_count_loading: set[str] = set()
+        self._input_refresh_generation = 0
 
         default_vision, default_brain = default_model_selection("balanced", self.base_config)
         self.document_type = tk.StringVar(value=DOCUMENT_PRESETS["handwritten_notes"][0])
@@ -1856,6 +1860,12 @@ class DocPage2MdGui:
         return 0
 
     def destroy(self) -> None:
+        for after_id in list(self._debounce_after_ids.values()):
+            try:
+                self.root.after_cancel(after_id)
+            except self.tk.TclError:
+                pass
+        self._debounce_after_ids.clear()
         if self._drain_after_id:
             try:
                 self.root.after_cancel(self._drain_after_id)
@@ -2965,7 +2975,7 @@ class DocPage2MdGui:
         self.document_type.trace_add("write", lambda *_args: self._apply_preset())
         self.source_kind.trace_add("write", lambda *_args: self._on_source_kind_changed())
         self.source_value.trace_add("write", lambda *_args: self._sync_input_table_from_source_value())
-        self.page_ranges.trace_add("write", lambda *_args: self._refresh_input_table())
+        self.page_ranges.trace_add("write", lambda *_args: self._on_page_ranges_changed())
         self.model_profile.trace_add("write", lambda *_args: self._on_profile_changed())
         self.concurrency_preset.trace_add("write", lambda *_args: self._apply_concurrency_preset())
         self.vision_workers.trace_add("write", lambda *_args: self._sync_concurrency_preset_from_workers())
@@ -2984,8 +2994,28 @@ class DocPage2MdGui:
             var.trace_add("write", lambda *_args: self._mark_manual_model_selection())
 
     def _on_options_changed(self) -> None:
+        self._schedule_debounced("options_changed", 300, self._refresh_options_dependents)
+
+    def _refresh_options_dependents(self) -> None:
         self._refresh_command_preview()
         self._refresh_runtime_summary()
+
+    def _on_page_ranges_changed(self) -> None:
+        self._schedule_debounced("input_table", 300, self._refresh_input_table)
+
+    def _schedule_debounced(self, key: str, delay_ms: int, callback) -> None:
+        existing = self._debounce_after_ids.pop(key, None)
+        if existing:
+            try:
+                self.root.after_cancel(existing)
+            except self.tk.TclError:
+                pass
+
+        def _run() -> None:
+            self._debounce_after_ids.pop(key, None)
+            callback()
+
+        self._debounce_after_ids[key] = self.root.after(delay_ms, _run)
 
     def _on_profile_changed(self) -> None:
         profile = model_profile_key(self.model_profile.get())
@@ -3164,9 +3194,11 @@ class DocPage2MdGui:
     def _refresh_input_table(self) -> None:
         if not hasattr(self, "input_tree"):
             return
+        self._input_refresh_generation += 1
+        generation = self._input_refresh_generation
         for item_id in self.input_tree.get_children():
             self.input_tree.delete(item_id)
-        infos = describe_input_files(self.input_files, self.page_ranges.get())
+        infos = self._describe_input_files_cached(self.input_files, self.page_ranges.get(), generation)
         for info in infos:
             self.input_tree.insert(
                 "",
@@ -3183,6 +3215,86 @@ class DocPage2MdGui:
             )
         self.input_summary_text.set(_input_summary(infos, source_kind_key(self.source_kind.get()), self.source_value.get()))
         self._auto_adjust_mineru_model_for_inputs()
+
+    def _describe_input_files_cached(self, paths: list[Path], page_ranges: str, generation: int) -> list[InputFileInfo]:
+        infos: list[InputFileInfo] = []
+        for index, path in enumerate(paths, start=1):
+            suffix = path.suffix.lower()
+            size = self._safe_file_size(path)
+            pages, loading = self._cached_selected_page_count(path, page_ranges, generation)
+            limit_status = "页数读取中" if loading else input_limit_status(path, pages, size)
+            infos.append(
+                InputFileInfo(
+                    path=path,
+                    name=path.name or str(path),
+                    suffix=suffix,
+                    size_text=format_file_size(size),
+                    pages=pages,
+                    limit_status=limit_status,
+                    order=index,
+                )
+            )
+        return infos
+
+    def _safe_file_size(self, path: Path) -> int | None:
+        try:
+            return path.stat().st_size if path.exists() else None
+        except OSError:
+            return None
+
+    def _cached_selected_page_count(self, path: Path, page_ranges: str, generation: int) -> tuple[int | None, bool]:
+        suffix = path.suffix.lower()
+        if not path.exists():
+            return None, False
+        if suffix in IMAGE_SUFFIXES:
+            return 1, False
+        if suffix != ".pdf":
+            return None, False
+        try:
+            stat = path.stat()
+        except OSError:
+            return None, False
+        key = self._page_count_cache_key(path)
+        cached = self._page_count_cache.get(key)
+        if cached and cached.get("size") == stat.st_size and cached.get("mtime") == stat.st_mtime:
+            total_pages = cached.get("pages")
+            pages = count_page_ranges(page_ranges, int(total_pages)) if isinstance(total_pages, int) else None
+            return pages, False
+        if key not in self._page_count_loading:
+            self._page_count_loading.add(key)
+            thread = threading.Thread(
+                target=self._load_pdf_page_count_worker,
+                args=(path, key, stat.st_size, stat.st_mtime, generation),
+                daemon=True,
+            )
+            thread.start()
+        return None, True
+
+    def _page_count_cache_key(self, path: Path) -> str:
+        try:
+            return str(path.resolve()).lower()
+        except OSError:
+            return str(path).lower()
+
+    def _load_pdf_page_count_worker(self, path: Path, key: str, size: int, mtime: float, generation: int) -> None:
+        pages = estimate_pdf_pages(path)
+
+        def _complete() -> None:
+            self._page_count_loading.discard(key)
+            try:
+                current = path.stat()
+            except OSError:
+                return
+            if current.st_size != size or current.st_mtime != mtime:
+                return
+            self._page_count_cache[key] = {"size": size, "mtime": mtime, "pages": pages}
+            if generation <= self._input_refresh_generation and any(self._page_count_cache_key(item) == key for item in self.input_files):
+                self._refresh_input_table()
+
+        try:
+            self.root.after(0, _complete)
+        except self.tk.TclError:
+            pass
 
     def _selected_input_index(self) -> int | None:
         if not hasattr(self, "input_tree"):
@@ -3570,11 +3682,15 @@ class DocPage2MdGui:
             return True
         paths = local_input_paths_for_options(options, require_exists=False)
         chunk_lines: list[str] = []
-        chunk_size = (
-            _positive_worker_count(options.paddleocr_page_chunk_size, "PaddleOCR 分段页数")
-            if layout_engine in {"paddleocr", "dual"}
-            else _positive_worker_count(options.mineru_page_chunk_size, "MinerU 分段页数")
-        )
+        if layout_engine == "dual":
+            chunk_size = min(
+                _positive_worker_count(options.mineru_page_chunk_size, "MinerU 分段页数"),
+                _positive_worker_count(options.paddleocr_page_chunk_size, "PaddleOCR 分段页数"),
+            )
+        elif layout_engine == "paddleocr":
+            chunk_size = _positive_worker_count(options.paddleocr_page_chunk_size, "PaddleOCR 分段页数")
+        else:
+            chunk_size = _positive_worker_count(options.mineru_page_chunk_size, "MinerU 分段页数")
         if layout_engine == "mineru" and not options.mineru_auto_split_pages:
             return True
         for path in paths:
@@ -3584,12 +3700,6 @@ class DocPage2MdGui:
             if not pages:
                 continue
             chunks = build_page_chunks(pages, options.page_ranges, chunk_size=chunk_size)
-            if layout_engine == "dual" and len(chunks) > 1:
-                selected_pages = sum(chunk.page_count for chunk in chunks)
-                raise ValueError(
-                    f"双引擎融合当前暂不自动分段：{path.name} 选中约 {selected_pages} 页，"
-                    f"超过 PaddleOCR 建议单段 {chunk_size} 页。请用页码范围分段运行。"
-                )
             if len(chunks) > 1:
                 ranges = "，".join(chunk.page_ranges for chunk in chunks[:4])
                 if len(chunks) > 4:

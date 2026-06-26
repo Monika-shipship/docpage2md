@@ -64,7 +64,7 @@ Dual engine implementation notes:
 - User-facing mode: `dual_hybrid`; GUI label: `MinerU + PaddleOCR 双引擎融合`.
 - CLI supports local file(s)/folder and the artifact pair `--mineru-artifact-dir` + `--paddleocr-artifact-dir`.
 - Remote URL dual mode is not supported yet; generate both artifacts first, then run artifact fusion.
-- Dual mode currently blocks PDFs that exceed the PaddleOCR chunk size because chunked dual merge is not implemented.
+- Dual local PDFs now auto-split when the selected page count exceeds the dual chunk size. The effective chunk size is `min(mineru_page_chunk_size, paddleocr_page_chunk_size)`, defaulting to 100 pages. Each chunk runs MinerU and PaddleOCR in parallel, then chunk outputs are merged back into one final document.
 - Fusion code lives in `docpage2md_app/fusion.py`, `docpage2md_app/fusion_prompt.py`, `docpage2md_app/dual_ir.py` and `docpage2md_app/dual_pipeline.py`.
 - The fusion layer writes `ir/mineru_document_ir.json`, `ir/paddleocr_document_ir.json`, `ir/fused_document_ir.json` and compatibility `ir/document_ir.json` only in `standard` / `debug` retention. Default `slim` keeps final Markdown, assets, metadata, logs and report.
 - Fusion uses candidate groups and whitelist actions only: `choose_block`, `merge_blocks`, `keep_both`, `mark_uncertain`, `attach_image`, `replace_formula`, `convert_text_to_formula`, `convert_text_to_figure_note`.

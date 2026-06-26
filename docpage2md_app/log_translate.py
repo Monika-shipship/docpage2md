@@ -165,6 +165,15 @@ def translate_progress_message(message: str) -> str:
     if match := re.search(r"Dual parser submit start: source=(.+)", message):
         return f"开始提交双引擎解析：文件={match.group(1)}"
     if match := re.search(
+        r"Dual local scheduler start: files=(\d+), parser_workers=(\d+), doc_workers=(\d+), chunked_files=(\d+), per_file_engines=(\d+), vision_workers=(\d+), brain_workers=(\d+)",
+        message,
+    ):
+        return (
+            f"启动双引擎本地调度：文件数={match.group(1)}，解析并发={match.group(2)}，"
+            f"文档并发={match.group(3)}，需分段文件={match.group(4)}，每文件解析引擎={match.group(5)}，"
+            f"Vision并发={match.group(6)}，Brain并发={match.group(7)}"
+        )
+    if match := re.search(
         r"Dual local scheduler start: files=(\d+), parser_workers=(\d+), doc_workers=(\d+), per_file_engines=(\d+), vision_workers=(\d+), brain_workers=(\d+)",
         message,
     ):
@@ -173,6 +182,32 @@ def translate_progress_message(message: str) -> str:
             f"文档并发={match.group(3)}，每文件解析引擎={match.group(4)}，"
             f"Vision并发={match.group(5)}，Brain并发={match.group(6)}"
         )
+    if match := re.search(
+        r"Dual chunk plan: source=([^,]+), total_pages=(\d+), selected_pages=(\d+), chunks=(\d+), chunk_size=(\d+)",
+        message,
+    ):
+        return (
+            f"已规划双引擎自动分段：文件={match.group(1)}，总页数={match.group(2)}，"
+            f"选中页数={match.group(3)}，段数={match.group(4)}，每段上限={match.group(5)}"
+        )
+    if match := re.search(
+        r"Dual chunked PDF start: source=([^,]+), chunks=(\d+), selected_pages=(\d+), chunk_size=(\d+), chunk_workers=(\d+)",
+        message,
+    ):
+        return (
+            f"开始双引擎自动分段：文件={match.group(1)}，段数={match.group(2)}，"
+            f"选中页数={match.group(3)}，每段上限={match.group(4)}，分段并发={match.group(5)}"
+        )
+    if match := re.search(r"Dual chunk (\d+)/(\d+) submit: page_ranges=([^,]+), pages=(\d+)", message):
+        return f"正在提交双引擎分段：第 {match.group(1)}/{match.group(2)} 段，页码={match.group(3)}，页数={match.group(4)}"
+    if match := re.search(r"Dual chunk processed: chunk=(\d+)/(\d+), pages=(.+)", message):
+        return f"双引擎分段已处理：第 {match.group(1)}/{match.group(2)} 段，返回页数={match.group(3)}"
+    if message == "Dual chunked merge start: combining chunk outputs into final document":
+        return "正在合并双引擎分段输出到最终文档"
+    if match := re.search(r"Dual chunked merge copied slides: count=(\d+)", message):
+        return f"双引擎分段合并完成：已复制页面={match.group(1)}"
+    if match := re.search(r"Dual chunk audit written: (.+)", message):
+        return f"双引擎分段审计已写入：{match.group(1)}"
     if match := re.search(r"Dual parser artifacts ready: source=([^,]+), mineru=([^,]+), paddleocr=(.+)", message):
         return f"双引擎解析结果已就绪：文件={match.group(1)}，MinerU={match.group(2)}，PaddleOCR={match.group(3)}"
     if match := re.search(r"Dual document processing start: source=(.+)", message):

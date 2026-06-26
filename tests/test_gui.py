@@ -358,7 +358,7 @@ def test_gui_dual_chunk_confirmation_respects_selected_page_range(tmp_path):
     assert DocPage2MdGui._confirm_chunked_run_if_needed(object(), options) is True
 
 
-def test_gui_dual_chunk_confirmation_blocks_multi_chunk_selection(tmp_path):
+def test_gui_dual_chunk_confirmation_allows_multi_chunk_selection(monkeypatch, tmp_path):
     pdf = tmp_path / "long.pdf"
     pdf.write_bytes(b"%PDF\n" + b"\n".join([b"<< /Type /Page >>"] * 122))
     options = GuiRunOptions(
@@ -370,8 +370,9 @@ def test_gui_dual_chunk_confirmation_blocks_multi_chunk_selection(tmp_path):
         paddleocr_page_chunk_size=100,
     )
 
-    with pytest.raises(ValueError, match="选中约 122 页"):
-        DocPage2MdGui._confirm_chunked_run_if_needed(object(), options)
+    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *_args, **_kwargs: True)
+
+    assert DocPage2MdGui._confirm_chunked_run_if_needed(object(), options) is True
 
 
 def test_gui_input_description_marks_over_limit_pdf(tmp_path):
@@ -673,3 +674,28 @@ def test_gui_constructs_and_destroy_cancels_after_callbacks():
     finally:
         app.destroy()
     assert app._drain_after_id is None
+
+
+def test_gui_page_range_typing_defers_input_table_refresh(monkeypatch):
+    try:
+        app = DocPage2MdGui()
+    except Exception as exc:
+        if exc.__class__.__name__ == "TclError":
+            pytest.skip(f"Tkinter display unavailable: {exc}")
+        raise
+    calls = {"count": 0}
+
+    def fake_refresh():
+        calls["count"] += 1
+
+    try:
+        app.root.withdraw()
+        monkeypatch.setattr(app, "_refresh_input_table", fake_refresh)
+        app.page_ranges.set("1")
+        app.page_ranges.set("1-")
+        app.page_ranges.set("1-23")
+        app.root.update_idletasks()
+        assert calls["count"] == 0
+        assert "input_table" in app._debounce_after_ids
+    finally:
+        app.destroy()
