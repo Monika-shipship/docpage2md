@@ -1,4 +1,5 @@
 import threading
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -563,6 +564,80 @@ def test_cli_merge_dual_chunk_outputs_rewrites_slides_assets_and_report(tmp_path
     assert report["doc_name"] == "doc"
     assert [page["slide_no"] for page in report["pages"]] == [1, 101]
     assert report["dual_parser"]["chunked_merge"]["copied_slides"] == [1, 101]
+
+
+def test_cli_run_chunked_dual_pdf_pseudo_long_document_merge(monkeypatch, tmp_path):
+    import docpage2md_app.dual_pipeline as dual_pipeline
+
+    pdf = tmp_path / "pseudo_long.pdf"
+    pdf.write_bytes(b"%PDF\n" + b"\n".join([b"<< /Type /Page >>"] * 10))
+    args = cli.parse_args(["--engine-mode", "dual_hybrid", "--input-file", str(pdf), "--output", str(tmp_path / "out")])
+    config = replace(cli.build_config(args), output_retention="slim", parser_workers=2)
+    chunks = build_page_chunks(10, chunk_size=5)
+    prepare_calls = []
+
+    def fake_prepare_dual_artifacts(_mineru_client, _paddle_client, *, config, args, source, progress):
+        prepare_calls.append(args.page_ranges)
+        suffix = args.page_ranges.replace("-", "_")
+        mineru_artifact = tmp_path / f"mineru_{suffix}"
+        paddle_artifact = tmp_path / f"paddle_{suffix}"
+        mineru_artifact.mkdir()
+        paddle_artifact.mkdir()
+        write_json(mineru_artifact / "mineru_task_manifest.json", {"task_id": f"mineru-{suffix}", "batch_id": f"batch-{suffix}"})
+        write_json(paddle_artifact / "paddleocr_task_manifest.json", {"job_id": f"paddle-{suffix}", "trace_id": f"trace-{suffix}"})
+        return mineru_artifact, paddle_artifact
+
+    def fake_process_dual_artifact_task(_mineru_artifact, _paddle_artifact, config, *, doc_name, source_path, progress):
+        chunk_dir = Path(config.output_folder) / doc_name
+        chunk_dir.mkdir(parents=True)
+        (chunk_dir / "assets").mkdir()
+        (chunk_dir / "assets" / "img.png").write_bytes(b"img")
+        (chunk_dir / "Slide_01.md").write_text(f"# {doc_name}\n\n![x](assets/img.png)\n", encoding="utf-8")
+        write_json(chunk_dir / "Slide_01.meta.json", {"slide_no": 1, "status": "ok"})
+        write_json(
+            chunk_dir / "run_report.json",
+            {
+                "doc_name": doc_name,
+                "engine_mode": "dual_hybrid",
+                "status": "ok",
+                "pages": [
+                    {
+                        "slide_no": 1,
+                        "final": {"status": "ok", "path": str(chunk_dir / "Slide_01.md")},
+                        "validation": {"warnings": []},
+                    }
+                ],
+                "dual_parser": {"strategy": "pseudo_chunk_fixture"},
+                "summary": {},
+            },
+        )
+        return {
+            "doc_name": doc_name,
+            "output_dir": str(chunk_dir),
+            "report_path": str(chunk_dir / "run_report.json"),
+            "page_count": 5,
+            "status": "ok",
+        }
+
+    monkeypatch.setattr(cli, "_prepare_dual_artifacts_for_source", fake_prepare_dual_artifacts)
+    monkeypatch.setattr(dual_pipeline, "process_dual_artifact_task", fake_process_dual_artifact_task)
+
+    result = cli._run_chunked_dual_pdf(pdf, chunks, args=args, config=config, doc_name="pseudo_long", progress=None)
+
+    output_dir = Path(result["output_dir"])
+    assert sorted(prepare_calls) == ["1-5", "6-10"]
+    assert result["status"] == "ok"
+    assert (output_dir / "Slide_01.md").exists()
+    assert (output_dir / "Slide_06.md").exists()
+    assert (output_dir / "pseudo_long_FULL.md").exists()
+    assert "assets/chunk_002/img.png" in (output_dir / "Slide_06.md").read_text(encoding="utf-8")
+    assert not (Path(config.output_folder) / "pseudo_long__chunk_001").exists()
+    assert not (Path(config.output_folder) / "pseudo_long__chunk_002").exists()
+    report = read_json(output_dir / "run_report.json")
+    assert report["engine_mode"] == "dual_hybrid"
+    assert [item["page_ranges"] for item in report["dual_parser"]["chunks"]] == ["1-5", "6-10"]
+    assert report["dual_parser"]["chunked_merge"]["enabled"] is True
+    assert report["dual_parser"]["chunked_merge"]["selected_page_count"] == 10
 
 
 def test_cli_dual_prepares_mineru_and_paddleocr_artifacts_in_parallel(monkeypatch, tmp_path):
