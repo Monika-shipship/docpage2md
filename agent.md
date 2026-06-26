@@ -206,6 +206,7 @@ Latest dual engine real verification:
   - `markdown_output/live_dual_chunk_verify_20260626/热统笔记_p001_020_dual_chunk_live`: real forced chunks `1-10` and `11-20`, final merge produced 20 slides and FULL Markdown, and slim retention cleaned temporary chunk dirs. This run exposed a generic figure-details math delimiter bug on page 4.
   - Renderer/formula fix: adjacent inline math in generated details, e.g. `$\\Sigma$$J \\neq 0$`, is merged before validation; final details remain default closed.
   - `markdown_output/live_dual_page4_fix_verify_20260626/热统笔记_p001_005_page4_fix`: real page range `1-5` after the fix, `status=ok`, `pages_failed=0`, `fail_open_pages=0`.
+  - `markdown_output/live_dual_chunk_final_verify_20260626/热统笔记_p001_005_dual_chunk_final`: real forced chunks `1-3` and `4-5` after adding the final chunk-merge Markdown normalization safety net, `status=ok`, `pages_failed=0`, `fail_open_pages=0`, no temporary chunk dirs left, and final scan found no `[mineru]` / `[paddleocr]`, Traceback, token, `<details open>` or adjacent `$\Sigma$$...` math fragments.
 
 ## Logging
 

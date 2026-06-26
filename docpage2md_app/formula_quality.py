@@ -28,7 +28,9 @@ _MATH_SPAN_RE = re.compile(
     flags=re.DOTALL,
 )
 _ADJACENT_INLINE_MATH_SPAN_RE = re.compile(
-    r"(?<!\\)(?<!\$)\$(?!\$)(?P<left>[^$\n]+?)(?<!\\)\$(?P<gap>[ \t]*)\$(?!\$)(?P<right>[^$\n]+?)(?<!\\)\$(?!\$)"
+    r"(?<!\\)(?<!\$)\$(?!\$)(?P<left>[^$]{1,160}?)(?<!\\)\$"
+    r"(?P<gap>[ \t]*)"
+    r"\$(?!\$)(?P<right>[^$]{1,160}?)(?<!\\)\$(?!\$)"
 )
 _LATEX_DISPLAY_ENV_RE = re.compile(
     r"\\begin\{(?:aligned|alignedat|align\*?|split|gathered|gather\*?|bmatrix|pmatrix|matrix|array|cases|smallmatrix)\}",

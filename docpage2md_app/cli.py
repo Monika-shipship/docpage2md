@@ -19,6 +19,7 @@ from .config import (
     paddleocr_visualize_for_evidence_level,
 )
 from .eval import DEFAULT_EVAL_FIXTURE_DIR, DEFAULT_EVAL_OUTPUT_PATH
+from .formula_quality import normalize_markdown_formula_blocks
 from .input_inspection import (
     MINERU_SINGLE_REQUEST_PAGE_LIMIT,
     PADDLEOCR_LOCAL_FILE_LIMIT_BYTES,
@@ -2074,7 +2075,8 @@ def _final_slide_no_for_chunk_slide(chunk, source_slide: int) -> int:
 
 def _rewrite_chunk_markdown(markdown: str, final_slide: int, asset_prefix: str) -> str:
     markdown = re.sub(r"^# Slide\s+\d+\s*$", f"# Slide {final_slide}", markdown, count=1, flags=re.MULTILINE)
-    return markdown.replace("(assets/", f"(assets/{asset_prefix}/")
+    markdown = markdown.replace("(assets/", f"(assets/{asset_prefix}/")
+    return normalize_markdown_formula_blocks(markdown)
 
 
 def _download_and_process_mineru_result(

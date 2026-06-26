@@ -532,7 +532,17 @@ def test_cli_merge_dual_chunk_outputs_rewrites_slides_assets_and_report(tmp_path
         (chunk_dir / "assets" / "img.png").write_bytes(b"img")
         (chunk_dir / "ir").mkdir()
         write_json(chunk_dir / "ir" / "document_ir.json", {"chunk": index})
-        (chunk_dir / f"Slide_{slide_no:02d}.md").write_text(f"# Slide {slide_no}\n\n![x](assets/img.png)\n", encoding="utf-8")
+        slide_body = f"# Slide {slide_no}\n\n![x](assets/img.png)\n"
+        if index == 2:
+            slide_body += (
+                "\n<details>\n"
+                "    - 可见标签：$\\Sigma$$\n"
+                "J \\neq 0$\n"
+                "    - 主要关系：$\\Sigma\n"
+                "$$J \\neq 0$\n"
+                "<summary>图示识别内容</summary>\n\n</details>\n"
+            )
+        (chunk_dir / f"Slide_{slide_no:02d}.md").write_text(slide_body, encoding="utf-8")
         write_json(chunk_dir / f"Slide_{slide_no:02d}.meta.json", {"slide_no": slide_no, "status": "ok"})
         write_json(
             chunk_dir / "run_report.json",
@@ -557,7 +567,11 @@ def test_cli_merge_dual_chunk_outputs_rewrites_slides_assets_and_report(tmp_path
 
     assert (output_dir / "Slide_01.md").exists()
     assert (output_dir / "Slide_101.md").exists()
-    assert "assets/chunk_002/img.png" in (output_dir / "Slide_101.md").read_text(encoding="utf-8")
+    merged_markdown = (output_dir / "Slide_101.md").read_text(encoding="utf-8")
+    assert "assets/chunk_002/img.png" in merged_markdown
+    assert "$\\Sigma$$J" not in merged_markdown
+    assert "\n$$J" not in merged_markdown
+    assert merged_markdown.count("$\\Sigma J \\neq 0$") == 2
     assert (output_dir / "ir" / "chunk_001" / "document_ir.json").exists()
     report = read_json(output_dir / "run_report.json")
     assert report["engine_mode"] == "dual_hybrid"

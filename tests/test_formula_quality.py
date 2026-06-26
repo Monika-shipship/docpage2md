@@ -163,6 +163,21 @@ def test_markdown_formula_normalization_splits_multiple_tag_display_math():
     assert "\\end{aligned}\n\\tag{2}\n$$" in normalized
 
 
+def test_markdown_formula_normalization_merges_multiline_adjacent_inline_math():
+    markdown = (
+        "标签：$\\Sigma$$\n"
+        "J \\neq 0$。\n"
+        "关系：$\\Sigma\n"
+        "$$J \\neq 0$。"
+    )
+
+    normalized = normalize_markdown_formula_blocks(markdown)
+
+    assert "$\\Sigma$$" not in normalized
+    assert "\n$$J" not in normalized
+    assert normalized.count("$\\Sigma J \\neq 0$") == 2
+
+
 def test_formula_quality_converts_align_and_trailing_quad_number_to_aligned_tag():
     source = (
         "\\begin{align}\n"
