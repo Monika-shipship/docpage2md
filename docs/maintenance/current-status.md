@@ -90,6 +90,12 @@ Local output directories are useful user assets, not disposable trash:
 Recommended future log cleanup behavior:
 
 - Add an explicit command such as `python docpage2md.py --cleanup-logs`.
+
+PaddleOCR evidence retention is separate from global output retention:
+
+- `--paddleocr-evidence-level standard` is the default and does not request visualization images.
+- `debug` / `audit` request PaddleOCR `visualize=true` and preserve final `paddleocr_raw/` even when global output retention is `slim`.
+- `audit` additionally writes download audit metadata for PaddleOCR artifacts.
 - Compress logs older than 7 days into `log/archive/`.
 - Delete archived logs only when they are older than a documented threshold, such as 60 or 90 days.
 - Never delete `markdown_output/`, `latex_output/`, `input_docs/` or user-provided source files from cleanup code.

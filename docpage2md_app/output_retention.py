@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from .config import DEFAULT_OUTPUT_RETENTION, OUTPUT_RETENTION_MODES, AppConfig
+from .config import DEFAULT_OUTPUT_RETENTION, OUTPUT_RETENTION_MODES, AppConfig, paddleocr_evidence_policy
 from .run_logger import ProgressCallback, safe_progress
 
 
@@ -18,6 +18,10 @@ def should_write_ir(config: AppConfig) -> bool:
 
 def should_copy_raw_artifacts(config: AppConfig) -> bool:
     return output_retention_mode(config) == "debug"
+
+
+def should_copy_paddleocr_raw_artifacts(config: AppConfig) -> bool:
+    return should_copy_raw_artifacts(config) or bool(paddleocr_evidence_policy(config)["copy_raw_to_output"])
 
 
 def should_cleanup_parser_cache(config: AppConfig) -> bool:
@@ -35,6 +39,21 @@ def retention_report(config: AppConfig) -> dict[str, object]:
             "slim keeps final Markdown, referenced assets, metadata and run_report; "
             "standard also keeps IR; debug also keeps raw parser artifacts and cache."
         ),
+    }
+
+
+def paddleocr_evidence_report(config: AppConfig) -> dict[str, object]:
+    policy = paddleocr_evidence_policy(config)
+    return {
+        "level": policy["level"],
+        "visualize": policy["visualize"],
+        "download_markdown_images": policy["download_markdown_images"],
+        "download_output_images": policy["download_output_images"],
+        "download_input_image": policy["download_input_image"],
+        "write_field_summary": policy["write_field_summary"],
+        "write_download_audit": policy["write_download_audit"],
+        "copy_raw_to_output": should_copy_paddleocr_raw_artifacts(config),
+        "note": policy["note"],
     }
 
 

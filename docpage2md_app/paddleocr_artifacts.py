@@ -15,6 +15,8 @@ class PaddleOCRArtifacts:
     result_jsonl: Path | None
     result_md: Path | None
     image_manifest_json: Path | None
+    artifact_summary_json: Path | None
+    download_audit_json: Path | None
     images_dir: Path | None
 
     def to_manifest(self) -> dict[str, str | None]:
@@ -25,6 +27,8 @@ class PaddleOCRArtifacts:
             "result_jsonl": _path_str(self.result_jsonl),
             "result_md": _path_str(self.result_md),
             "image_manifest_json": _path_str(self.image_manifest_json),
+            "artifact_summary_json": _path_str(self.artifact_summary_json),
+            "download_audit_json": _path_str(self.download_audit_json),
             "images_dir": _path_str(self.images_dir),
         }
 
@@ -40,6 +44,8 @@ def discover_paddleocr_artifacts(root: str | Path) -> PaddleOCRArtifacts:
         result_jsonl=_existing(artifact_root / "result.jsonl"),
         result_md=_existing(artifact_root / "result.md"),
         image_manifest_json=_existing(artifact_root / "image_manifest.json"),
+        artifact_summary_json=_existing(artifact_root / "artifact_summary.json"),
+        download_audit_json=_existing(artifact_root / "download_audit.json"),
         images_dir=_existing_dir(artifact_root / "images"),
     )
 

@@ -11,7 +11,7 @@ from .content_inventory import build_content_inventory
 from .confusion import contextual_ocr_corrections_disabled_report
 from .files import merge_markdowns, write_json, write_text_atomic
 from .hybrid_enrichment import HYBRID_ENRICHMENT_VERSION, enrich_mineru_document_ir
-from .output_retention import retention_report, should_copy_raw_artifacts, should_write_ir
+from .output_retention import paddleocr_evidence_report, retention_report, should_copy_paddleocr_raw_artifacts, should_write_ir
 from .paddleocr_adapter import (
     PADDLEOCR_ADAPTER_VERSION,
     adapt_paddleocr_artifacts,
@@ -54,11 +54,11 @@ def process_paddleocr_artifact_task(
     ref_map = _copy_assets(document_ir, output_root)
     safe_progress(progress, f"Copied PaddleOCR assets: count={len(ref_map)}")
     rewrite_asset_refs(document_ir, ref_map)
-    if should_copy_raw_artifacts(config):
+    if should_copy_paddleocr_raw_artifacts(config):
         _copy_paddleocr_raw(artifacts, output_root)
         safe_progress(progress, "Copied PaddleOCR raw artifacts")
     else:
-        safe_progress(progress, f"Skipped PaddleOCR raw artifact copy: retention={config.output_retention}")
+        safe_progress(progress, f"Skipped PaddleOCR raw artifact copy: retention={config.output_retention}, evidence={config.paddleocr_evidence_level}")
 
     enrichment = None
     if mode == "paddleocr_hybrid":
@@ -180,6 +180,8 @@ def _initial_report(
                 "model": config.paddleocr_model,
                 "base_url": config.paddleocr_base_url,
                 "api_key_env": config.paddleocr_api_key_env,
+                "evidence_level": config.paddleocr_evidence_level,
+                "visualize": paddleocr_evidence_report(config)["visualize"],
             },
             "vision": {
                 "provider": config.vision_provider,
@@ -211,6 +213,7 @@ def _initial_report(
             "artifact_manifest": artifacts.to_manifest(),
             "model": config.paddleocr_model,
             "source": document_ir.get("source"),
+            "evidence": paddleocr_evidence_report(config),
         },
         "hybrid_enrichment": {
             "version": HYBRID_ENRICHMENT_VERSION,

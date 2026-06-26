@@ -229,6 +229,22 @@ def test_gui_adds_output_retention_override_args(tmp_path):
     assert argv[argv.index("--output-retention") + 1] == "debug"
 
 
+def test_gui_adds_paddleocr_evidence_level_args(tmp_path):
+    options = GuiRunOptions(
+        layout_engine="PaddleOCR",
+        refine_mode="关闭精修",
+        source_value=str(tmp_path / "notes.pdf"),
+        output_folder=str(tmp_path / "out"),
+        paddleocr_evidence_level="调试",
+    )
+
+    argv = build_cli_argv(options)
+
+    assert argv[argv.index("--engine-mode") + 1] == "paddleocr_only"
+    assert argv[argv.index("--paddleocr-evidence-level") + 1] == "debug"
+    assert "--paddleocr-visualize" not in argv
+
+
 def test_gui_adds_brain_thinking_override_args(tmp_path):
     options = GuiRunOptions(
         source_value="https://example.com/notes.pdf",
@@ -325,6 +341,37 @@ def test_gui_page_chunk_ranges_for_401_pages():
 
     assert [chunk.page_ranges for chunk in chunks] == ["1-200", "201-400", "401-401"]
     assert [chunk.page_count for chunk in chunks] == [200, 200, 1]
+
+
+def test_gui_dual_chunk_confirmation_respects_selected_page_range(tmp_path):
+    pdf = tmp_path / "long.pdf"
+    pdf.write_bytes(b"%PDF\n" + b"\n".join([b"<< /Type /Page >>"] * 122))
+    options = GuiRunOptions(
+        layout_engine="MinerU + PaddleOCR 双引擎融合",
+        refine_mode="开启 DocPage2MD 精修",
+        source_kind="input_file",
+        source_value=str(pdf),
+        page_ranges="100-122",
+        paddleocr_page_chunk_size=100,
+    )
+
+    assert DocPage2MdGui._confirm_chunked_run_if_needed(object(), options) is True
+
+
+def test_gui_dual_chunk_confirmation_blocks_multi_chunk_selection(tmp_path):
+    pdf = tmp_path / "long.pdf"
+    pdf.write_bytes(b"%PDF\n" + b"\n".join([b"<< /Type /Page >>"] * 122))
+    options = GuiRunOptions(
+        layout_engine="MinerU + PaddleOCR 双引擎融合",
+        refine_mode="开启 DocPage2MD 精修",
+        source_kind="input_file",
+        source_value=str(pdf),
+        page_ranges="",
+        paddleocr_page_chunk_size=100,
+    )
+
+    with pytest.raises(ValueError, match="选中约 122 页"):
+        DocPage2MdGui._confirm_chunked_run_if_needed(object(), options)
 
 
 def test_gui_input_description_marks_over_limit_pdf(tmp_path):

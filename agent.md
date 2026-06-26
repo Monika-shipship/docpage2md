@@ -55,6 +55,7 @@ PaddleOCR implementation notes:
 - Default async endpoint: `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`.
 - Local PDF/page processing defaults to 100-page chunks.
 - Generated artifacts are saved under `.paddleocr_cache/.../artifact` during processing. Default `output_retention=slim` cleans generated parser cache after successful processing and does not copy final `paddleocr_raw/`; `debug` preserves raw artifacts/cache.
+- PaddleOCR evidence is controlled separately by `--paddleocr-evidence-level fast|standard|debug|audit`. Default `standard` keeps structured evidence without requesting `outputImages`; `debug` / `audit` request `visualize=true` and force final `paddleocr_raw/` preservation even when output retention is slim. Legacy `--paddleocr-visualize true/false` overrides only the API `visualize` flag.
 - Do not commit PaddleOCR token values. Local ignored token note may be `.env.paddleocr.local.md`.
 - Adapter `block.confidence` must stay numeric (`0.0-1.0`). Store human labels such as `high` / `medium` / `low` in `confidence_label`, otherwise hybrid refiner float conversion can fail.
 

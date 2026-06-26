@@ -11,7 +11,13 @@ from dataclasses import replace
 from multiprocessing import Manager
 from pathlib import Path
 
-from .config import OUTPUT_RETENTION_MODES, AppConfig
+from .config import (
+    OUTPUT_RETENTION_MODES,
+    PADDLEOCR_EVIDENCE_LEVELS,
+    AppConfig,
+    normalize_paddleocr_evidence_level,
+    paddleocr_visualize_for_evidence_level,
+)
 from .eval import DEFAULT_EVAL_FIXTURE_DIR, DEFAULT_EVAL_OUTPUT_PATH
 from .input_inspection import (
     MINERU_SINGLE_REQUEST_PAGE_LIMIT,
@@ -23,7 +29,13 @@ from .input_inspection import (
     validate_mineru_model_version_for_paths,
 )
 from .model_profiles import apply_model_profile
-from .output_retention import cleanup_cache_for_artifact_dir, cleanup_generated_cache_dir, output_retention_mode, should_copy_raw_artifacts
+from .output_retention import (
+    cleanup_cache_for_artifact_dir,
+    cleanup_generated_cache_dir,
+    output_retention_mode,
+    should_copy_paddleocr_raw_artifacts,
+    should_copy_raw_artifacts,
+)
 from .run_logger import RunLogger, safe_progress
 
 
@@ -142,6 +154,12 @@ def parse_args(argv=None):
     parser.add_argument("--paddleocr-api-key-env", type=str, default=None, help="PaddleOCR Token 环境变量名，默认 PADDLEOCR_API_TOKEN")
     parser.add_argument("--paddleocr-base-url", type=str, default=None, help="PaddleOCR Base URL，默认 https://paddleocr.aistudio-app.com")
     parser.add_argument("--paddleocr-page-chunk-size", type=int, default=PADDLEOCR_RECOMMENDED_CHUNK_PAGES, help="PaddleOCR PDF 自动分段页数，默认 100")
+    parser.add_argument(
+        "--paddleocr-evidence-level",
+        choices=PADDLEOCR_EVIDENCE_LEVELS,
+        default=AppConfig().paddleocr_evidence_level,
+        help="PaddleOCR 证据保存档位：fast / standard / debug / audit；默认 standard",
+    )
     parser.add_argument("--paddleocr-doc-orientation", type=_parse_bool, default=None, help="PaddleOCR 文档方向矫正 true/false")
     parser.add_argument("--paddleocr-doc-unwarping", type=_parse_bool, default=None, help="PaddleOCR 扭曲矫正 true/false")
     parser.add_argument("--paddleocr-chart-recognition", type=_parse_bool, default=None, help="PaddleOCR 图表识别 true/false")
@@ -238,13 +256,19 @@ def build_config(args):
         paddleocr_base_url=args.paddleocr_base_url or AppConfig().paddleocr_base_url,
         paddleocr_page_chunk_size=_positive_optional_int(args.paddleocr_page_chunk_size, "--paddleocr-page-chunk-size")
         or AppConfig().paddleocr_page_chunk_size,
+        paddleocr_evidence_level=normalize_paddleocr_evidence_level(args.paddleocr_evidence_level),
         paddleocr_doc_orientation=AppConfig().paddleocr_doc_orientation if args.paddleocr_doc_orientation is None else args.paddleocr_doc_orientation,
         paddleocr_doc_unwarping=AppConfig().paddleocr_doc_unwarping if args.paddleocr_doc_unwarping is None else args.paddleocr_doc_unwarping,
         paddleocr_chart_recognition=AppConfig().paddleocr_chart_recognition if args.paddleocr_chart_recognition is None else args.paddleocr_chart_recognition,
         paddleocr_layout_detection=AppConfig().paddleocr_layout_detection if args.paddleocr_layout_detection is None else args.paddleocr_layout_detection,
         paddleocr_formula_recognition=AppConfig().paddleocr_formula_recognition if args.paddleocr_formula_recognition is None else args.paddleocr_formula_recognition,
         paddleocr_table_recognition=AppConfig().paddleocr_table_recognition if args.paddleocr_table_recognition is None else args.paddleocr_table_recognition,
-        paddleocr_visualize=AppConfig().paddleocr_visualize if args.paddleocr_visualize is None else args.paddleocr_visualize,
+        paddleocr_visualize=(
+            paddleocr_visualize_for_evidence_level(args.paddleocr_evidence_level)
+            if args.paddleocr_visualize is None
+            else args.paddleocr_visualize
+        ),
+        paddleocr_visualize_override=args.paddleocr_visualize,
         output_retention=args.output_retention,
         region=args.region,
         openai_base_url=args.base_url,
@@ -1399,7 +1423,7 @@ def _merge_paddleocr_chunk_outputs(output_dir: Path, output_name: str, chunk_aud
 
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "assets").mkdir(parents=True, exist_ok=True)
-    copy_debug_dirs = config is None or should_copy_raw_artifacts(config)
+    copy_debug_dirs = config is None or should_copy_paddleocr_raw_artifacts(config)
     if copy_debug_dirs:
         (output_dir / "ir").mkdir(parents=True, exist_ok=True)
         (output_dir / "paddleocr_raw").mkdir(parents=True, exist_ok=True)

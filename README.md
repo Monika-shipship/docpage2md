@@ -31,7 +31,7 @@ markdown_output/
     └── assets/
 ```
 
-日常阅读主要看 `Slide_XX.md` 和 `{文档名}_FULL.md`。默认使用“精简”保留模式，不再复制 `mineru_raw/`、`paddleocr_raw/`、解析 cache 或完整 IR，避免输出目录膨胀。排查结构化问题时可改用“标准”保留 IR；排查 API 原始返回时再用“调试”保留 raw artifact 和 cache。
+日常阅读主要看 `Slide_XX.md` 和 `{文档名}_FULL.md`。默认使用“精简”保留模式，不再复制 `mineru_raw/`、`paddleocr_raw/`、解析 cache 或完整 IR，避免输出目录膨胀。排查结构化问题时可改用“标准”保留 IR；排查 API 原始返回时再用“调试”保留 raw artifact 和 cache。PaddleOCR 另有证据档位，默认“标准（推荐）”，只有选择“调试/完整审计”才会请求并保留 PaddleOCR 可视化图。
 
 ## 从 0 开始
 
@@ -234,10 +234,11 @@ CLI 示例：
 ```powershell
 python docpage2md.py --engine-mode paddleocr_only --layout-engine paddleocr --refine-mode none --input-file ".\input_docs\我的手写笔记.pdf"
 python docpage2md.py --engine-mode paddleocr_hybrid --layout-engine paddleocr --refine-mode docpage2md --input-file ".\input_docs\我的手写笔记.pdf"
+python docpage2md.py --engine-mode paddleocr_only --layout-engine paddleocr --paddleocr-evidence-level debug --input-file ".\input_docs\我的手写笔记.pdf"
 python docpage2md.py --engine-mode paddleocr_only --paddleocr-artifact-dir ".\paddleocr_artifact"
 ```
 
-PaddleOCR 默认精简输出包含 `assets/`、`Slide_XX.md`、`*_FULL.md`、`process.log` 和 `run_report.json`；`standard` 模式额外保留 `ir/`，`debug` 模式额外保留 `paddleocr_raw/` 和解析 cache。更详细的 API 输出结构和后续对比计划见 [PaddleOCR 接入计划](docs/plans/paddleocr-integration-roadmap.md)。
+PaddleOCR 默认精简输出包含 `assets/`、`Slide_XX.md`、`*_FULL.md`、`process.log` 和 `run_report.json`；`output_retention=standard` 额外保留 `ir/`，`output_retention=debug` 额外保留 raw artifact 和解析 cache。PaddleOCR 证据档位使用 `--paddleocr-evidence-level fast|standard|debug|audit`：`fast/standard` 不请求可视化图；`debug/audit` 请求 `visualize=true` 并在最终输出保留 `paddleocr_raw/`。兼容参数 `--paddleocr-visualize true/false` 会覆盖档位里的 visualize。更详细的 API 输出结构和后续对比计划见 [PaddleOCR 接入计划](docs/plans/paddleocr-integration-roadmap.md)。
 
 ## 双引擎融合
 
@@ -248,7 +249,7 @@ PaddleOCR 默认精简输出包含 `assets/`、`Slide_XX.md`、`*_FULL.md`、`pr
 - 本地单文件、多文件、文件夹。
 - 已有 artifact：同时提供 `--mineru-artifact-dir` 和 `--paddleocr-artifact-dir`。
 - 多文件本地输入会按 `--parser-workers` 跨文件并发提交/等待解析；同一文件内部 MinerU 与 PaddleOCR 也并发。
-- 默认精简输出保留 Markdown、assets、日志和报告；`standard` 保留 `ir/mineru_document_ir.json`、`ir/paddleocr_document_ir.json`、`ir/fused_document_ir.json`；`debug` 再保留 `mineru_raw/`、`paddleocr_raw/` 和解析 cache。
+- 默认精简输出保留 Markdown、assets、日志和报告；`standard` 保留 `ir/mineru_document_ir.json`、`ir/paddleocr_document_ir.json`、`ir/fused_document_ir.json`；`debug` 再保留 `mineru_raw/`、`paddleocr_raw/` 和解析 cache。若 PaddleOCR 证据档位为 `debug/audit`，即使全局是精简模式，也会保留 `paddleocr_raw/` 以便查看可视化证据。
 - `run_report.json` 记录候选组、融合决策、被拒绝操作和不确定项。
 
 当前限制：

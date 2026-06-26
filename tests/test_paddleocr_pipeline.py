@@ -79,6 +79,33 @@ def test_paddleocr_pipeline_slim_skips_raw_and_ir_but_keeps_markdown_assets(tmp_
     assert report["output_retention"]["mode"] == "slim"
 
 
+def test_paddleocr_evidence_debug_copies_raw_even_with_slim_retention(tmp_path):
+    artifact = _artifact(tmp_path / "artifact")
+    config = AppConfig(output_folder=str(tmp_path / "out"), engine_mode="paddleocr_only", paddleocr_evidence_level="debug")
+
+    result = process_paddleocr_artifact_task(artifact, config, doc_name="notes")
+
+    output = Path(result["output_dir"])
+    assert (output / "paddleocr_raw" / "result.jsonl").exists()
+    report = json.loads((output / "run_report.json").read_text(encoding="utf-8"))
+    assert report["output_retention"]["mode"] == "slim"
+    assert report["paddleocr"]["evidence"]["level"] == "debug"
+    assert report["paddleocr"]["evidence"]["copy_raw_to_output"] is True
+
+
+def test_paddleocr_legacy_visualize_true_preserves_raw_with_slim_retention(tmp_path):
+    artifact = _artifact(tmp_path / "artifact")
+    config = AppConfig(output_folder=str(tmp_path / "out"), engine_mode="paddleocr_only", paddleocr_visualize=True)
+
+    result = process_paddleocr_artifact_task(artifact, config, doc_name="notes")
+
+    output = Path(result["output_dir"])
+    assert (output / "paddleocr_raw" / "result.jsonl").exists()
+    report = json.loads((output / "run_report.json").read_text(encoding="utf-8"))
+    assert report["paddleocr"]["evidence"]["visualize"] is True
+    assert report["paddleocr"]["evidence"]["copy_raw_to_output"] is True
+
+
 def test_paddleocr_chunk_merge_renumbers_outputs(tmp_path):
     output_dir = tmp_path / "out" / "Deck"
     chunk_dir = tmp_path / "out" / "Deck__chunk_002"

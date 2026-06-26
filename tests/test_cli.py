@@ -59,6 +59,35 @@ def test_cli_build_config_exposes_retention_and_scheduler_workers(tmp_path):
     assert config.output_folder == str(tmp_path.resolve())
 
 
+def test_cli_paddleocr_evidence_level_controls_visualize(tmp_path):
+    args = cli.parse_args(["--output", str(tmp_path), "--paddleocr-evidence-level", "debug"])
+
+    config = cli.build_config(args)
+
+    assert config.paddleocr_evidence_level == "debug"
+    assert config.paddleocr_visualize is True
+    assert config.paddleocr_visualize_override is None
+
+
+def test_cli_paddleocr_visualize_overrides_evidence_level(tmp_path):
+    args = cli.parse_args(
+        [
+            "--output",
+            str(tmp_path),
+            "--paddleocr-evidence-level",
+            "audit",
+            "--paddleocr-visualize",
+            "false",
+        ]
+    )
+
+    config = cli.build_config(args)
+
+    assert config.paddleocr_evidence_level == "audit"
+    assert config.paddleocr_visualize is False
+    assert config.paddleocr_visualize_override is False
+
+
 def test_cli_build_config_exposes_mineru_multiformat_options(tmp_path):
     args = cli.parse_args(
         [

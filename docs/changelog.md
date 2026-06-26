@@ -26,6 +26,11 @@
   - 主成本表显示 Vision 输入/输出/费用、Brain 输入/输出/费用和总费用。
   - 新增 Brain 窗口成本对比表，默认比较 `0/1/2/3/5`。
   - CLI 成本表同步显示 Vision/Brain 费用分项，并尊重 Brain 上下文窗口。
+- 新增 PaddleOCR 证据保存档位：
+  - CLI 增加 `--paddleocr-evidence-level fast|standard|debug|audit`，GUI 高级 PaddleOCR 设置改为中文四档选择。
+  - 默认 `standard` 不请求可视化图，只保存可复现处理所需的结构化结果和必要图片资源。
+  - `debug` / `audit` 请求 PaddleOCR `visualize=true`，并强制最终输出保留 `paddleocr_raw/`；`audit` 额外保存下载审计。
+  - 旧参数 `--paddleocr-visualize true/false` 保留为兼容覆盖项。
 
 ### Verified
 

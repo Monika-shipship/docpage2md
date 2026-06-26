@@ -51,6 +51,8 @@ DEFAULT_PADDLEOCR_API_TOKEN_ENV = "PADDLEOCR_API_TOKEN"
 DEFAULT_PADDLEOCR_BASE_URL = "https://paddleocr.aistudio-app.com"
 DEFAULT_PADDLEOCR_MODEL = "PaddleOCR-VL-1.6"
 DEFAULT_PADDLEOCR_PAGE_CHUNK_SIZE = 100
+DEFAULT_PADDLEOCR_EVIDENCE_LEVEL = "standard"
+PADDLEOCR_EVIDENCE_LEVELS = ("fast", "standard", "debug", "audit")
 
 # Model verification
 DEFAULT_VERIFY_LIMIT = 20
@@ -98,7 +100,9 @@ class AppConfig:
     paddleocr_layout_detection: bool = True
     paddleocr_formula_recognition: bool = True
     paddleocr_table_recognition: bool = True
+    paddleocr_evidence_level: str = DEFAULT_PADDLEOCR_EVIDENCE_LEVEL
     paddleocr_visualize: bool = False
+    paddleocr_visualize_override: Optional[bool] = None
     output_retention: str = DEFAULT_OUTPUT_RETENTION
     vision_input_price_per_million: Optional[float] = None
     vision_output_price_per_million: Optional[float] = None
@@ -172,3 +176,42 @@ class AppConfig:
     @property
     def model_cache_abs_path(self) -> Path:
         return Path(self.model_cache_path)
+
+
+def normalize_paddleocr_evidence_level(value: str | None) -> str:
+    level = str(value or DEFAULT_PADDLEOCR_EVIDENCE_LEVEL).strip().lower()
+    return level if level in PADDLEOCR_EVIDENCE_LEVELS else DEFAULT_PADDLEOCR_EVIDENCE_LEVEL
+
+
+def paddleocr_visualize_for_evidence_level(value: str | None) -> bool:
+    return normalize_paddleocr_evidence_level(value) in {"debug", "audit"}
+
+
+def effective_paddleocr_visualize(config: AppConfig) -> bool:
+    override = getattr(config, "paddleocr_visualize_override", None)
+    if override is not None:
+        return bool(override)
+    if bool(getattr(config, "paddleocr_visualize", False)):
+        return True
+    return paddleocr_visualize_for_evidence_level(getattr(config, "paddleocr_evidence_level", None))
+
+
+def paddleocr_evidence_policy(config: AppConfig) -> dict[str, object]:
+    level = normalize_paddleocr_evidence_level(getattr(config, "paddleocr_evidence_level", None))
+    visualize = effective_paddleocr_visualize(config)
+    return {
+        "level": level,
+        "visualize": visualize,
+        "download_markdown_images": True,
+        "download_output_images": visualize,
+        "download_input_image": visualize,
+        "write_field_summary": level in {"standard", "debug", "audit"},
+        "write_download_audit": level == "audit",
+        "copy_raw_to_output": level in {"debug", "audit"} or visualize,
+        "note": {
+            "fast": "Only necessary JSONL/Markdown and referenced Markdown assets are kept.",
+            "standard": "Recommended: structured PaddleOCR output and necessary image assets are kept.",
+            "debug": "Requests visualization images and keeps PaddleOCR raw artifacts for layout debugging.",
+            "audit": "Keeps visualization images plus fuller field/download audit metadata.",
+        }[level],
+    }

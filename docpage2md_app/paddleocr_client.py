@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import AppConfig
+from .config import AppConfig, effective_paddleocr_visualize, paddleocr_evidence_policy
 from .files import write_json, write_text_atomic
 from .run_logger import ProgressCallback, safe_progress
 from .secrets import get_secret_value
@@ -143,6 +143,8 @@ class PaddleOCRClient:
                 "page_ranges": page_ranges,
                 "model": self.config.paddleocr_model,
                 "api_key_env": self.config.paddleocr_api_key_env,
+                "evidence": paddleocr_evidence_policy(self.config),
+                "optional_payload": build_optional_payload(self.config),
                 "job_id": status.job_id,
                 "trace_id": status.trace_id,
                 "status": status.raw,
@@ -165,7 +167,10 @@ class PaddleOCRClient:
         jsonl = root / "result.jsonl"
         if not jsonl.exists():
             return
+        policy = paddleocr_evidence_policy(self.config)
         image_manifest: dict[str, str] = {}
+        field_summary: list[dict[str, Any]] = []
+        download_audit: list[dict[str, Any]] = []
         images_dir = root / "images"
         for line_index, line in enumerate(jsonl.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
@@ -175,24 +180,37 @@ class PaddleOCRClient:
             except json.JSONDecodeError:
                 continue
             for page_index, page_result in enumerate(_iter_layout_results(payload), start=1):
+                if policy["write_field_summary"]:
+                    field_summary.append(_summarize_page_result(line_index, page_index, page_result))
                 markdown = page_result.get("markdown") if isinstance(page_result.get("markdown"), dict) else {}
                 images = markdown.get("images") if isinstance(markdown.get("images"), dict) else {}
                 for image_key, image_value in images.items():
                     local = self._save_image_value(images_dir, f"line_{line_index:03d}/markdown/{image_key}", image_value)
                     if local:
                         image_manifest[str(image_key)] = local.relative_to(root).as_posix()
+                    if policy["write_download_audit"]:
+                        download_audit.append(_download_audit_item("markdown.images", image_key, local, root))
                 output_images = page_result.get("outputImages") if isinstance(page_result.get("outputImages"), dict) else {}
-                for image_key, image_value in output_images.items():
-                    local = self._save_image_value(images_dir, f"line_{line_index:03d}/output/{image_key}_{page_index}.jpg", image_value)
-                    if local:
-                        image_manifest[str(image_key)] = local.relative_to(root).as_posix()
+                if policy["download_output_images"]:
+                    for image_key, image_value in output_images.items():
+                        local = self._save_image_value(images_dir, f"line_{line_index:03d}/output/{image_key}_{page_index}.jpg", image_value)
+                        if local:
+                            image_manifest[str(image_key)] = local.relative_to(root).as_posix()
+                        if policy["write_download_audit"]:
+                            download_audit.append(_download_audit_item("outputImages", image_key, local, root))
                 input_image = page_result.get("inputImage")
-                if isinstance(input_image, str) and input_image.strip():
+                if policy["download_input_image"] and isinstance(input_image, str) and input_image.strip():
                     local = self._save_image_value(images_dir, f"line_{line_index:03d}/input/inputImage_{page_index}.jpg", input_image)
                     if local:
                         image_manifest.setdefault("inputImage", local.relative_to(root).as_posix())
+                    if policy["write_download_audit"]:
+                        download_audit.append(_download_audit_item("inputImage", "inputImage", local, root))
         if image_manifest:
             write_json(root / "image_manifest.json", image_manifest)
+        if field_summary:
+            write_json(root / "artifact_summary.json", {"pages": field_summary, "evidence": policy})
+        if download_audit:
+            write_json(root / "download_audit.json", {"items": download_audit, "evidence": policy})
 
     def _save_image_value(self, images_dir: Path, relative_name: str, value: Any) -> Path | None:
         if not isinstance(value, str) or not value.strip():
@@ -298,7 +316,7 @@ def build_optional_payload(config: AppConfig) -> dict[str, Any]:
         "useLayoutDetection": bool(config.paddleocr_layout_detection),
         "useFormulaRecognition": bool(config.paddleocr_formula_recognition),
         "useTableRecognition": bool(config.paddleocr_table_recognition),
-        "visualize": bool(config.paddleocr_visualize),
+        "visualize": effective_paddleocr_visualize(config),
     }
 
 
@@ -358,6 +376,34 @@ def _iter_layout_results(payload: Any) -> list[dict[str, Any]]:
             out.extend(_iter_layout_results(item))
         return out
     return []
+
+
+def _summarize_page_result(line_index: int, page_index: int, page_result: dict[str, Any]) -> dict[str, Any]:
+    pruned = page_result.get("prunedResult") if isinstance(page_result.get("prunedResult"), dict) else {}
+    parsing_list = pruned.get("parsing_res_list") if isinstance(pruned.get("parsing_res_list"), list) else []
+    markdown = page_result.get("markdown") if isinstance(page_result.get("markdown"), dict) else {}
+    markdown_images = markdown.get("images") if isinstance(markdown.get("images"), dict) else {}
+    output_images = page_result.get("outputImages") if isinstance(page_result.get("outputImages"), dict) else {}
+    return {
+        "line_index": line_index,
+        "page_index": page_index,
+        "has_pruned_result": bool(pruned),
+        "layout_block_count": len(parsing_list),
+        "markdown_text_chars": len(str(markdown.get("text") or "")),
+        "markdown_image_count": len(markdown_images),
+        "output_image_count": len(output_images),
+        "has_input_image": bool(page_result.get("inputImage")),
+        "top_level_keys": sorted(str(key) for key in page_result.keys()),
+    }
+
+
+def _download_audit_item(kind: str, key: Any, local: Path | None, root: Path) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "key": str(key),
+        "saved": local is not None,
+        "path": local.relative_to(root).as_posix() if local else None,
+    }
 
 
 def _optional_int(value: Any) -> int | None:

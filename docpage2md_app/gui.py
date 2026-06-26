@@ -166,6 +166,14 @@ OUTPUT_RETENTION_LABELS = {
 }
 OUTPUT_RETENTION_LABEL_TO_KEY = {label: key for key, label in OUTPUT_RETENTION_LABELS.items()}
 
+PADDLEOCR_EVIDENCE_LEVEL_LABELS = {
+    "fast": "极速",
+    "standard": "标准（推荐）",
+    "debug": "调试",
+    "audit": "完整审计",
+}
+PADDLEOCR_EVIDENCE_LEVEL_LABEL_TO_KEY = {label: key for key, label in PADDLEOCR_EVIDENCE_LEVEL_LABELS.items()}
+
 BRAIN_THINKING_LABELS = {
     "disabled": "快速：关闭思考（推荐）",
     "enabled": "高质量：开启思考",
@@ -283,7 +291,7 @@ class GuiRunOptions:
     paddleocr_layout_detection: bool = AppConfig().paddleocr_layout_detection
     paddleocr_formula_recognition: bool = AppConfig().paddleocr_formula_recognition
     paddleocr_table_recognition: bool = AppConfig().paddleocr_table_recognition
-    paddleocr_visualize: bool = AppConfig().paddleocr_visualize
+    paddleocr_evidence_level: str = AppConfig().paddleocr_evidence_level
     recursive: bool = False
     output_retention: str = AppConfig().output_retention
     parser_workers: int | str = AppConfig().parser_workers
@@ -418,6 +426,10 @@ def output_retention_key(value: str) -> str:
     return OUTPUT_RETENTION_LABEL_TO_KEY.get(value, value)
 
 
+def paddleocr_evidence_level_key(value: str) -> str:
+    return PADDLEOCR_EVIDENCE_LEVEL_LABEL_TO_KEY.get(value, value)
+
+
 def source_kind_key(value: str) -> str:
     return SOURCE_LABEL_TO_KEY.get(value, value)
 
@@ -461,6 +473,9 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
     output_retention = output_retention_key(options.output_retention)
     if output_retention not in OUTPUT_RETENTION_LABELS:
         raise ValueError(f"未知输出保留模式: {options.output_retention}")
+    paddleocr_evidence_level = paddleocr_evidence_level_key(options.paddleocr_evidence_level)
+    if paddleocr_evidence_level not in PADDLEOCR_EVIDENCE_LEVEL_LABELS:
+        raise ValueError(f"未知 PaddleOCR 证据保存档位: {options.paddleocr_evidence_level}")
     if source_kind not in SOURCE_LABELS:
         raise ValueError(f"未知输入来源: {options.source_kind}")
     if source_kind == "mineru_artifact_dir" and layout_engine != "mineru":
@@ -526,6 +541,8 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
             (options.paddleocr_base_url or "https://paddleocr.aistudio-app.com").strip() or "https://paddleocr.aistudio-app.com",
             "--paddleocr-page-chunk-size",
             str(_positive_worker_count(options.paddleocr_page_chunk_size, "PaddleOCR 分段页数")),
+            "--paddleocr-evidence-level",
+            paddleocr_evidence_level,
             "--paddleocr-doc-orientation",
             _bool_arg(options.paddleocr_doc_orientation),
             "--paddleocr-doc-unwarping",
@@ -538,8 +555,6 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
             _bool_arg(options.paddleocr_formula_recognition),
             "--paddleocr-table-recognition",
             _bool_arg(options.paddleocr_table_recognition),
-            "--paddleocr-visualize",
-            _bool_arg(options.paddleocr_visualize),
         ]
     )
     vision_workers = _positive_worker_count(options.vision_workers, "Vision 并发数")
@@ -866,7 +881,7 @@ def selected_config_from_options(options: GuiRunOptions, base_config: AppConfig 
         paddleocr_layout_detection=options.paddleocr_layout_detection,
         paddleocr_formula_recognition=options.paddleocr_formula_recognition,
         paddleocr_table_recognition=options.paddleocr_table_recognition,
-        paddleocr_visualize=options.paddleocr_visualize,
+        paddleocr_evidence_level=paddleocr_evidence_level_key(options.paddleocr_evidence_level),
         output_retention=output_retention_key(options.output_retention),
         parser_workers=_positive_worker_count(options.parser_workers, "解析并发数"),
         max_docpage_workers=_positive_worker_count(options.doc_workers, "文档并发数"),
@@ -1780,7 +1795,9 @@ class DocPage2MdGui:
         self.paddleocr_layout_detection = tk.BooleanVar(value=self.base_config.paddleocr_layout_detection)
         self.paddleocr_formula_recognition = tk.BooleanVar(value=self.base_config.paddleocr_formula_recognition)
         self.paddleocr_table_recognition = tk.BooleanVar(value=self.base_config.paddleocr_table_recognition)
-        self.paddleocr_visualize = tk.BooleanVar(value=self.base_config.paddleocr_visualize)
+        self.paddleocr_evidence_level = tk.StringVar(
+            value=PADDLEOCR_EVIDENCE_LEVEL_LABELS.get(self.base_config.paddleocr_evidence_level, PADDLEOCR_EVIDENCE_LEVEL_LABELS["standard"])
+        )
         self.show_mineru_advanced = tk.BooleanVar(value=False)
         self.show_paddleocr_advanced = tk.BooleanVar(value=False)
         self.recursive = tk.BooleanVar(value=False)
@@ -2105,7 +2122,15 @@ class DocPage2MdGui:
         ttk.Checkbutton(self.paddleocr_advanced_frame, text="版面检测", variable=self.paddleocr_layout_detection).grid(row=2, column=0, sticky="w", pady=3)
         ttk.Checkbutton(self.paddleocr_advanced_frame, text="公式识别", variable=self.paddleocr_formula_recognition).grid(row=2, column=1, sticky="w", pady=3)
         ttk.Checkbutton(self.paddleocr_advanced_frame, text="表格识别", variable=self.paddleocr_table_recognition).grid(row=2, column=2, sticky="w", pady=3)
-        ttk.Checkbutton(self.paddleocr_advanced_frame, text="保存可视化图（调试）", variable=self.paddleocr_visualize).grid(row=2, column=3, sticky="w", pady=3)
+        ttk.Label(self.paddleocr_advanced_frame, text="证据档位").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Combobox(
+            self.paddleocr_advanced_frame,
+            textvariable=self.paddleocr_evidence_level,
+            values=[PADDLEOCR_EVIDENCE_LEVEL_LABELS[key] for key in ("fast", "standard", "debug", "audit")],
+            state="readonly",
+            width=14,
+        ).grid(row=3, column=1, columnspan=2, sticky="ew", pady=3)
+        self._help_button(self.paddleocr_advanced_frame, "paddleocr_evidence").grid(row=3, column=3, sticky="w", padx=(6, 0), pady=3)
 
         concurrency = ttk.LabelFrame(out, text="并发", padding=8)
         concurrency.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(8, 0))
@@ -2486,6 +2511,14 @@ class DocPage2MdGui:
                 "本地上传文件限制 50MB，URL 文件限制约 200MB；每个模型每日约 3000 页额度。\n"
                 "为避免超过 100 页只解析前 100 页，GUI/CLI 默认按 100 页拆分 PDF 并自动合并输出。\n\n"
                 "高级开关会写入 optionalPayload。默认开启版面、公式、表格识别；方向/扭曲/图表识别默认关闭，遇到屏拍、倾斜或图表文档可手动开启。"
+            ),
+            "paddleocr_evidence": (
+                "PaddleOCR 证据保存档位说明：\n\n"
+                "极速：不请求可视化图，只保存转换必需的 JSONL/Markdown 和 Markdown 引用图片，适合大量文件快速跑。\n"
+                "标准（推荐）：不请求可视化图，保存结构化结果摘要、JSONL、Markdown、layout/prunedResult 和必要图片资源，足够复现大多数问题。\n"
+                "调试：请求并保存 PaddleOCR outputImages/inputImage，可在输出目录的 paddleocr_raw/ 中查看画框图，适合排查切分和识别错误。\n"
+                "完整审计：在调试基础上额外保存下载审计和字段摘要，适合真实样本验收和回归对比，会更慢、更占空间。\n\n"
+                "注意：PaddleOCR 官方 API 只有 visualize=true/false；这里的四档是 DocPage2MD 封装的保存策略。"
             ),
             "cost": (
                 "成本估算只估 Vision/Brain 模型费用。\n\n"
@@ -2907,7 +2940,7 @@ class DocPage2MdGui:
             self.paddleocr_layout_detection,
             self.paddleocr_formula_recognition,
             self.paddleocr_table_recognition,
-            self.paddleocr_visualize,
+            self.paddleocr_evidence_level,
             self.recursive,
             self.output_retention,
             self.parser_workers,
@@ -3287,7 +3320,7 @@ class DocPage2MdGui:
             paddleocr_layout_detection=self.paddleocr_layout_detection.get(),
             paddleocr_formula_recognition=self.paddleocr_formula_recognition.get(),
             paddleocr_table_recognition=self.paddleocr_table_recognition.get(),
-            paddleocr_visualize=self.paddleocr_visualize.get(),
+            paddleocr_evidence_level=self.paddleocr_evidence_level.get(),
             recursive=self.recursive.get(),
             output_retention=self.output_retention.get(),
             parser_workers=self.parser_workers.get(),
@@ -3550,9 +3583,13 @@ class DocPage2MdGui:
             pages = estimate_pdf_pages(path)
             if not pages:
                 continue
-            if layout_engine == "dual" and pages > chunk_size:
-                raise ValueError(f"双引擎融合当前暂不自动分段：{path.name} 共 {pages} 页，超过 PaddleOCR 建议单段 {chunk_size} 页。请先用页码范围分段运行。")
             chunks = build_page_chunks(pages, options.page_ranges, chunk_size=chunk_size)
+            if layout_engine == "dual" and len(chunks) > 1:
+                selected_pages = sum(chunk.page_count for chunk in chunks)
+                raise ValueError(
+                    f"双引擎融合当前暂不自动分段：{path.name} 选中约 {selected_pages} 页，"
+                    f"超过 PaddleOCR 建议单段 {chunk_size} 页。请用页码范围分段运行。"
+                )
             if len(chunks) > 1:
                 ranges = "，".join(chunk.page_ranges for chunk in chunks[:4])
                 if len(chunks) > 4:

@@ -1,3 +1,4 @@
+import base64
 import json
 import urllib.error
 
@@ -5,6 +6,11 @@ import pytest
 
 from docpage2md_app.config import AppConfig
 from docpage2md_app.paddleocr_client import PaddleOCRClient, PaddleOCRError, build_optional_payload
+
+
+_PNG_1X1_B64 = base64.b64encode(
+    base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+).decode("ascii")
 
 
 def test_paddleocr_client_builds_optional_payload():
@@ -29,6 +35,51 @@ def test_paddleocr_client_builds_optional_payload():
         "useTableRecognition": False,
         "visualize": False,
     }
+
+
+def test_paddleocr_evidence_level_defaults_visualize_without_legacy_flag():
+    assert build_optional_payload(AppConfig(paddleocr_evidence_level="standard"))["visualize"] is False
+    assert build_optional_payload(AppConfig(paddleocr_evidence_level="debug"))["visualize"] is True
+    assert (
+        build_optional_payload(AppConfig(paddleocr_evidence_level="audit", paddleocr_visualize_override=False))["visualize"]
+        is False
+    )
+
+
+def test_paddleocr_evidence_level_controls_downloaded_visual_images(monkeypatch, tmp_path):
+    monkeypatch.setenv("PADDLEOCR_API_TOKEN", "token-for-test")
+    payload = {
+        "layoutParsingResults": [
+            {
+                "prunedResult": {"parsing_res_list": [{"block_label": "text", "block_content": "hello"}]},
+                "markdown": {"text": "hello", "images": {"fig": _PNG_1X1_B64}},
+                "outputImages": {"vis": _PNG_1X1_B64},
+                "inputImage": _PNG_1X1_B64,
+            }
+        ]
+    }
+
+    standard_root = tmp_path / "standard"
+    standard_root.mkdir()
+    (standard_root / "result.jsonl").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    PaddleOCRClient(AppConfig(paddleocr_evidence_level="standard"))._download_result_images(standard_root)
+    standard_manifest = json.loads((standard_root / "image_manifest.json").read_text(encoding="utf-8"))
+    assert set(standard_manifest) == {"fig"}
+    assert (standard_root / "artifact_summary.json").exists()
+    assert not (standard_root / "download_audit.json").exists()
+
+    debug_root = tmp_path / "debug"
+    debug_root.mkdir()
+    (debug_root / "result.jsonl").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    PaddleOCRClient(AppConfig(paddleocr_evidence_level="debug"))._download_result_images(debug_root)
+    debug_manifest = json.loads((debug_root / "image_manifest.json").read_text(encoding="utf-8"))
+    assert {"fig", "vis", "inputImage"} <= set(debug_manifest)
+
+    audit_root = tmp_path / "audit"
+    audit_root.mkdir()
+    (audit_root / "result.jsonl").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    PaddleOCRClient(AppConfig(paddleocr_evidence_level="audit"))._download_result_images(audit_root)
+    assert (audit_root / "download_audit.json").exists()
 
 
 def test_paddleocr_client_submit_poll_download(monkeypatch, tmp_path):

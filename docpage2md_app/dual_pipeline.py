@@ -18,7 +18,7 @@ from .mineru_artifacts import discover_mineru_artifacts
 from .mineru_pipeline import _copy_assets as _copy_mineru_assets
 from .mineru_pipeline import _copy_mineru_raw, _empty_hybrid_stage, _page_assets
 from .mineru_adapter import rewrite_asset_refs as rewrite_mineru_asset_refs
-from .output_retention import retention_report, should_copy_raw_artifacts, should_write_ir
+from .output_retention import paddleocr_evidence_report, retention_report, should_copy_paddleocr_raw_artifacts, should_copy_raw_artifacts, should_write_ir
 from .paddleocr_adapter import adapt_paddleocr_artifacts
 from .paddleocr_artifacts import discover_paddleocr_artifacts
 from .paddleocr_pipeline import _copy_assets as _copy_paddleocr_assets
@@ -68,10 +68,10 @@ def process_dual_artifact_task(
     paddleocr_ir = adapt_paddleocr_artifacts(paddleocr_artifacts, source_path=source_path, engine_mode=DUAL_ENGINE_MODE)
     paddle_ref_map = _copy_paddleocr_assets(paddleocr_ir, output_root)
     rewrite_paddleocr_asset_refs(paddleocr_ir, paddle_ref_map)
-    if should_copy_raw_artifacts(config):
+    if should_copy_paddleocr_raw_artifacts(config):
         _copy_paddleocr_raw(paddleocr_artifacts, output_root)
     else:
-        safe_progress(progress, f"Skipped PaddleOCR raw artifact copy: retention={config.output_retention}")
+        safe_progress(progress, f"Skipped PaddleOCR raw artifact copy: retention={config.output_retention}, evidence={config.paddleocr_evidence_level}")
     safe_progress(progress, f"PaddleOCR evidence ready: pages={len(paddleocr_ir.get('pages') or [])}, assets={len(paddle_ref_map)}")
 
     safe_progress(progress, "Fusing MinerU + PaddleOCR candidate groups")
@@ -215,6 +215,8 @@ def _initial_report(
                 "model": config.paddleocr_model,
                 "base_url": config.paddleocr_base_url,
                 "api_key_env": config.paddleocr_api_key_env,
+                "evidence_level": config.paddleocr_evidence_level,
+                "visualize": paddleocr_evidence_report(config)["visualize"],
             },
             "vision": {
                 "provider": config.vision_provider,
@@ -257,6 +259,7 @@ def _initial_report(
             "paddleocr": {
                 "artifact_manifest": paddleocr_artifacts.to_manifest(),
                 "model": config.paddleocr_model,
+                "evidence": paddleocr_evidence_report(config),
             },
             "input_path": source_path,
         },
@@ -267,6 +270,7 @@ def _initial_report(
         "paddleocr": {
             "artifact_manifest": paddleocr_artifacts.to_manifest(),
             "model": config.paddleocr_model,
+            "evidence": paddleocr_evidence_report(config),
         },
         "hybrid_enrichment": {
             "version": HYBRID_ENRICHMENT_VERSION,
