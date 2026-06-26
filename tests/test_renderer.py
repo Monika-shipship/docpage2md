@@ -1,4 +1,5 @@
 from docpage2md_app.renderer import render_page_ir_to_markdown
+from docpage2md_app.validators import validate_slide_markdown
 
 
 def test_uncertain_latex_environment_renders_as_display_math():
@@ -75,3 +76,27 @@ def test_figure_json_description_renders_chinese_details_without_raw_keys():
     assert "- 不确定点：缺少坐标轴" in markdown
     assert "figure_type" not in markdown
     assert "relations" not in markdown
+
+
+def test_figure_details_merge_adjacent_inline_math_spans():
+    markdown = render_page_ir_to_markdown(
+        {
+            "source_page": 4,
+            "blocks": [
+                {
+                    "id": "p0004-b005",
+                    "type": "figure_note",
+                    "description": r"右侧为非闭合或有源环路积分不等于零（$\Sigma$$J \neq 0$），并标注有序。",
+                    "path": "assets/crops/figure.jpg",
+                }
+            ],
+        },
+        4,
+    )
+
+    assert r"$\Sigma$$J" not in markdown
+    assert r"$\Sigma J \neq 0$" in markdown
+    validation = validate_slide_markdown(markdown, 4)
+    assert {issue.code for issue in validation.errors}.isdisjoint(
+        {"display_math_unbalanced", "inline_math_unbalanced"}
+    )

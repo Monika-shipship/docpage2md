@@ -169,14 +169,18 @@ python docpage2md.py --engine-mode hybrid --model-profile cheap --input-file ".\
 - `python docpage2md.py --help`: passed.
 - `python -m docpage2md_app --help`: passed.
 - `python docpage2md.py --version`: passed.
-- `python -m pytest -q`: 369 passed.
+- `python -m pytest -q`: 370 passed.
 - `python scripts\build_windows_exe.py --dry-run`: passed.
 - `python scripts\build_windows_exe.py --distpath %TEMP%\docpage2md_dist_...`: passed; frozen `--docpage2md-cli --version` smoke passed, one-dir size about 68.5 MB after excluding dev/Notebook packages.
 - `git diff --check`: passed, with only CRLF conversion warnings.
 - GUI construction smoke passed: `DocPage2MdGui()` can construct, update idle tasks and destroy cleanly after the input table/provider/cost redesign.
-- Live `dual_hybrid` upload validation for a private 122-page PDF page range `1-20` was explicitly approved by the user, but the execution approval policy rejected the command because it would upload private workspace content to external MinerU/PaddleOCR/model APIs. Do not work around this restriction.
+- Live `dual_hybrid` upload validation for `tests/热统笔记.pdf` now requires explicit user approval because it uploads private pages to MinerU/PaddleOCR/model APIs. After approval on 2026-06-26, real validation ran successfully:
+  - `markdown_output/live_dual_range_verify_20260626/热统笔记_p001_020_dual_live`: page range `1-20`, single selected chunk, `status=ok`, `pages=20`.
+  - `markdown_output/live_dual_chunk_verify_20260626/热统笔记_p001_020_dual_chunk_live`: page range `1-20`, forced chunk size `10`, real chunks `1-10` and `11-20`; final merge produced 20 slides and FULL Markdown, cleaned temporary chunk dirs, and exposed a generic figure-details math delimiter bug on page 4.
+  - `markdown_output/live_dual_page4_fix_verify_20260626/热统笔记_p001_005_page4_fix`: page range `1-5` after renderer/formula fix, `status=ok`, `pages_failed=0`, `fail_open_pages=0`.
 - Safe local validation for the same 122-page PDF passed: page count was readable, `--page-ranges 1-20` produced a single selected chunk `1-20`, and all-pages dual planning produced `1-100`, `101-122`; this proves the local range/chunk planning no longer rejects a short selected range from a long PDF.
 - Pseudo long-document acceptance is covered by `test_cli_run_chunked_dual_pdf_pseudo_long_document_merge`: a 10-page fixture is forced into two 5-page chunks, fake MinerU/PaddleOCR artifacts are returned for each chunk, and the real `_run_chunked_dual_pdf()` path verifies slide renumbering, FULL merge, `dual_parser.chunks`, `chunked_merge`, asset rewriting and slim-mode chunk cleanup without uploading private documents.
+- Figure details renderer now repairs adjacent inline math delimiters such as `$\\Sigma$$J \\neq 0$` before writing `<details>`, preventing false `display_math_unbalanced` / `inline_math_unbalanced` fail-open pages.
 - `python -m pytest tests/test_cli.py tests/test_gui.py tests/test_hybrid_enrichment.py tests/test_mineru_pipeline.py tests/test_files_and_session.py tests/test_run_logger.py -q`: 41 passed during GUI/log/performance work.
 - `python -m pytest tests/test_paddleocr_client.py tests/test_paddleocr_adapter.py tests/test_paddleocr_pipeline.py tests/test_official_catalog.py tests/test_cli.py -q`: 30 passed during PaddleOCR hardening work.
 - PaddleOCR offline tests cover adapter, bad JSONL/empty pages, client fake HTTP, pending/running/done states, 429/503/504 retry, result download retry, pipeline rendering and chunk merge.

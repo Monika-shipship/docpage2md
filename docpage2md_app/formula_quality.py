@@ -27,6 +27,9 @@ _MATH_SPAN_RE = re.compile(
     r"|\\\[(?P<bracket>.*?)\\\]",
     flags=re.DOTALL,
 )
+_ADJACENT_INLINE_MATH_SPAN_RE = re.compile(
+    r"(?<!\\)(?<!\$)\$(?!\$)(?P<left>[^$\n]+?)(?<!\\)\$(?P<gap>[ \t]*)\$(?!\$)(?P<right>[^$\n]+?)(?<!\\)\$(?!\$)"
+)
 _LATEX_DISPLAY_ENV_RE = re.compile(
     r"\\begin\{(?:aligned|alignedat|align\*?|split|gathered|gather\*?|bmatrix|pmatrix|matrix|array|cases|smallmatrix)\}",
     flags=re.DOTALL,
@@ -553,7 +556,33 @@ def _normalize_inline_math_segment(text: str) -> str:
 
 def _normalize_inline_math_piece(text: str) -> str:
     normalized_math = _MATH_SPAN_RE.sub(_normalize_math_delimited_match, text)
-    return _wrap_bare_unicode_math_fragments(normalized_math)
+    merged_math = _merge_adjacent_inline_math_spans(normalized_math)
+    return _wrap_bare_unicode_math_fragments(merged_math)
+
+
+def _merge_adjacent_inline_math_spans(text: str) -> str:
+    """Repair OCR/LLM artifacts like ``$\\Sigma$$J \\neq 0$``.
+
+    Adjacent inline math delimiters are almost always accidental in generated
+    prose and make the final Markdown fail validation. Keep the rule narrow:
+    only merge spans that touch directly, or have horizontal spaces only,
+    without crossing line boundaries or display math.
+    """
+    if "$$" not in (text or ""):
+        return text
+    previous = None
+    current = text
+    while previous != current:
+        previous = current
+        current = _ADJACENT_INLINE_MATH_SPAN_RE.sub(_merge_adjacent_inline_math_match, current)
+    return current
+
+
+def _merge_adjacent_inline_math_match(match: re.Match) -> str:
+    left = match.group("left").strip()
+    right = match.group("right").strip()
+    merged = normalize_formula_text(f"{left} {right}")
+    return f"${merged}$"
 
 
 def _normalize_math_delimited_match(match: re.Match) -> str:

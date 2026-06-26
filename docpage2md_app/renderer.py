@@ -295,9 +295,15 @@ def _detail_items(value: Any) -> list[str]:
 
 
 def _render_collapsible_details(summary: str, lines: list[str]) -> str:
-    body = "\n".join(lines).strip()
+    body = "\n".join(_normalize_detail_line(line) for line in lines).strip()
     indented_body = "\n".join(f"    {line}" if line else "" for line in body.splitlines())
     return f"<details>\n{indented_body}\n<summary>{summary}</summary>\n\n</details>"
+
+
+def _normalize_detail_line(line: Any) -> str:
+    raw = str(line)
+    leading = re.match(r"^\s*", raw).group(0)
+    return f"{leading}{_normalize_user_text(raw.strip()).strip()}"
 
 
 def _remove_adjacent_duplicate_prefix(previous: str, current: str) -> str:

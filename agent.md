@@ -201,6 +201,11 @@ Latest dual engine real verification:
   - Brain context windows recorded radius `2` with actual context page counts `3/4/5`.
   - Final Markdown scan found no `[mineru]` / `[paddleocr]`, Traceback, reasoning text, validator text or `<details open>`.
   - Runtime about `96.8s`: crop Vision 48 blocks about `34.2s`; Brain 11 pages about `61.2s`. The latest bottleneck was Vision/Brain provider long-tail latency, not missing thread parallelism.
+- Live `dual_hybrid` validation on `tests/热统笔记.pdf` after explicit user approval:
+  - `markdown_output/live_dual_range_verify_20260626/热统笔记_p001_020_dual_live`: real page range `1-20`, single selected chunk, `status=ok`, 20 slides.
+  - `markdown_output/live_dual_chunk_verify_20260626/热统笔记_p001_020_dual_chunk_live`: real forced chunks `1-10` and `11-20`, final merge produced 20 slides and FULL Markdown, and slim retention cleaned temporary chunk dirs. This run exposed a generic figure-details math delimiter bug on page 4.
+  - Renderer/formula fix: adjacent inline math in generated details, e.g. `$\\Sigma$$J \\neq 0$`, is merged before validation; final details remain default closed.
+  - `markdown_output/live_dual_page4_fix_verify_20260626/热统笔记_p001_005_page4_fix`: real page range `1-5` after the fix, `status=ok`, `pages_failed=0`, `fail_open_pages=0`.
 
 ## Logging
 
