@@ -279,6 +279,7 @@ def assess_formula_text(text: str) -> FormulaQualityResult:
 def normalize_formula_text(text: str) -> str:
     stripped = (text or "").strip()
     stripped = _strip_outer_formula_delimiters(stripped)
+    stripped = _strip_nested_inline_math_delimiters(stripped)
     stripped = normalize_common_ocr_formula_artifacts(stripped)
     stripped = normalize_unicode_math_symbols(stripped)
     stripped = _normalize_alignment_environments(stripped)
@@ -412,6 +413,34 @@ def normalize_inline_math_text(text: str) -> str:
     return normalize_markdown_formula_blocks(text)
 
 
+def unwrap_latex_text_commands_outside_math(text: str) -> str:
+    """Render plain ``\text{...}`` wrappers as text outside math regions."""
+    if not text:
+        return ""
+    parts = _CODE_FENCE_RE.split(text)
+    fences = _CODE_FENCE_RE.findall(text)
+    rendered = []
+    for index, part in enumerate(parts):
+        rendered.append(_unwrap_latex_text_commands_segment(part))
+        if index < len(fences):
+            rendered.append(fences[index])
+    return "".join(rendered)
+
+
+def wrap_bare_latex_math_fragments_outside_math(text: str) -> str:
+    """Wrap bare LaTeX command fragments in inline math outside math/code regions."""
+    if not text or "\\" not in text:
+        return text or ""
+    parts = _CODE_FENCE_RE.split(text)
+    fences = _CODE_FENCE_RE.findall(text)
+    rendered = []
+    for index, part in enumerate(parts):
+        rendered.append(_wrap_bare_latex_math_segment(part))
+        if index < len(fences):
+            rendered.append(fences[index])
+    return "".join(rendered)
+
+
 def strip_math_and_code_regions(text: str) -> str:
     if not text:
         return ""
@@ -440,6 +469,121 @@ def _strip_outer_formula_delimiters(text: str) -> str:
             stripped = stripped[2:-2].strip()
             changed = True
     return stripped
+
+
+def _strip_nested_inline_math_delimiters(text: str) -> str:
+    """Remove accidental inline ``$`` delimiters inside formula text."""
+    if not text or "$" not in text:
+        return text
+    if _looks_like_prose_with_inline_math(text):
+        return text
+    return re.sub(r"(?<!\\)(?<!\$)\$(?!\$)", "", text)
+
+
+def _looks_like_prose_with_inline_math(text: str) -> bool:
+    plain = re.sub(r"(?<!\\)(?<!\$)\$(?!\$).*?(?<!\\)(?<!\$)\$(?!\$)", "", text, flags=re.DOTALL)
+    plain = re.sub(r"[\s，,。.;；！!？?（）()、]+", "", plain)
+    if not plain:
+        return False
+    if re.fullmatch(r"[\u4e00-\u9fff]{1,8}[：:]", plain):
+        return False
+    chinese_count = len(re.findall(r"[\u4e00-\u9fff]", plain))
+    return chinese_count >= 3
+
+
+def _unwrap_latex_text_commands_segment(text: str) -> str:
+    pieces = _CODE_SPAN_RE.split(text)
+    code_spans = _CODE_SPAN_RE.findall(text)
+    rendered = []
+    for index, piece in enumerate(pieces):
+        rendered.append(_unwrap_latex_text_commands_non_code(piece))
+        if index < len(code_spans):
+            rendered.append(code_spans[index])
+    return "".join(rendered)
+
+
+def _unwrap_latex_text_commands_non_code(text: str) -> str:
+    rendered = []
+    cursor = 0
+    for match in _MATH_SPAN_RE.finditer(text):
+        rendered.append(_unwrap_plain_latex_text_commands(text[cursor : match.start()]))
+        rendered.append(match.group(0))
+        cursor = match.end()
+    rendered.append(_unwrap_plain_latex_text_commands(text[cursor:]))
+    return "".join(rendered)
+
+
+def _wrap_bare_latex_math_segment(text: str) -> str:
+    pieces = _CODE_SPAN_RE.split(text)
+    code_spans = _CODE_SPAN_RE.findall(text)
+    rendered = []
+    for index, piece in enumerate(pieces):
+        rendered.append(_wrap_bare_latex_math_non_code(piece))
+        if index < len(code_spans):
+            rendered.append(code_spans[index])
+    return "".join(rendered)
+
+
+def _wrap_bare_latex_math_non_code(text: str) -> str:
+    rendered = []
+    cursor = 0
+    for match in _MATH_SPAN_RE.finditer(text):
+        rendered.append(_wrap_plain_latex_math_fragments(text[cursor : match.start()]))
+        rendered.append(match.group(0))
+        cursor = match.end()
+    rendered.append(_wrap_plain_latex_math_fragments(text[cursor:]))
+    return "".join(rendered)
+
+
+def _unwrap_plain_latex_text_commands(text: str) -> str:
+    previous = None
+    current = text
+    while previous != current:
+        previous = current
+        current = re.sub(r"\\text\s*\{([^{}\n]{1,300})\}", lambda match: match.group(1), current)
+    return current
+
+
+def _wrap_plain_latex_math_fragments(text: str) -> str:
+    pattern = re.compile(
+        r"(?<![$\\])"
+        r"(?P<expr>"
+        r"\\[A-Za-z]+"
+        r"(?:\\[A-Za-z]+|\\[,;:! ]|[A-Za-z0-9_{}^=+\-*/<>\[\]().,| \t]){0,240}"
+        r")"
+    )
+    return pattern.sub(_wrap_plain_latex_math_match, text)
+
+
+def _wrap_plain_latex_math_match(match: re.Match) -> str:
+    expr = match.group("expr")
+    if not _looks_like_bare_latex_math_fragment(expr):
+        return expr
+    leading = expr[: len(expr) - len(expr.lstrip())]
+    trailing = expr[len(expr.rstrip()) :]
+    core = expr.strip()
+    suffix = ""
+    while core.endswith((".", "。", "，", "；", ";")):
+        suffix = core[-1] + suffix
+        core = core[:-1].rstrip()
+    if not core:
+        return expr
+    return f"{leading}${normalize_formula_text(core)}${suffix}{trailing}"
+
+
+def _looks_like_bare_latex_math_fragment(text: str) -> bool:
+    value = (text or "").strip()
+    if not value or "$" in value:
+        return False
+    if re.match(r"^\\text\s*\{", value):
+        return False
+    if len(value) > 260 or value.count("\\") > 24:
+        return False
+    if not re.search(r"\\[A-Za-z]+", value):
+        return False
+    if re.search(r"[\u4e00-\u9fff]", value):
+        return False
+    return bool(re.search(r"[=+\-*/^_{}()[\],<>|]|\\(?:Psi|Phi|Delta|Sigma|Omega|alpha|beta|gamma|delta|theta|phi|psi|omega|langle|rangle|hat|frac|sum|int|partial|nabla|overrightarrow)\b", value))
 
 
 def _normalize_alignment_environments(text: str) -> str:
@@ -537,10 +681,22 @@ def _normalize_markdown_formula_segment(markdown: str) -> str:
 
 def _normalize_display_match(match: re.Match) -> str:
     original = match.group(1)
+    if _display_match_looks_like_adjacent_inline_artifact(match):
+        return match.group(0)
     normalized = normalize_formula_text(original)
     if normalized == original.strip():
         return match.group(0)
     return _format_display_math(normalized)
+
+
+def _display_match_looks_like_adjacent_inline_artifact(match: re.Match) -> bool:
+    original = match.group(1)
+    if not re.search(r"(?<!\\)(?<!\$)\$(?!\$)", original):
+        return False
+    text = match.string
+    before = text[match.start() - 1] if match.start() > 0 else "\n"
+    after = text[match.end()] if match.end() < len(text) else "\n"
+    return before not in "\r\n" or after not in "\r\n"
 
 
 def _normalize_inline_math_segment(text: str) -> str:

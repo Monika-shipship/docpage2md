@@ -197,12 +197,13 @@ BRAIN_CONTEXT_RADIUS_LABELS = {
 }
 BRAIN_CONTEXT_RADIUS_LABEL_TO_KEY = {label: key for key, label in BRAIN_CONTEXT_RADIUS_LABELS.items()}
 BRAIN_OP_REVIEW_MODE_LABELS = {
+    "handwritten": "手写宽松：适合手写笔记/扫描件",
     "aggressive": "激进：尽量救回正确修改（推荐）",
     "standard": "标准：适度修复定位",
     "conservative": "保守：严格按模型字段审核",
 }
 BRAIN_OP_REVIEW_MODE_LABEL_TO_KEY = {label: key for key, label in BRAIN_OP_REVIEW_MODE_LABELS.items()}
-BRAIN_OP_REVIEW_MODE_LABEL_TO_KEY.update({"激进": "aggressive", "标准": "standard", "保守": "conservative"})
+BRAIN_OP_REVIEW_MODE_LABEL_TO_KEY.update({"手写宽松": "handwritten", "激进": "aggressive", "标准": "standard", "保守": "conservative"})
 
 SOURCE_LABELS = {
     "input_file": "本地单个文件",
@@ -2737,6 +2738,7 @@ class DocPage2MdGui:
             ),
             "brain_op_review": (
                 "Brain 审核模式决定本地是否主动救回格式不完整但证据充分的修改。\n\n"
+                "手写宽松：适合手写笔记/扫描件。允许更大的 OCR 噪声修复和上下文推断，但仍必须唯一定位 block/span 且不引入硬错误。\n"
                 "激进（推荐）：会从 finding 继承缺失字段，尝试唯一定位 old_text；低置信短 span 只要唯一命中且不引入硬错误也可落地。\n"
                 "标准：只做较保守的元数据补全和精确定位修复。\n"
                 "保守：严格要求 Brain 给齐字段并精确命中，误改风险最低，但正确修改更容易被拒绝。\n\n"

@@ -178,6 +178,17 @@ def test_markdown_formula_normalization_merges_multiline_adjacent_inline_math():
     assert normalized.count("$\\Sigma J \\neq 0$") == 2
 
 
+def test_markdown_formula_normalization_removes_nested_inline_delimiters_in_display_math():
+    markdown = "# Slide 3\n\n$$\n要求： $\\left\\{ A = B \\right.$\n$$\n"
+
+    normalized = normalize_markdown_formula_blocks(markdown)
+
+    assert "$\\left" not in normalized
+    assert "\\right.$" not in normalized
+    assert "要求： \\left\\{ A = B \\right." in normalized
+    assert normalized.count("$$") == 2
+
+
 def test_formula_quality_converts_align_and_trailing_quad_number_to_aligned_tag():
     source = (
         "\\begin{align}\n"

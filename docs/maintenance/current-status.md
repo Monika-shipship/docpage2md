@@ -1,6 +1,6 @@
 # DocPage2MD Current Status
 
-Last updated: 2026-06-28
+Last updated: 2026-06-29
 
 ## Project Identity
 
@@ -9,7 +9,7 @@ Last updated: 2026-06-28
 - GUI entrypoints: `python docpage2md_gui.py`, `python -m docpage2md_app.gui`
 - Importable package: `docpage2md_app`
 - Main branch under active work: `main`
-- App version: `0.2.1`
+- App version: `0.2.2`
 - Legacy image-folder input directory: `doc_pages/`
 - Optional local private input directory: `input_docs/`
 - Primary output directory: `markdown_output/`
@@ -50,6 +50,7 @@ Current GUI details:
 - The run tab exposes `Brain 模式`: default fast mode disables model thinking for Brain JSON ops; high-quality mode can enable thinking for difficult pages.
 - The run tab exposes `Brain 上下文`: default radius `2` reads the current page plus two pages on each side; users can choose current-page-only or larger windows. CLI uses `--brain-context-radius`.
 - The run tab exposes `Vision 裁剪`: default `自动扩边（推荐）` recrops formula/table/figure blocks from page images or the source PDF before Vision, falling back to parser crops when recrop is unavailable. `手写公式增强` uses wider padding for handwritten formulas.
+- Brain op review modes are `conservative`, `standard`, `aggressive`, and `handwritten`; `handwritten_notes` uses the handwritten effective mode unless the user selects a more conservative mode.
 - Official model/price refresh is available through CLI and GUI background refresh, with provider-aware diff summary and local fallback. DashScope refresh keeps the broad official catalog but filters obvious documentation slug artifacts; GUI role binding then narrows Vision/Brain candidates by capability metadata.
 - Windows one-dir packaging is prepared through `python scripts\build_windows_exe.py`. The script builds `dist/DocPage2MD/DocPage2MD.exe` on a fresh build, falls back to a timestamped `dist/DocPage2MD_.../DocPage2MD.exe` when the default output already exists, keeps PyInstaller work/spec caches in `%TEMP%\docpage2md_pyinstaller`, smokes the frozen CLI marker, excludes dev/Notebook packages, and refuses release artifacts containing local secrets, private input/output folders or tests.
 

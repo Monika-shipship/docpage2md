@@ -145,7 +145,7 @@ def parse_args(argv=None):
         "--brain-op-review-mode",
         choices=list(BRAIN_OP_REVIEW_MODES),
         default=AppConfig().brain_op_review_mode,
-        help="Brain op 本地审核策略：conservative=保守，standard=标准，aggressive=更主动修复定位和元数据",
+        help="Brain op 本地审核策略：conservative=保守，standard=标准，aggressive=主动修复，handwritten=手写/扫描件宽松审核",
     )
     parser.add_argument(
         "--brain-thinking",

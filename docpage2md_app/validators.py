@@ -151,8 +151,11 @@ def validate_slide_markdown(
     code_free = _strip_code_regions(text)
     if code_free.count("$$") % 2:
         errors.append(_issue("display_math_unbalanced", "error", "行间公式 $$ 分隔符数量不成对。", slide_no))
+    errors.extend(_nested_math_delimiter_errors(code_free, slide_no))
     errors.extend(_formula_delimiter_errors(code_free, slide_no))
     errors.extend(_naked_latex_environment_errors(code_free, slide_no))
+    errors.extend(_latex_text_command_outside_math_errors(code_free, slide_no))
+    errors.extend(_bare_latex_math_outside_math_errors(code_free, slide_no))
     errors.extend(_structured_payload_leak_errors(text, slide_no))
     errors.extend(_formula_quality_errors(code_free, slide_no))
     warnings.extend(_formula_quality_warnings(code_free, slide_no))
@@ -256,6 +259,24 @@ def _formula_delimiter_errors(text: str, slide_no: int) -> list[ValidationIssue]
     return []
 
 
+def _nested_math_delimiter_errors(text: str, slide_no: int) -> list[ValidationIssue]:
+    errors = []
+    for match in re.finditer(r"\$\$(.*?)\$\$", text, flags=re.DOTALL):
+        segment = match.group(1)
+        if re.search(r"(?<!\\)(?<!\$)\$(?!\$)", segment):
+            errors.append(
+                _issue(
+                    "nested_inline_math_in_display_math",
+                    "error",
+                    "行间公式 $$...$$ 内不能再嵌套行内公式 $...$。",
+                    slide_no,
+                    _formula_preview(segment, 160),
+                )
+            )
+            break
+    return errors
+
+
 def _naked_latex_environment_errors(text: str, slide_no: int) -> list[ValidationIssue]:
     plain = strip_math_and_code_regions(text)
     if not looks_like_latex_display(plain):
@@ -268,6 +289,41 @@ def _naked_latex_environment_errors(text: str, slide_no: int) -> list[Validation
             "最终 Markdown 含裸 LaTeX 环境，应放入 $$...$$ 行间公式。",
             slide_no,
             _formula_preview(evidence, 160),
+        )
+    ]
+
+
+def _latex_text_command_outside_math_errors(text: str, slide_no: int) -> list[ValidationIssue]:
+    plain = strip_math_and_code_regions(text)
+    match = re.search(r"\\text\s*\{([^{}\n]{1,300})\}", plain)
+    if not match:
+        return []
+    return [
+        _issue(
+            "latex_text_command_outside_math",
+            "error",
+            "普通正文中不应保留 \\text{...} 包装，应渲染为正常文字。",
+            slide_no,
+            _formula_preview(match.group(0), 160),
+        )
+    ]
+
+
+def _bare_latex_math_outside_math_errors(text: str, slide_no: int) -> list[ValidationIssue]:
+    plain = strip_math_and_code_regions(text)
+    match = re.search(
+        r"\\(?:Psi|Phi|Delta|Sigma|Omega|alpha|beta|gamma|delta|theta|phi|psi|omega|langle|rangle|hat|frac|sum|int|partial|nabla|overrightarrow)\b",
+        plain,
+    )
+    if not match:
+        return []
+    return [
+        _issue(
+            "bare_latex_math_outside_math",
+            "error",
+            "普通正文中含裸 LaTeX 数学命令，应包入 $...$ 或 $$...$$。",
+            slide_no,
+            _formula_preview(_first_matching_line(plain, r"\\[A-Za-z]+") or match.group(0), 160),
         )
     ]
 

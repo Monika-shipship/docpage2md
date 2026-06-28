@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-06-29 - v0.2.2
+
+### Added
+
+- 新增 Brain op 审核档位 `handwritten`，用于手写笔记/扫描件等高噪声 OCR 场景。
+- `document_type=handwritten_notes` 且未选择更保守审核模式时，Brain op 使用手写宽松有效审核策略。
+
+### Fixed
+
+- 手写宽松模式可救回可唯一定位、validator-safe 的“短乱码 OCR -> 较长术语/公式/正文”修正，同时仍拒绝整页重写、API 错误、Traceback、模型思考和危险膨胀文本。
+- Validator 新增硬错误拦截 display math 内嵌 `$...$`、普通正文裸 `\text{...}` 等会导致 Typora 渲染失败的 Markdown/LaTeX 格式。
+- Renderer 和公式归一化会重新清洗已包 `$$...$$` 的 formula block，避免嵌套数学环境、JSON payload 或普通文本 `\text{...}` 泄漏到最终 Markdown。
+
+### Verified
+
+- `python -m pytest -q`：419 passed。
+- `python docpage2md.py --help`、`python docpage2md.py --version` 和 `python -m docpage2md_app --help` 通过。
+- 真实 API 验收：`量三笔记.pdf` 第 `5-15` 页，`dual_hybrid` + `handwritten_notes`，11 页完成，Brain 有效审核模式为 `handwritten`。
+- 基于真实 IR 重渲染后的 Markdown validator 无硬错误，未发现 `[mineru]` / `[paddleocr]`、Traceback、JSON payload、模型思考标签或 display math 嵌套 inline math。
+
 ## 2026-06-28 - v0.2.1
 
 ### Fixed

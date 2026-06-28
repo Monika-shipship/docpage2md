@@ -44,6 +44,27 @@ def test_unbalanced_inline_math_is_error():
     assert {issue.code for issue in result.errors} == {"inline_math_unbalanced"}
 
 
+def test_nested_inline_math_inside_display_math_is_error():
+    result = validate_slide_markdown("# Slide 3\n\n$$\n要求： $\\left\\{ A = B \\right.$\n$$\n", 3)
+
+    assert not result.ok
+    assert "nested_inline_math_in_display_math" in {issue.code for issue in result.errors}
+
+
+def test_latex_text_command_outside_math_is_error():
+    result = validate_slide_markdown("# Slide 11\n\n\\text{证：从波函数出发}\n", 11)
+
+    assert not result.ok
+    assert "latex_text_command_outside_math" in {issue.code for issue in result.errors}
+
+
+def test_bare_latex_math_command_outside_math_is_error():
+    result = validate_slide_markdown("# Slide 3\n\n结论 \\Psi(x)=\\hat{H}\\Psi(x).\n", 3)
+
+    assert not result.ok
+    assert "bare_latex_math_outside_math" in {issue.code for issue in result.errors}
+
+
 def test_formula_brace_warning_does_not_block_slide():
     result = validate_slide_markdown("# Slide 1\n\n$$\\frac{a}{b$$\n", 1)
 

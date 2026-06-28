@@ -9,6 +9,8 @@ from .formula_quality import (
     looks_like_standalone_formula,
     normalize_formula_text,
     normalize_inline_math_text,
+    unwrap_latex_text_commands_outside_math,
+    wrap_bare_latex_math_fragments_outside_math,
 )
 from .table_quality import assess_table, normalize_table_text
 
@@ -142,9 +144,7 @@ def _render_formula_block(block: Dict[str, Any], text: str) -> str:
     if _has_uncertain_marker(stripped) or _has_blocking_formula_warning(warnings):
         raw = block.get("raw_text") or block.get("text") or stripped
         return _render_uncertain_formula(block, raw, warnings if isinstance(warnings, list) else [])
-    if stripped.startswith("$$") and stripped.endswith("$$"):
-        return stripped
-    return format_display_math(stripped)
+    return format_display_math(normalize_formula_text(stripped))
 
 
 def _render_figure_note(block: Dict[str, Any]) -> str:
@@ -596,7 +596,8 @@ def _strip_known_section_heading(text: str) -> str:
 
 
 def _normalize_user_text(text: str) -> str:
-    return normalize_inline_math_text(text or "")
+    normalized = unwrap_latex_text_commands_outside_math(normalize_inline_math_text(text or ""))
+    return wrap_bare_latex_math_fragments_outside_math(normalized)
 
 
 def _has_uncertain_marker(text: str) -> bool:

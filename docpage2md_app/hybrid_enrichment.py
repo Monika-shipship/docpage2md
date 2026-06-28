@@ -783,6 +783,7 @@ def _run_brain_ops(
             new_finding_aliases,
             review_mode=review_mode,
         )
+        op["_brain_op_review_mode"] = review_mode
         policy_error = _brain_op_policy_error(op, new_finding_aliases=new_finding_aliases, review_mode=review_mode)
         if policy_error:
             rejected += 1
@@ -855,7 +856,12 @@ def _run_brain_ops(
 
 def _brain_op_review_mode(config: AppConfig) -> str:
     mode = str(getattr(config, "brain_op_review_mode", "aggressive") or "aggressive").strip().lower()
-    return mode if mode in {"conservative", "standard", "aggressive"} else "aggressive"
+    if mode not in {"conservative", "standard", "aggressive", "handwritten"}:
+        mode = "aggressive"
+    document_type = str(getattr(config, "document_type", "") or "").strip().lower()
+    if document_type == "handwritten_notes" and mode == "aggressive":
+        return "handwritten"
+    return mode
 
 
 def _ordered_brain_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -916,12 +922,12 @@ def _repair_brain_op(
                 actions.append("repair_unknown_new_finding_id")
 
     if not str(repaired.get("id") or "").strip():
-        block_id = _unique_block_id_for_op(page_ir, repaired)
+        block_id = _unique_block_id_for_op(page_ir, repaired, review_mode=review_mode)
         if block_id:
             repaired["id"] = block_id
             actions.append("resolve_target_block_by_text")
     elif _find_block_by_id(page_ir, repaired.get("id")) is None:
-        block_id = _unique_block_id_for_op(page_ir, repaired)
+        block_id = _unique_block_id_for_op(page_ir, repaired, review_mode=review_mode)
         if block_id:
             repaired["id"] = block_id
             actions.append("repair_missing_target_block")
@@ -1037,7 +1043,7 @@ def _evidence_type_from_finding(finding: dict[str, Any]) -> str:
     return "finding"
 
 
-def _unique_block_id_for_op(page_ir: dict[str, Any], op: dict[str, Any]) -> str | None:
+def _unique_block_id_for_op(page_ir: dict[str, Any], op: dict[str, Any], *, review_mode: str = "aggressive") -> str | None:
     old_text = str(op.get("old_text") or "")
     new_text = str(op.get("new_text") or "")
     candidates = []
@@ -1051,7 +1057,7 @@ def _unique_block_id_for_op(page_ir: dict[str, Any], op: dict[str, Any]) -> str 
         if new_text and any(new_text in value for _field, value in fields):
             candidates.append(str(block.get("id")))
             continue
-        if old_text and _resolve_span_in_fields(fields, old_text, review_mode="aggressive"):
+        if old_text and _resolve_span_in_fields(fields, old_text, review_mode=review_mode):
             candidates.append(str(block.get("id")))
     unique = sorted(set(candidates))
     return unique[0] if len(unique) == 1 else None
@@ -1118,12 +1124,15 @@ def _resolve_span_in_fields(fields: list[tuple[str, str]], old_text: str, *, rev
                 matches.append({"field": field, "actual_old_text": value[span[0] : span[1]], "span": list(span), "strategy": strategy, "confidence": confidence})
         if len(matches) == 1:
             return matches[0]
-    if review_mode != "aggressive":
+    if review_mode not in {"aggressive", "handwritten"}:
         return None
+    min_ratio = 0.86 if review_mode == "handwritten" else 0.92
+    min_old_len = 6 if review_mode == "handwritten" else 12
+    field_fraction = 0.20 if review_mode == "handwritten" else 0.35
     fuzzy = []
     for field, value in fields:
         ratio = SequenceMatcher(None, _math_compact_for_match(old_text), _math_compact_for_match(value), autojunk=False).ratio()
-        if ratio >= 0.92 and len(old_text) >= max(12, int(len(value) * 0.35)):
+        if ratio >= min_ratio and len(old_text) >= max(min_old_len, int(len(value) * field_fraction)):
             fuzzy.append({"field": field, "actual_old_text": value, "span": [0, len(value)], "strategy": "whole_field_fuzzy", "confidence": ratio})
     return fuzzy[0] if len(fuzzy) == 1 else None
 
@@ -1526,14 +1535,21 @@ def _brain_op_policy_error(
 
 
 def _low_confidence_replace_allowed(op: dict[str, Any], *, review_mode: str) -> bool:
-    if review_mode != "aggressive":
+    if review_mode not in {"aggressive", "handwritten"}:
         return False
     old_text = str(op.get("old_text") or "")
     new_text = str(op.get("new_text") or "")
     if not old_text or not new_text:
         return False
-    if len(old_text) > 180 or len(new_text) > len(old_text) + 120:
-        return False
+    confidence = _safe_float(op.get("confidence"), -1.0)
+    if review_mode == "aggressive":
+        if len(old_text) > 180 or len(new_text) > len(old_text) + 120:
+            return False
+    else:
+        if confidence < 0.45:
+            return False
+        if len(old_text) > 260 or len(new_text) > max(len(old_text) + 320, len(old_text) * 10, 96):
+            return False
     return str(op.get("match_strategy") or op.get("_match_strategy") or op.get("resolved_field") or "").strip() != ""
 
 

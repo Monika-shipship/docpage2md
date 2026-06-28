@@ -765,6 +765,90 @@ def test_brain_ops_reject_low_confidence_replace_in_conservative_mode():
     assert report["op_audit"][0]["reason"] == "brain_op_low_confidence_replace"
 
 
+def test_brain_ops_handwritten_mode_allows_bounded_ocr_garbage_expansion():
+    old_text = "有 shì 方程"
+    new_text = (
+        "有薛定谔方程，波函数满足时间演化关系，"
+        "其中哈密顿算符作用在态函数上，"
+        "该句来自同页上下文和相邻页术语一致性判断，"
+        "并保留为一段普通正文而不是整页 Markdown 重写，"
+        "同时不会加入模型诊断或无关解释。"
+    )
+    page = _document_ir([_block("p0001-b001", "paragraph", old_text, origin="vision_ocr")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [{"finding_id": "p0001-bf001", "page": 1, "block_id": "p0001-b001", "kind": "contextual_ocr_error"}],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "id": "p0001-b001",
+                    "old_text": old_text,
+                    "new_text": new_text,
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "evidence_type": "context",
+                    "confidence": 0.82,
+                }
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(
+        page,
+        [page],
+        AppConfig(engine_mode="hybrid", document_type="handwritten_notes"),
+        brain_backend,
+    )
+
+    assert refined["blocks"][0]["text"] == new_text
+    assert report["brain_op_review_mode"] == "handwritten"
+    assert report["ops_applied"] == 1
+
+
+def test_brain_ops_aggressive_mode_keeps_large_ocr_expansion_rejected():
+    old_text = "有 shì 方程"
+    new_text = (
+        "有薛定谔方程，波函数满足时间演化关系，"
+        "其中哈密顿算符作用在态函数上，"
+        "该句来自同页上下文和相邻页术语一致性判断，"
+        "并保留为一段普通正文而不是整页 Markdown 重写，"
+        "同时不会加入模型诊断或无关解释。"
+    )
+    page = _document_ir([_block("p0001-b001", "paragraph", old_text, origin="vision_ocr")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [{"finding_id": "p0001-bf001", "page": 1, "block_id": "p0001-b001", "kind": "contextual_ocr_error"}],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "id": "p0001-b001",
+                    "old_text": old_text,
+                    "new_text": new_text,
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "evidence_type": "context",
+                    "confidence": 0.82,
+                }
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(
+        page,
+        [page],
+        AppConfig(engine_mode="hybrid", brain_op_review_mode="aggressive"),
+        brain_backend,
+    )
+
+    assert refined["blocks"][0]["text"] == old_text
+    assert report["ops_rejected"] == 1
+    assert report["op_audit"][0]["reason"] == "replacement_growth_unsafe"
+
+
 def test_brain_ops_repair_old_text_whitespace_mismatch():
     page = _document_ir([_block("p0001-b001", "paragraph", "配 分 函 数为 Z。", origin="vision_ocr")])["pages"][0]
 

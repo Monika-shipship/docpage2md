@@ -657,6 +657,7 @@ def _apply_block_op(page_ir: Dict[str, Any], op: Dict[str, Any]) -> bool:
 def _block_no_change_reason(page_ir: Dict[str, Any], op: Dict[str, Any]) -> str | None:
     op_name = op.get("op")
     blocks = page_ir.get("blocks") or []
+    review_mode = str(op.get("_brain_op_review_mode") or op.get("brain_op_review_mode") or "").strip().lower()
     if op_name == "replace_text_span_checked":
         block = _find_block(blocks, op.get("id"))
         if not block:
@@ -669,7 +670,7 @@ def _block_no_change_reason(page_ir: Dict[str, Any], op: Dict[str, Any]) -> str 
             return "replacement_same_as_current"
         if is_api_error_text(new_text):
             return "unsafe_or_error_text"
-        if not _replacement_growth_is_safe(old_text, new_text):
+        if not _replacement_growth_is_safe(old_text, new_text, review_mode=review_mode):
             return "replacement_growth_unsafe"
         if _replace_text_span_is_too_broad(block, old_text, new_text):
             return "replacement_too_broad"
@@ -854,7 +855,8 @@ def _op_replace_text_span_checked(page_ir: Dict[str, Any], op: Dict[str, Any]) -
         return False
     if is_api_error_text(new_text):
         return False
-    if not _replacement_growth_is_safe(old_text, new_text):
+    review_mode = str(op.get("_brain_op_review_mode") or op.get("brain_op_review_mode") or "").strip().lower()
+    if not _replacement_growth_is_safe(old_text, new_text, review_mode=review_mode):
         return False
     allow_structured_formula_payload = str(op.get("_match_strategy") or op.get("match_strategy") or "") == "structured_formula_payload"
     if not allow_structured_formula_payload and _replace_text_span_is_too_broad(block, old_text, new_text):
@@ -893,12 +895,30 @@ def _op_replace_text_span_checked(page_ir: Dict[str, Any], op: Dict[str, Any]) -
     return True
 
 
-def _replacement_growth_is_safe(old_text: str, new_text: str) -> bool:
+def _replacement_growth_is_safe(old_text: str, new_text: str, *, review_mode: str = "") -> bool:
     if len(new_text) <= len(old_text) + 80:
         return True
     if len(old_text) >= 8 and len(new_text) <= len(old_text) * 4:
         return True
+    if review_mode == "handwritten":
+        return _handwritten_replacement_growth_is_safe(old_text, new_text)
     return False
+
+
+def _handwritten_replacement_growth_is_safe(old_text: str, new_text: str) -> bool:
+    old = old_text or ""
+    new = new_text or ""
+    if not old or not new:
+        return False
+    if is_api_error_text(new) or _looks_like_markdown_document(new):
+        return False
+    if len(new) > 600 or new.count("\n") > 8:
+        return False
+    if len(old) <= 2:
+        return len(new) <= 96 and new.count("\n") <= 2
+    if len(old) < 8:
+        return len(new) <= 220
+    return len(new) <= max(len(old) * 12, len(old) + 320)
 
 
 def _replace_text_span_is_too_broad(block: Dict[str, Any], old_text: str, new_text: str) -> bool:

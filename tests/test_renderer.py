@@ -77,6 +77,74 @@ def test_formula_block_json_payload_extracts_latex_without_leaking_json():
     assert "structured_payload_inside_formula" not in {issue.code for issue in validation.errors}
 
 
+def test_formula_block_with_outer_display_math_is_renormalized():
+    markdown = render_page_ir_to_markdown(
+        {
+            "source_page": 3,
+            "blocks": [
+                {
+                    "id": "p0003-b001",
+                    "type": "formula_block",
+                    "text": "$$\n要求： $\\left\\{ A = B \\right.$\n$$",
+                }
+            ],
+        },
+        3,
+    )
+
+    assert "$\\left" not in markdown
+    assert "\\right.$" not in markdown
+    assert "要求： \\left\\{ A = B \\right." in markdown
+    validation = validate_slide_markdown(markdown, 3)
+    assert "nested_inline_math_in_display_math" not in {issue.code for issue in validation.errors}
+
+
+def test_plain_latex_text_command_renders_as_normal_text():
+    markdown = render_page_ir_to_markdown(
+        {
+            "source_page": 11,
+            "blocks": [
+                {
+                    "id": "p0011-b001",
+                    "type": "paragraph",
+                    "text": "\\text{证：从波函数出发}",
+                },
+                {
+                    "id": "p0011-b002",
+                    "type": "formula_block",
+                    "text": "\\text{inside math}",
+                },
+            ],
+        },
+        11,
+    )
+
+    assert "证：从波函数出发" in markdown
+    assert "\\text{证" not in markdown
+    assert "\\text{inside math}" in markdown
+
+
+def test_bare_latex_math_in_paragraph_renders_as_inline_math():
+    markdown = render_page_ir_to_markdown(
+        {
+            "source_page": 3,
+            "blocks": [
+                {
+                    "id": "p0003-b001",
+                    "type": "paragraph",
+                    "text": "结论 \\Psi(x_{1},t)=\\hat{H}\\Psi(x_{1},t) .",
+                }
+            ],
+        },
+        3,
+    )
+
+    assert "结论 $\\Psi" in markdown
+    assert "\\hat{H}\\Psi" in markdown
+    validation = validate_slide_markdown(markdown, 3)
+    assert "bare_latex_math_outside_math" not in {issue.code for issue in validation.errors}
+
+
 def test_formula_truncated_warning_does_not_render_duplicate_image_when_latex_exists():
     markdown = render_page_ir_to_markdown(
         {
