@@ -9,7 +9,7 @@ Last updated: 2026-06-28
 - GUI entrypoints: `python docpage2md_gui.py`, `python -m docpage2md_app.gui`
 - Importable package: `docpage2md_app`
 - Main branch under active work: `main`
-- App version: `0.2.0`
+- App version: `0.2.1`
 - Legacy image-folder input directory: `doc_pages/`
 - Optional local private input directory: `input_docs/`
 - Primary output directory: `markdown_output/`
@@ -29,7 +29,7 @@ DocPage2MD has five processing modes:
 - `dual_hybrid`: MinerU and PaddleOCR both parse the same input; a fusion layer aligns pages, builds bbox/text/type candidate groups, applies checked whitelist fusion ops into `fused_document_ir.json`, then DocPage2MD runs crop Vision + Brain + checked refiner on the fused IR.
 - `vision_only`: legacy image-folder flow for page images.
 
-The Tkinter GUI is the current lightweight desktop entry. It supports local single file, multiple files, folder batch, MinerU artifact, PaddleOCR artifact and URL inputs; Chinese labels/logs; progress/ETA; cost estimate; output folder opening; Vision/Brain worker controls; and model management. The run tab is a scrollable workbench split into left-side workflow/input/output controls and right-side progress/cost/log controls.
+The Tkinter GUI is the current lightweight desktop entry. It supports local single file, multiple files, folder batch, MinerU artifact, PaddleOCR artifact and URL inputs; Chinese labels/logs; progress/ETA; cost estimate; output folder opening; Vision/Brain worker controls; and model management. The run tab is a fixed two-pane workbench: left-side configuration tabs, right-side log/cost tabs, and a bottom action bar that stays visible without whole-page vertical scrolling.
 
 Current GUI details:
 

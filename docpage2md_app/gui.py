@@ -2016,6 +2016,8 @@ class DocPage2MdGui:
         style.configure("HeaderTitle.TLabel", background="#111827", foreground="#ffffff", font=("Microsoft YaHei UI", 17, "bold"))
         style.configure("HeaderSubtle.TLabel", background="#111827", foreground="#cbd5e1", font=("Microsoft YaHei UI", 10))
         style.configure("HeaderStatus.TLabel", background="#111827", foreground="#bfdbfe", font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("ActionBar.TFrame", background="#eaf1fb", bordercolor=border, relief="solid")
+        style.configure("ActionStatus.TLabel", background="#eaf1fb", foreground=text, font=("Microsoft YaHei UI", 10, "bold"))
         style.configure("TNotebook", background=bg, borderwidth=0)
         style.configure("TNotebook.Tab", padding=(18, 9), font=("Microsoft YaHei UI", 10, "bold"))
         style.map("TNotebook.Tab", background=[("selected", panel)], foreground=[("selected", text)])
@@ -2038,116 +2040,99 @@ class DocPage2MdGui:
         ttk = self.ttk
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=0)
 
-        canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0, background=self.root.cget("background"))
-        run_scroll = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=run_scroll.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        run_scroll.grid(row=0, column=1, sticky="ns")
-
-        content = ttk.Frame(canvas)
-        content_id = canvas.create_window((0, 0), window=content, anchor="nw")
-
-        def _refresh_scroll_region(_event=None) -> None:
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def _fit_content_width(event) -> None:
-            canvas.itemconfigure(content_id, width=event.width)
-
-        def _scroll_run_tab(event) -> None:
-            widget_class = event.widget.winfo_class()
-            if widget_class in {"Text", "Treeview", "Entry", "TEntry", "TCombobox"}:
-                return
-            if event.delta:
-                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        content.bind("<Configure>", _refresh_scroll_region)
-        canvas.bind("<Configure>", _fit_content_width)
-        def _bind_run_mousewheel(_event) -> None:
-            canvas.bind_all("<MouseWheel>", _scroll_run_tab)
-
-        def _unbind_run_mousewheel(_event) -> None:
-            canvas.unbind_all("<MouseWheel>")
-
-        content.bind("<Enter>", _bind_run_mousewheel)
-        content.bind("<Leave>", _unbind_run_mousewheel)
-        self.run_canvas = canvas
-
-        content.columnconfigure(0, weight=3, minsize=540)
-        content.columnconfigure(1, weight=2, minsize=520)
+        content = ttk.Frame(parent)
+        content.grid(row=0, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=3, minsize=520)
+        content.columnconfigure(1, weight=4, minsize=560)
         content.rowconfigure(0, weight=1)
+        self.run_workspace = content
 
         left = ttk.Frame(content)
         right = ttk.Frame(content)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         right.grid(row=0, column=1, sticky="nsew")
         left.columnconfigure(0, weight=1)
+        left.rowconfigure(0, weight=1)
         right.columnconfigure(0, weight=1)
-        right.rowconfigure(2, weight=1)
+        right.rowconfigure(1, weight=1)
 
-        workflow = ttk.LabelFrame(left, text="工作流", padding=12)
-        workflow.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        left_tabs = ttk.Notebook(left)
+        left_tabs.grid(row=0, column=0, sticky="nsew")
+        config_tab = ttk.Frame(left_tabs, padding=8)
+        input_tab = ttk.Frame(left_tabs, padding=8)
+        output_tab = ttk.Frame(left_tabs, padding=8)
+        engine_tab = ttk.Frame(left_tabs, padding=8)
+        concurrency_tab = ttk.Frame(left_tabs, padding=8)
+        left_tabs.add(config_tab, text="工作流")
+        left_tabs.add(input_tab, text="输入文件")
+        left_tabs.add(output_tab, text="输出")
+        left_tabs.add(engine_tab, text="引擎高级")
+        left_tabs.add(concurrency_tab, text="并发/Brain")
+        for tab in (config_tab, input_tab, output_tab, engine_tab, concurrency_tab):
+            tab.columnconfigure(0, weight=1)
+        config_tab.rowconfigure(0, weight=0)
+        for tab in (input_tab, output_tab, engine_tab, concurrency_tab):
+            tab.rowconfigure(0, weight=1)
+
+        workflow = ttk.LabelFrame(config_tab, text="工作流", padding=12)
+        workflow.grid(row=0, column=0, sticky="new", pady=(0, 10))
+        workflow.columnconfigure(0, weight=1)
         workflow.columnconfigure(1, weight=1)
 
-        ttk.Label(workflow, text="文档类型").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Combobox(
-            workflow,
-            textvariable=self.document_type,
-            values=[item[0] for item in DOCUMENT_PRESETS.values()],
-            state="readonly",
-        ).grid(row=0, column=1, sticky="ew", pady=4)
-        self._help_button(workflow, "document_type").grid(row=0, column=2, padx=(6, 0), pady=4)
-        ttk.Label(workflow, text="解析引擎").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Combobox(
-            workflow,
-            textvariable=self.layout_engine,
-            values=[LAYOUT_ENGINE_LABELS["mineru"], LAYOUT_ENGINE_LABELS["paddleocr"], LAYOUT_ENGINE_LABELS["dual"]],
-            state="readonly",
-        ).grid(row=1, column=1, sticky="ew", pady=4)
-        self._help_button(workflow, "engine_mode").grid(row=1, column=2, padx=(6, 0), pady=4)
-        ttk.Label(workflow, text="Markdown 精修").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Combobox(
-            workflow,
-            textvariable=self.refine_mode,
-            values=[REFINE_MODE_LABELS["docpage2md"], REFINE_MODE_LABELS["none"]],
-            state="readonly",
-        ).grid(row=2, column=1, sticky="ew", pady=4)
-        self._help_button(workflow, "engine_mode").grid(row=2, column=2, padx=(6, 0), pady=4)
-        ttk.Label(workflow, text="模型档位").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Combobox(
-            workflow,
-            textvariable=self.model_profile,
-            values=[MODEL_PROFILE_LABELS[key] for key in ("cheap", "balanced", "accurate", "manual")],
-            state="readonly",
-        ).grid(row=3, column=1, sticky="ew", pady=4)
-        self._help_button(workflow, "model_profile").grid(row=3, column=2, padx=(6, 0), pady=4)
-        ttk.Label(workflow, text="MinerU 模型").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Combobox(
-            workflow,
-            textvariable=self.mineru_model_version,
-            values=["vlm", "pipeline", "MinerU-HTML"],
-            state="readonly",
-        ).grid(row=4, column=1, sticky="ew", pady=4)
-        self._help_button(workflow, "mineru_model").grid(row=4, column=2, padx=(6, 0), pady=4)
-        ttk.Label(workflow, text="PaddleOCR 模型").grid(row=5, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Combobox(
-            workflow,
-            textvariable=self.paddleocr_model,
-            values=["PaddleOCR-VL-1.6", "PaddleOCR-VL-1.5", "PaddleOCR-VL", "PP-StructureV3", "PP-OCRv5"],
-            state="readonly",
-        ).grid(row=5, column=1, sticky="ew", pady=4)
-        self._help_button(workflow, "paddleocr").grid(row=5, column=2, padx=(6, 0), pady=4)
-        ttk.Label(
+        def _workflow_field(row: int, column: int, label: str, variable, values: list[str], help_key: str) -> None:
+            cell = ttk.Frame(workflow)
+            cell.grid(row=row, column=column, sticky="ew", padx=((0, 8) if column == 0 else (8, 0)), pady=4)
+            cell.columnconfigure(0, weight=1)
+            ttk.Label(cell, text=label).grid(row=0, column=0, columnspan=2, sticky="w")
+            ttk.Combobox(cell, textvariable=variable, values=values, state="readonly").grid(row=1, column=0, sticky="ew", pady=(3, 0))
+            self._help_button(cell, help_key).grid(row=1, column=1, padx=(6, 0), pady=(3, 0))
+
+        _workflow_field(0, 0, "文档类型", self.document_type, [item[0] for item in DOCUMENT_PRESETS.values()], "document_type")
+        _workflow_field(
+            0,
+            1,
+            "解析引擎",
+            self.layout_engine,
+            [LAYOUT_ENGINE_LABELS["mineru"], LAYOUT_ENGINE_LABELS["paddleocr"], LAYOUT_ENGINE_LABELS["dual"]],
+            "engine_mode",
+        )
+        _workflow_field(1, 0, "Markdown 精修", self.refine_mode, [REFINE_MODE_LABELS["docpage2md"], REFINE_MODE_LABELS["none"]], "engine_mode")
+        _workflow_field(
+            1,
+            1,
+            "模型档位",
+            self.model_profile,
+            [MODEL_PROFILE_LABELS[key] for key in ("cheap", "balanced", "accurate", "manual")],
+            "model_profile",
+        )
+        _workflow_field(2, 0, "MinerU 模型", self.mineru_model_version, ["vlm", "pipeline", "MinerU-HTML"], "mineru_model")
+        _workflow_field(
+            2,
+            1,
+            "PaddleOCR 模型",
+            self.paddleocr_model,
+            ["PaddleOCR-VL-1.6", "PaddleOCR-VL-1.5", "PaddleOCR-VL", "PP-StructureV3", "PP-OCRv5"],
+            "paddleocr",
+        )
+        self.run_summary_label = ttk.Label(
             workflow,
             textvariable=self.run_summary_text,
             wraplength=460,
             justify="left",
-        ).grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        )
+        self.run_summary_label.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
-        source = ttk.LabelFrame(left, text="输入", padding=12)
-        source.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        def _resize_run_summary(event) -> None:
+            self.run_summary_label.configure(wraplength=max(320, event.width - 24))
+
+        workflow.bind("<Configure>", _resize_run_summary)
+
+        source = ttk.LabelFrame(input_tab, text="输入", padding=12)
+        source.grid(row=0, column=0, sticky="nsew")
         source.columnconfigure(0, weight=1)
-        source.rowconfigure(3, weight=1)
+        source.rowconfigure(2, weight=1)
         source_top = ttk.Frame(source)
         source_top.grid(row=0, column=0, sticky="ew")
         source_top.columnconfigure(1, weight=1)
@@ -2193,8 +2178,8 @@ class DocPage2MdGui:
             row=4, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
 
-        out = ttk.LabelFrame(left, text="输出与并发", padding=12)
-        out.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        out = ttk.LabelFrame(output_tab, text="输出", padding=12)
+        out.grid(row=0, column=0, sticky="nsew")
         out.columnconfigure(1, weight=1)
         ttk.Label(out, text="输出目录").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(out, textvariable=self.output_folder).grid(row=0, column=1, sticky="ew", pady=4)
@@ -2220,8 +2205,28 @@ class DocPage2MdGui:
             state="readonly",
         ).grid(row=4, column=1, sticky="ew", pady=4)
         self._help_button(out, "vision_crop").grid(row=4, column=2, padx=(8, 0), pady=4)
-        advanced_toggle = ttk.Frame(out)
-        advanced_toggle.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        ttk.Label(
+            out,
+            text="页码范围会先在本地裁剪再上传，避免大 PDF 上传整本文件。",
+            wraplength=440,
+            justify="left",
+        ).grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+
+        engine_tabs = ttk.Notebook(engine_tab)
+        engine_tabs.grid(row=0, column=0, sticky="nsew")
+        mineru_tab = ttk.Frame(engine_tabs, padding=8)
+        paddle_tab = ttk.Frame(engine_tabs, padding=8)
+        engine_tabs.add(mineru_tab, text="MinerU")
+        engine_tabs.add(paddle_tab, text="PaddleOCR")
+        for tab in (mineru_tab, paddle_tab):
+            tab.columnconfigure(0, weight=1)
+            tab.rowconfigure(0, weight=1)
+
+        mineru_box = ttk.LabelFrame(mineru_tab, text="MinerU 高级设置", padding=12)
+        mineru_box.grid(row=0, column=0, sticky="nsew")
+        mineru_box.columnconfigure(0, weight=1)
+        advanced_toggle = ttk.Frame(mineru_box)
+        advanced_toggle.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         advanced_toggle.columnconfigure(1, weight=1)
         ttk.Checkbutton(
             advanced_toggle,
@@ -2231,7 +2236,7 @@ class DocPage2MdGui:
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(advanced_toggle, text="默认已开启 OCR、公式、表格、中文。").grid(row=0, column=1, sticky="w", padx=(8, 0))
         self._help_button(advanced_toggle, "mineru_advanced").grid(row=0, column=2, padx=(6, 0))
-        self.mineru_advanced_frame = ttk.Frame(out)
+        self.mineru_advanced_frame = ttk.Frame(mineru_box)
         self.mineru_advanced_frame.columnconfigure(1, weight=1)
         ttk.Checkbutton(self.mineru_advanced_frame, text="OCR", variable=self.mineru_is_ocr).grid(row=0, column=0, sticky="w", pady=3)
         ttk.Checkbutton(self.mineru_advanced_frame, text="公式识别", variable=self.mineru_enable_formula).grid(row=0, column=1, sticky="w", pady=3)
@@ -2244,8 +2249,11 @@ class DocPage2MdGui:
         ttk.Label(self.mineru_advanced_frame, text="每段页数").grid(row=2, column=2, sticky="e", padx=(8, 4), pady=3)
         ttk.Entry(self.mineru_advanced_frame, textvariable=self.mineru_page_chunk_size, width=8).grid(row=2, column=3, sticky="w", pady=3)
 
-        paddle_toggle = ttk.Frame(out)
-        paddle_toggle.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        paddle_box = ttk.LabelFrame(paddle_tab, text="PaddleOCR 高级设置", padding=12)
+        paddle_box.grid(row=0, column=0, sticky="nsew")
+        paddle_box.columnconfigure(0, weight=1)
+        paddle_toggle = ttk.Frame(paddle_box)
+        paddle_toggle.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         paddle_toggle.columnconfigure(1, weight=1)
         ttk.Checkbutton(
             paddle_toggle,
@@ -2255,7 +2263,7 @@ class DocPage2MdGui:
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(paddle_toggle, text="默认 100 页分段，开启版面/公式/表格识别。").grid(row=0, column=1, sticky="w", padx=(8, 0))
         self._help_button(paddle_toggle, "paddleocr").grid(row=0, column=2, padx=(6, 0))
-        self.paddleocr_advanced_frame = ttk.Frame(out)
+        self.paddleocr_advanced_frame = ttk.Frame(paddle_box)
         ttk.Label(self.paddleocr_advanced_frame, text="Token 名").grid(row=0, column=0, sticky="w", pady=3)
         ttk.Entry(self.paddleocr_advanced_frame, textvariable=self.paddleocr_api_key_env, width=22).grid(row=0, column=1, sticky="w", pady=3)
         ttk.Label(self.paddleocr_advanced_frame, text="每段页数").grid(row=0, column=2, sticky="e", padx=(8, 4), pady=3)
@@ -2276,8 +2284,8 @@ class DocPage2MdGui:
         ).grid(row=3, column=1, columnspan=2, sticky="ew", pady=3)
         self._help_button(self.paddleocr_advanced_frame, "paddleocr_evidence").grid(row=3, column=3, sticky="w", padx=(6, 0), pady=3)
 
-        concurrency = ttk.LabelFrame(out, text="并发", padding=8)
-        concurrency.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        concurrency = ttk.LabelFrame(concurrency_tab, text="并发与 Brain", padding=12)
+        concurrency.grid(row=0, column=0, sticky="nsew")
         concurrency.columnconfigure(1, weight=1)
         ttk.Label(concurrency, text="档位").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Combobox(
@@ -2357,8 +2365,18 @@ class DocPage2MdGui:
         ttk.Label(progress, textvariable=self.progress_percent_label).grid(row=1, column=3, sticky="e", padx=(8, 0), pady=(6, 0))
         ttk.Label(progress, textvariable=self.progress_detail).grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
-        command = ttk.LabelFrame(right, text="成本与命令", padding=12)
-        command.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        right_tabs = ttk.Notebook(right)
+        right_tabs.grid(row=1, column=0, sticky="nsew")
+        log_tab = ttk.Frame(right_tabs, padding=0)
+        cost_tab = ttk.Frame(right_tabs, padding=0)
+        right_tabs.add(log_tab, text="运行日志")
+        right_tabs.add(cost_tab, text="成本与命令")
+        for tab in (log_tab, cost_tab):
+            tab.columnconfigure(0, weight=1)
+            tab.rowconfigure(0, weight=1)
+
+        command = ttk.LabelFrame(cost_tab, text="成本与命令", padding=12)
+        command.grid(row=0, column=0, sticky="nsew")
         command.columnconfigure(0, weight=1)
         cost_header = ttk.Frame(command)
         cost_header.grid(row=0, column=0, sticky="ew")
@@ -2446,8 +2464,8 @@ class DocPage2MdGui:
         command_x_scroll.grid(row=2, column=0, sticky="ew")
         self.command_preview_entry.configure(xscrollcommand=command_x_scroll.set)
 
-        log_frame = ttk.LabelFrame(right, text="运行日志", padding=12)
-        log_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        log_frame = ttk.LabelFrame(log_tab, text="运行日志", padding=12)
+        log_frame.grid(row=0, column=0, sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(1, weight=1)
         log_tools = ttk.Frame(log_frame)
@@ -2474,10 +2492,10 @@ class DocPage2MdGui:
         scroll.grid(row=1, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=scroll.set)
 
-        bottom = ttk.Frame(right)
-        bottom.grid(row=3, column=0, sticky="ew")
+        bottom = ttk.Frame(parent, padding=(12, 8), style="ActionBar.TFrame")
+        bottom.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         bottom.columnconfigure(0, weight=1)
-        ttk.Label(bottom, textvariable=self.status_text).grid(row=0, column=0, sticky="w")
+        ttk.Label(bottom, textvariable=self.status_text, style="ActionStatus.TLabel").grid(row=0, column=0, sticky="w")
         self.run_button = ttk.Button(bottom, text="开始处理", command=self._start_process, style="Primary.TButton")
         self.run_button.grid(row=0, column=1, padx=(8, 0))
         self.stop_button = ttk.Button(bottom, text="停止", command=self._stop_process, state="disabled", style="Danger.TButton")
@@ -2740,13 +2758,13 @@ class DocPage2MdGui:
 
     def _toggle_mineru_advanced(self) -> None:
         if self.show_mineru_advanced.get():
-            self.mineru_advanced_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 6))
+            self.mineru_advanced_frame.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         else:
             self.mineru_advanced_frame.grid_remove()
 
     def _toggle_paddleocr_advanced(self) -> None:
         if self.show_paddleocr_advanced.get():
-            self.paddleocr_advanced_frame.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(6, 6))
+            self.paddleocr_advanced_frame.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         else:
             self.paddleocr_advanced_frame.grid_remove()
 

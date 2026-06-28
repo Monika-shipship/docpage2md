@@ -9,6 +9,7 @@ from docpage2md_app import cli
 from docpage2md_app.config import AppConfig
 from docpage2md_app.files import read_json, write_json
 from docpage2md_app.input_inspection import build_page_chunks
+from docpage2md_app.versioning import DOCPAGE2MD_VERSION
 
 
 def _write_blank_pdf(path: Path, pages: int) -> None:
@@ -53,7 +54,7 @@ def test_cli_version_prints_app_and_pipeline_versions(capsys):
 
     captured = capsys.readouterr()
     assert code == 0
-    assert "DocPage2MD 0.2.0" in captured.out
+    assert f"DocPage2MD {DOCPAGE2MD_VERSION}" in captured.out
     assert "pipeline" in captured.out
 
 

@@ -749,12 +749,30 @@ def test_gui_constructs_and_destroy_cancels_after_callbacks():
     try:
         app.root.withdraw()
         app.root.update_idletasks()
-        assert app.run_canvas.winfo_exists()
+        assert app.run_workspace.winfo_exists()
+        assert app.run_button.winfo_exists()
         assert app.command_preview_entry.cget("xscrollcommand")
         assert app.cost_tree.cget("xscrollcommand")
     finally:
         app.destroy()
     assert app._drain_after_id is None
+
+
+def test_gui_run_action_bar_stays_visible_at_minimum_size():
+    try:
+        app = DocPage2MdGui()
+    except Exception as exc:
+        if exc.__class__.__name__ == "TclError":
+            pytest.skip(f"Tkinter display unavailable: {exc}")
+        raise
+    try:
+        app.root.geometry("1120x760+40+40")
+        app.root.update_idletasks()
+        root_bottom = app.root.winfo_rooty() + app.root.winfo_height()
+        button_bottom = app.run_button.winfo_rooty() + app.run_button.winfo_height()
+        assert button_bottom <= root_bottom
+    finally:
+        app.destroy()
 
 
 def test_gui_page_range_typing_defers_input_table_refresh(monkeypatch):
