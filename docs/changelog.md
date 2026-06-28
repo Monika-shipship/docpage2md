@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-06-28 - v0.2.0
+
+### Added
+
+- Vision expanded crop / recrop：
+  - CLI 增加 `--vision-crop-mode original|expanded|auto`、`--vision-crop-dpi`、`--vision-crop-padding-profile`、`--vision-crop-retry`。
+  - GUI 增加“Vision 裁剪”三档：原始裁剪、自动扩边（推荐）、手写公式增强。
+  - Crop Vision 现在可从 `page_image_ref` 或原 PDF 渲染页图后按 bbox 重裁并扩边；失败时回退原始 crop。
+  - 公式 Vision 出现空结果、JSON payload 或明显截断时会用 400 dpi / aggressive padding 重试一次。
+- GUI 视觉整理：
+  - 新增顶部版本栏、统一浅色工作台背景、表格行高、主按钮/停止按钮样式和深色运行日志区域。
+  - 运行摘要会显示当前 Vision 裁剪策略。
+- 发布依赖更新：
+  - 新增 `PyMuPDF` 作为 PDF 页图渲染主后端；`pdf2image` 仍为可选 fallback。
+
+### Fixed
+
+- 修复本地 PDF 物理裁剪后又向 MinerU/PaddleOCR 传原始 `page_ranges` 的重复应用问题。
+- 改进 Brain op 本地审核准确性：支持 Brain discovered finding alias、op repair/resolve、validator delta 和更可读的 rejected op audit preview。
+- 改进公式/图示渲染安全性：避免 Vision JSON payload 泄漏到公式 Markdown，拦截双引擎候选标签残留和重复/孤立公式问题。
+- 修复 `dual_hybrid` 长 PDF / 部分页码场景的自动分段合并，保持 MinerU 与 PaddleOCR 同段并发提交。
+
+### Verified
+
+- `python -m pytest -q`：409 passed。
+- `python docpage2md.py --help` 和 `python -m docpage2md_app --help` 通过。
+- `git diff --check` 通过，仅有 Windows LF/CRLF 提示。
+
 ## 2026-06-26
 
 ### Added

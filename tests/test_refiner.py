@@ -157,6 +157,9 @@ def test_apply_block_op_checked_replaces_text_span_with_brain_audit():
     assert refined["blocks"][0]["evidence"]["brain_op"] == "replace_text_span_checked"
     assert detail["before_text_sha256"]
     assert detail["after_text_sha256"]
+    assert detail["validator_delta"]["new_error_codes"] == []
+    assert detail["validator_delta"]["before_error_count"] == 0
+    assert detail["validator_delta"]["after_error_count"] == 0
 
 
 def test_apply_block_op_checked_rejects_unsafe_large_text_growth():

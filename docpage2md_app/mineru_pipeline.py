@@ -87,6 +87,11 @@ def process_mineru_artifact_task(
     report["contextual_ocr_corrections"] = contextual_corrections
     ok_slides = []
     final_pages = document_ir.get("pages") or []
+    rendered_pages = {
+        int(page.get("source_page") or 0): render_page_ir_to_markdown(page, int(page.get("source_page") or 0))
+        for page in final_pages
+        if int(page.get("source_page") or 0) > 0
+    }
     render_started = time.monotonic()
     for page_index, page_ir in enumerate(final_pages, start=1):
         slide_no = int(page_ir.get("source_page") or 0)
@@ -96,12 +101,17 @@ def process_mineru_artifact_task(
             progress,
             f"Rendering page {page_index}/{len(final_pages)}: slide={slide_no}, blocks={len(page_ir.get('blocks') or [])}",
         )
-        markdown = render_page_ir_to_markdown(page_ir, slide_no)
+        markdown = rendered_pages.get(slide_no) or render_page_ir_to_markdown(page_ir, slide_no)
         validation = validate_slide_markdown(
             markdown,
             slide_no,
             target_raw=page_ir.get("raw_text"),
             target_blocks=page_ir.get("blocks") or [],
+            neighbor_markdown={
+                page_no: rendered_pages[page_no]
+                for page_no in (slide_no - 1, slide_no + 1)
+                if page_no in rendered_pages
+            },
         )
         status = "ok" if validation.ok else "fail_open"
         slide_path = output_root / f"Slide_{slide_no:02d}.md"

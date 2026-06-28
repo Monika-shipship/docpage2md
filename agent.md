@@ -1,6 +1,6 @@
 # DocPage2MD Agent Notes
 
-Last updated: 2026-06-26
+Last updated: 2026-06-28
 
 ## Current Goal
 
@@ -117,6 +117,7 @@ Current GUI exposes concurrency presets:
 - `自定义`
 
 GUI also exposes parser/document workers separately from Vision/Brain workers. Presets intentionally affect only Vision/Brain so parser scheduling is not changed implicitly during A/B runs.
+GUI exposes Vision crop strategy: `原始裁剪`, `自动扩边（推荐）`, and `手写公式增强`. Default auto recrops eligible formula/table/figure blocks from page images or the source PDF before crop Vision, writes crop audit into reports, and cleans `.vision_crop_cache/` unless retention is `debug`.
 
 The processor logs Brain per-page elapsed time plus p50/p90/max and a long-tail warning. If a real run is slow with no 429/retry, first compare the same PDF with Brain workers `60`, `12`, `6` and `3` before changing the core pipeline.
 New Brain logs include actual worker count, configured worker limit and fast/high-quality thinking mode, so `actual=11, limit=60` on an 11-page PDF is expected and does not mean parallelism was removed.

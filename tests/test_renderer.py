@@ -43,6 +43,67 @@ def test_formula_inline_spaced_operator_artifacts_render_as_display_math():
     assert "d e t" not in markdown
 
 
+def test_formula_block_json_payload_extracts_latex_without_leaking_json():
+    markdown = render_page_ir_to_markdown(
+        {
+            "source_page": 12,
+            "blocks": [
+                {
+                    "id": "p0012-b001",
+                    "type": "formula_block",
+                    "text": (
+                        "```json\n"
+                        "{\n"
+                        '  "latex": "\\\\begin{aligned} A &= B \\\\\\\\ C &= D \\\\end{aligned}",\n'
+                        '  "description": "English model explanation should not leak.",\n'
+                        '  "figure_type": "formula_block"\n'
+                        "}\n"
+                        "```"
+                    ),
+                    "formula_image_path": "assets/crops/formula.jpg",
+                }
+            ],
+        },
+        12,
+    )
+
+    assert "\\begin{aligned}" in markdown
+    assert "```json" not in markdown
+    assert '"latex"' not in markdown
+    assert "English model explanation" not in markdown
+    assert "![formula]" not in markdown
+    validation = validate_slide_markdown(markdown, 12)
+    assert validation.ok
+    assert "structured_payload_inside_formula" not in {issue.code for issue in validation.errors}
+
+
+def test_formula_truncated_warning_does_not_render_duplicate_image_when_latex_exists():
+    markdown = render_page_ir_to_markdown(
+        {
+            "source_page": 59,
+            "blocks": [
+                {
+                    "id": "p0059-b003",
+                    "type": "formula_block",
+                    "text": r"|n_k\rangle = \frac{1}{\sqrt{n_k!}}(a_k^\dagger)^{n_k}|0\rangle",
+                    "latex": r"|n_k\rangle = \frac{1}{\sqrt{n_k!}}(a_k^\dagger)^{n_k}|0\rangle",
+                    "formula_image_path": "assets/crops/page_059_formula.jpg",
+                    "formula_quality": {
+                        "warnings": [
+                            {"code": "formula_truncated", "message": "公式疑似截断。"},
+                        ]
+                    },
+                }
+            ],
+        },
+        59,
+    )
+
+    assert "![formula]" not in markdown
+    assert r"|n_k\rangle" in markdown
+    assert markdown.count("$$") == 2
+
+
 def test_figure_json_description_renders_chinese_details_without_raw_keys():
     markdown = render_page_ir_to_markdown(
         {

@@ -372,12 +372,14 @@ def apply_block_op_checked(
 
     after_markdown = render_page_ir_to_markdown(candidate, slide)
     after_validation = validate_slide_markdown(after_markdown, slide, target_raw=target_raw)
+    validator_delta = _validation_delta(before_validation, after_validation)
     if not _is_no_worse(before_validation.errors, after_validation.errors):
         return page_ir, False, {
             "reason": "validation_would_get_worse",
             "validation": after_validation.to_dict(),
             "validator_before": before_validation.to_dict(),
             "validator_after": after_validation.to_dict(),
+            "validator_delta": validator_delta,
             "before_block_ids": before_ids,
             "after_block_ids": after_ids,
             "before_blocks": before_summaries,
@@ -393,6 +395,7 @@ def apply_block_op_checked(
         "validation": after_validation.to_dict(),
         "validator_before": before_validation.to_dict(),
         "validator_after": after_validation.to_dict(),
+        "validator_delta": validator_delta,
         "before_block_ids": before_ids,
         "after_block_ids": after_ids,
         "before_blocks": before_summaries,
@@ -566,6 +569,22 @@ def _is_no_worse(before: List[ValidationIssue], after: List[ValidationIssue]) ->
     before_codes = {issue.code for issue in before}
     after_codes = {issue.code for issue in after}
     return after_codes.issubset(before_codes)
+
+
+def _validation_delta(before: Any, after: Any) -> Dict[str, Any]:
+    before_errors = before.errors if hasattr(before, "errors") else []
+    after_errors = after.errors if hasattr(after, "errors") else []
+    before_codes = [issue.code for issue in before_errors]
+    after_codes = [issue.code for issue in after_errors]
+    before_set = set(before_codes)
+    after_set = set(after_codes)
+    return {
+        "new_error_codes": sorted(after_set - before_set),
+        "resolved_error_codes": sorted(before_set - after_set),
+        "unchanged_error_codes": sorted(before_set & after_set),
+        "before_error_count": len(before_codes),
+        "after_error_count": len(after_codes),
+    }
 
 
 def _block_suspect(
@@ -837,7 +856,8 @@ def _op_replace_text_span_checked(page_ir: Dict[str, Any], op: Dict[str, Any]) -
         return False
     if not _replacement_growth_is_safe(old_text, new_text):
         return False
-    if _replace_text_span_is_too_broad(block, old_text, new_text):
+    allow_structured_formula_payload = str(op.get("_match_strategy") or op.get("match_strategy") or "") == "structured_formula_payload"
+    if not allow_structured_formula_payload and _replace_text_span_is_too_broad(block, old_text, new_text):
         return False
 
     fields = [str(op.get("field"))] if op.get("field") else ["text", "latex", "raw_text", "description"]

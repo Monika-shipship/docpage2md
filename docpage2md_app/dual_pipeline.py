@@ -130,20 +130,31 @@ def process_dual_artifact_task(
     }
     ok_slides: list[int] = []
     render_started = time.monotonic()
-    for page_index, page_ir in enumerate(document_ir.get("pages") or [], start=1):
+    final_pages = document_ir.get("pages") or []
+    rendered_pages = {
+        int(page.get("source_page") or 0): render_page_ir_to_markdown(page, int(page.get("source_page") or 0))
+        for page in final_pages
+        if int(page.get("source_page") or 0) > 0
+    }
+    for page_index, page_ir in enumerate(final_pages, start=1):
         slide_no = int(page_ir.get("source_page") or 0)
         if slide_no <= 0:
             continue
         safe_progress(
             progress,
-            f"Rendering dual page {page_index}/{len(document_ir.get('pages') or [])}: slide={slide_no}, blocks={len(page_ir.get('blocks') or [])}",
+            f"Rendering dual page {page_index}/{len(final_pages)}: slide={slide_no}, blocks={len(page_ir.get('blocks') or [])}",
         )
-        markdown = render_page_ir_to_markdown(page_ir, slide_no)
+        markdown = rendered_pages.get(slide_no) or render_page_ir_to_markdown(page_ir, slide_no)
         validation = validate_slide_markdown(
             markdown,
             slide_no,
             target_raw=page_ir.get("raw_text"),
             target_blocks=page_ir.get("blocks") or [],
+            neighbor_markdown={
+                page_no: rendered_pages[page_no]
+                for page_no in (slide_no - 1, slide_no + 1)
+                if page_no in rendered_pages
+            },
         )
         status = "ok" if validation.ok else "fail_open"
         slide_path = output_root / f"Slide_{slide_no:02d}.md"

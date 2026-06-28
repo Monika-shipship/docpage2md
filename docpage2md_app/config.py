@@ -29,6 +29,15 @@ DEFAULT_PARSER_WORKERS = 8
 DEFAULT_VISION_BATCH_WORKERS = 60
 DEFAULT_BRAIN_BATCH_WORKERS = 60
 DEFAULT_BRAIN_CONTEXT_RADIUS = 2
+DEFAULT_BRAIN_OP_REVIEW_MODE = "aggressive"
+BRAIN_OP_REVIEW_MODES = ("conservative", "standard", "aggressive")
+DEFAULT_VISION_CROP_MODE = "auto"
+VISION_CROP_MODES = ("original", "expanded", "auto")
+DEFAULT_VISION_CROP_DPI = 0
+VISION_CROP_DPI_CHOICES = (0, 150, 200, 300, 400)
+DEFAULT_VISION_CROP_PADDING_PROFILE = "auto"
+VISION_CROP_PADDING_PROFILES = ("auto", "normal", "handwritten", "aggressive")
+DEFAULT_VISION_CROP_RETRY = True
 
 DEFAULT_THINKING_BUDGET_VISION = 2048
 DEFAULT_THINKING_BUDGET_BRAIN = 2048
@@ -113,6 +122,11 @@ class AppConfig:
     vision_batch_workers: int = DEFAULT_VISION_BATCH_WORKERS
     brain_batch_workers: int = DEFAULT_BRAIN_BATCH_WORKERS
     brain_context_radius: int = DEFAULT_BRAIN_CONTEXT_RADIUS
+    brain_op_review_mode: str = DEFAULT_BRAIN_OP_REVIEW_MODE
+    vision_crop_mode: str = DEFAULT_VISION_CROP_MODE
+    vision_crop_dpi: int = DEFAULT_VISION_CROP_DPI
+    vision_crop_padding_profile: str = DEFAULT_VISION_CROP_PADDING_PROFILE
+    vision_crop_retry: bool = DEFAULT_VISION_CROP_RETRY
     thinking_budget_vision: int = DEFAULT_THINKING_BUDGET_VISION
     thinking_budget_brain: int = DEFAULT_THINKING_BUDGET_BRAIN
     brain_thinking: str = DEFAULT_BRAIN_THINKING
@@ -181,6 +195,29 @@ class AppConfig:
 def normalize_paddleocr_evidence_level(value: str | None) -> str:
     level = str(value or DEFAULT_PADDLEOCR_EVIDENCE_LEVEL).strip().lower()
     return level if level in PADDLEOCR_EVIDENCE_LEVELS else DEFAULT_PADDLEOCR_EVIDENCE_LEVEL
+
+
+def normalize_brain_op_review_mode(value: str | None) -> str:
+    mode = str(value or DEFAULT_BRAIN_OP_REVIEW_MODE).strip().lower()
+    return mode if mode in BRAIN_OP_REVIEW_MODES else DEFAULT_BRAIN_OP_REVIEW_MODE
+
+
+def normalize_vision_crop_mode(value: str | None) -> str:
+    mode = str(value or DEFAULT_VISION_CROP_MODE).strip().lower()
+    return mode if mode in VISION_CROP_MODES else DEFAULT_VISION_CROP_MODE
+
+
+def normalize_vision_crop_padding_profile(value: str | None) -> str:
+    profile = str(value or DEFAULT_VISION_CROP_PADDING_PROFILE).strip().lower()
+    return profile if profile in VISION_CROP_PADDING_PROFILES else DEFAULT_VISION_CROP_PADDING_PROFILE
+
+
+def normalize_vision_crop_dpi(value: int | str | None) -> int:
+    try:
+        dpi = int(value) if value is not None else DEFAULT_VISION_CROP_DPI
+    except (TypeError, ValueError):
+        return DEFAULT_VISION_CROP_DPI
+    return dpi if dpi in VISION_CROP_DPI_CHOICES else DEFAULT_VISION_CROP_DPI
 
 
 def paddleocr_visualize_for_evidence_level(value: str | None) -> bool:

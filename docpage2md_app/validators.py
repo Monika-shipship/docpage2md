@@ -105,6 +105,7 @@ def validate_slide_markdown(
     target_raw: str | None = None,
     target_blocks: list[dict] | None = None,
     neighbor_raw: dict[int, str] | None = None,
+    neighbor_markdown: dict[int, str] | None = None,
 ) -> ValidationResult:
     errors: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
@@ -152,8 +153,12 @@ def validate_slide_markdown(
         errors.append(_issue("display_math_unbalanced", "error", "行间公式 $$ 分隔符数量不成对。", slide_no))
     errors.extend(_formula_delimiter_errors(code_free, slide_no))
     errors.extend(_naked_latex_environment_errors(code_free, slide_no))
+    errors.extend(_structured_payload_leak_errors(text, slide_no))
     errors.extend(_formula_quality_errors(code_free, slide_no))
     warnings.extend(_formula_quality_warnings(code_free, slide_no))
+    warnings.extend(_duplicate_formula_warnings(code_free, slide_no))
+    warnings.extend(_isolated_formula_number_warnings(code_free, slide_no))
+    warnings.extend(_neighbor_formula_duplicate_warnings(code_free, neighbor_markdown or {}, slide_no))
     warnings.extend(_spaced_math_operator_warnings(code_free, slide_no))
     warnings.extend(_unicode_math_symbol_warnings(text, slide_no))
     if markdown_formula_markup_needs_normalize(code_free):
@@ -299,6 +304,97 @@ def _formula_quality_errors(text: str, slide_no: int) -> list[ValidationIssue]:
         if re.search(r"\\frac(?!\s*\{)", segment):
             errors.append(_issue("latex_frac_missing_braces", "error", "\\frac 后缺少花括号参数。", slide_no, segment[:120]))
     return _dedupe_issues(errors)
+
+
+def _structured_payload_leak_errors(text: str, slide_no: int) -> list[ValidationIssue]:
+    errors = []
+    for segment in _math_segments(text):
+        if _looks_like_structured_payload(segment):
+            errors.append(
+                _issue(
+                    "structured_payload_inside_formula",
+                    "error",
+                    "公式块中泄漏了 JSON/结构化识别结果，应先抽取 latex 字段再渲染。",
+                    slide_no,
+                    _formula_preview(segment, 180),
+                )
+            )
+            break
+    if re.search(r"(?is)```json\s*\{.*?\"(?:latex|figure_type|description)\"\s*:", text):
+        errors.append(
+            _issue(
+                "structured_payload_code_fence_leak",
+                "error",
+                "最终 Markdown 泄漏了结构化 JSON 代码块。",
+                slide_no,
+            )
+        )
+    return _dedupe_issues(errors)
+
+
+def _duplicate_formula_warnings(text: str, slide_no: int) -> list[ValidationIssue]:
+    formulas = _formula_entries(text)
+    warnings = []
+    for index, left in enumerate(formulas):
+        for right in formulas[index + 1 :]:
+            if _formula_duplicate_score(left["norm"], right["norm"]) < 0.96:
+                continue
+            warnings.append(
+                _issue(
+                    "duplicate_formula_block",
+                    "warning",
+                    "同页出现高度相似的公式块，可能是双引擎融合或视觉回退造成的重复。",
+                    slide_no,
+                    f"formula_index={left['index']},{right['index']}; preview={_formula_preview(right['text'], 160)}",
+                )
+            )
+    return _dedupe_issues(warnings)
+
+
+def _isolated_formula_number_warnings(text: str, slide_no: int) -> list[ValidationIssue]:
+    tags = _formula_tags(text)
+    warnings = []
+    for line_no, line in _non_math_lines(text):
+        number = _isolated_equation_number(line)
+        if not number:
+            continue
+        code = "isolated_formula_number_duplicate" if number in tags else "isolated_formula_number"
+        message = (
+            "公式编号已经出现在公式 \\tag{} 中，不应再作为孤立段落重复出现。"
+            if number in tags
+            else "公式编号作为孤立段落出现，建议并入对应公式的 \\tag{}。"
+        )
+        warnings.append(_issue(code, "warning", message, slide_no, f"line={line_no}; number={number}"))
+    return warnings
+
+
+def _neighbor_formula_duplicate_warnings(
+    text: str,
+    neighbor_markdown: dict[int, str],
+    slide_no: int,
+) -> list[ValidationIssue]:
+    current = _formula_entries(text)
+    if not current or not neighbor_markdown:
+        return []
+    warnings = []
+    for neighbor_no, markdown in sorted(neighbor_markdown.items()):
+        if abs(int(neighbor_no) - slide_no) > 1:
+            continue
+        for left in current:
+            for right in _formula_entries(_strip_code_regions(markdown or "")):
+                if _formula_duplicate_score(left["norm"], right["norm"]) < 0.985:
+                    continue
+                warnings.append(
+                    _issue(
+                        "neighbor_duplicate_formula_block",
+                        "warning",
+                        "相邻页出现高度相似公式。若不是续页/回顾，可能是跨页合并或融合重复。",
+                        slide_no,
+                        f"neighbor={neighbor_no}; formula_index={left['index']}; preview={_formula_preview(left['text'], 160)}",
+                    )
+                )
+                break
+    return _dedupe_issues(warnings)
 
 
 def _spaced_math_operator_warnings(text: str, slide_no: int) -> list[ValidationIssue]:
@@ -539,6 +635,54 @@ def _math_segments(text: str) -> list[str]:
     segments.extend(match.group(1) for match in re.finditer(r"\\\((.*?)\\\)", text_without_display, flags=re.DOTALL))
     segments.extend(match.group(1) for match in re.finditer(r"\\\[(.*?)\\\]", text_without_display, flags=re.DOTALL))
     return [segment.strip() for segment in segments if segment.strip()]
+
+
+def _formula_entries(text: str) -> list[dict[str, object]]:
+    entries = []
+    for index, segment in enumerate(_math_segments(text), start=1):
+        norm = _normalize_formula_for_coverage(segment)
+        if len(norm) < 20:
+            continue
+        entries.append({"index": index, "text": segment, "norm": norm})
+    return entries
+
+
+def _formula_duplicate_score(left: str, right: str) -> float:
+    if len(left) < 20 or len(right) < 20:
+        return 0.0
+    if left == right:
+        return 1.0
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    if shorter in longer:
+        return len(shorter) / len(longer)
+    return SequenceMatcher(None, left, right, autojunk=False).ratio()
+
+
+def _formula_tags(text: str) -> set[str]:
+    tags = set()
+    for segment in _math_segments(text):
+        tags.update(match.group(1).strip() for match in re.finditer(r"\\tag\{([^{}]+)\}", segment))
+    return tags
+
+
+def _non_math_lines(text: str) -> list[tuple[int, str]]:
+    masked = re.sub(r"\$\$.*?\$\$", "", text, flags=re.DOTALL)
+    masked = re.sub(r"(?<!\\)(?<!\$)\$(?!\$).*?(?<!\\)(?<!\$)\$(?!\$)", "", masked, flags=re.DOTALL)
+    masked = re.sub(r"\\\[(.*?)\\\]", "", masked, flags=re.DOTALL)
+    masked = re.sub(r"\\\((.*?)\\\)", "", masked, flags=re.DOTALL)
+    return [(index, line.strip()) for index, line in enumerate(masked.splitlines(), start=1) if line.strip()]
+
+
+def _isolated_equation_number(line: str) -> str | None:
+    match = re.fullmatch(r"[（(]\s*(\d+(?:\.\d+)+)\s*[）)]", line.strip())
+    return match.group(1) if match else None
+
+
+def _looks_like_structured_payload(text: str) -> bool:
+    stripped = text.strip()
+    if "```json" in stripped.lower():
+        return True
+    return bool(re.search(r"(?is)^\s*\{.*?\"(?:latex|figure_type|description)\"\s*:", stripped))
 
 
 def _unbalanced_pair(text: str, left: str, right: str) -> bool:

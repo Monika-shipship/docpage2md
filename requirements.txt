@@ -2,3 +2,4 @@ dashscope
 rich
 Pillow
 pypdf
+PyMuPDF

@@ -11,6 +11,14 @@ from docpage2md_app.files import read_json, write_json
 from docpage2md_app.input_inspection import build_page_chunks
 
 
+def _write_blank_pdf(path: Path, pages: int) -> None:
+    writer = PdfWriter()
+    for _ in range(pages):
+        writer.add_blank_page(width=72, height=72)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
 def test_eval_cli_runs_without_dependency_or_api_checks(monkeypatch, tmp_path, capsys):
     def fail_if_called():
         raise AssertionError("ensure_dependencies should not run for offline eval")
@@ -45,7 +53,7 @@ def test_cli_version_prints_app_and_pipeline_versions(capsys):
 
     captured = capsys.readouterr()
     assert code == 0
-    assert "DocPage2MD 0.1.0" in captured.out
+    assert "DocPage2MD 0.2.0" in captured.out
     assert "pipeline" in captured.out
 
 
@@ -98,6 +106,30 @@ def test_cli_paddleocr_visualize_overrides_evidence_level(tmp_path):
     assert config.paddleocr_evidence_level == "audit"
     assert config.paddleocr_visualize is False
     assert config.paddleocr_visualize_override is False
+
+
+def test_cli_build_config_exposes_vision_crop_options(tmp_path):
+    args = cli.parse_args(
+        [
+            "--output",
+            str(tmp_path),
+            "--vision-crop-mode",
+            "expanded",
+            "--vision-crop-dpi",
+            "400",
+            "--vision-crop-padding-profile",
+            "aggressive",
+            "--vision-crop-retry",
+            "false",
+        ]
+    )
+
+    config = cli.build_config(args)
+
+    assert config.vision_crop_mode == "expanded"
+    assert config.vision_crop_dpi == 400
+    assert config.vision_crop_padding_profile == "aggressive"
+    assert config.vision_crop_retry is False
 
 
 def test_cli_build_config_exposes_mineru_multiformat_options(tmp_path):
@@ -656,6 +688,250 @@ def test_cli_run_chunked_dual_pdf_pseudo_long_document_merge(monkeypatch, tmp_pa
     assert report["dual_parser"]["chunked_merge"]["selected_page_count"] == 10
 
 
+def test_cli_mineru_input_files_page_range_uploads_cropped_pdf_without_api_range(monkeypatch, tmp_path):
+    pdf = tmp_path / "notes.pdf"
+    _write_blank_pdf(pdf, 89)
+    args = cli.parse_args(
+        [
+            "--engine-mode",
+            "mineru_hybrid",
+            "--input-files",
+            str(pdf),
+            "--page-ranges",
+            "5-15",
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+    config = cli.build_config(args)
+    assert config.mineru_page_ranges == "5-15"
+    submitted_paths: list[Path] = []
+    crop_audits = []
+
+    class FakeMinerUClient:
+        def submit_local_files(self, files, *, page_ranges=None, use_config_page_ranges=True):
+            assert page_ranges is None
+            assert use_config_page_ranges is False
+            upload_path = Path(files[0])
+            assert upload_path != pdf
+            assert len(PdfReader(str(upload_path)).pages) == 11
+            submitted_paths.append(upload_path)
+            return "batch-1"
+
+        def wait_for_batch_results(self, batch_id, *, expected_count):
+            assert batch_id == "batch-1"
+            assert expected_count == 1
+            return [SimpleNamespace(task_id="task-1", full_zip_url="https://example.com/mineru.zip")]
+
+    def fake_download(_client, result, **kwargs):
+        assert result.task_id == "task-1"
+        crop_audits.append(kwargs.get("physical_pdf_crop"))
+        return {"page_count": 11, "output_dir": str(tmp_path / "out" / "notes"), "status": "ok"}
+
+    monkeypatch.setattr(cli, "_download_and_process_mineru_result", fake_download)
+
+    code = cli._run_mixed_mineru_local_files(
+        FakeMinerUClient(),
+        [pdf],
+        {},
+        args=args,
+        config=config,
+        mode="mineru_hybrid",
+        doc_name="notes",
+        progress=None,
+    )
+
+    assert code == 0
+    assert len(submitted_paths) == 1
+    assert not submitted_paths[0].exists()
+    assert crop_audits[0]["selected_page_count"] == 11
+    assert crop_audits[0]["page_map"][0] == {"uploaded_page": 1, "original_page": 5}
+    assert crop_audits[0]["page_map"][-1] == {"uploaded_page": 11, "original_page": 15}
+
+
+def test_cli_paddleocr_local_page_range_uploads_cropped_pdf_without_api_range(monkeypatch, tmp_path):
+    pdf = tmp_path / "notes.pdf"
+    _write_blank_pdf(pdf, 89)
+    args = cli.parse_args(
+        [
+            "--engine-mode",
+            "paddleocr_hybrid",
+            "--input-file",
+            str(pdf),
+            "--page-ranges",
+            "5-15",
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+    config = cli.build_config(args)
+    submitted_paths: list[Path] = []
+    crop_audits = []
+
+    class FakePaddleOCRClient:
+        def submit_local_file(self, path, *, page_ranges=None):
+            assert page_ranges is None
+            upload_path = Path(path)
+            assert upload_path != pdf
+            assert len(PdfReader(str(upload_path)).pages) == 11
+            submitted_paths.append(upload_path)
+            return "job-1"
+
+        def wait_for_job(self, job_id):
+            assert job_id == "job-1"
+            return SimpleNamespace(job_id="job-1", trace_id="trace-1")
+
+    def fake_download(_client, status, **kwargs):
+        assert status.job_id == "job-1"
+        crop_audits.append(kwargs.get("physical_pdf_crop"))
+        return {"page_count": 11, "output_dir": str(tmp_path / "out" / "notes"), "status": "ok"}
+
+    monkeypatch.setattr(cli, "_download_and_process_paddleocr_result", fake_download)
+
+    code = cli._run_mixed_paddleocr_local_files(
+        FakePaddleOCRClient(),
+        [pdf],
+        {},
+        args=args,
+        config=config,
+        mode="paddleocr_hybrid",
+        doc_name="notes",
+        progress=None,
+    )
+
+    assert code == 0
+    assert len(submitted_paths) == 1
+    assert not submitted_paths[0].exists()
+    assert crop_audits[0]["selected_page_count"] == 11
+    assert crop_audits[0]["page_map"][0] == {"uploaded_page": 1, "original_page": 5}
+    assert crop_audits[0]["page_map"][-1] == {"uploaded_page": 11, "original_page": 15}
+
+
+def test_cli_chunked_mineru_uploads_each_cropped_chunk_without_api_range(monkeypatch, tmp_path):
+    pdf = tmp_path / "notes.pdf"
+    _write_blank_pdf(pdf, 89)
+    args = cli.parse_args(
+        [
+            "--engine-mode",
+            "mineru_hybrid",
+            "--input-file",
+            str(pdf),
+            "--page-ranges",
+            "5-15",
+            "--mineru-page-chunk-size",
+            "5",
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+    config = replace(cli.build_config(args), mineru_page_chunk_size=5)
+    chunks = build_page_chunks(89, "5-15", chunk_size=5)
+    expected_upload_pages = [5, 5, 1]
+    submitted_paths: list[Path] = []
+    crop_audits = []
+
+    class FakeMinerUClient:
+        def submit_local_files(self, files, *, page_ranges=None, use_config_page_ranges=True):
+            assert page_ranges is None
+            assert use_config_page_ranges is False
+            upload_path = Path(files[0])
+            assert upload_path != pdf
+            assert len(PdfReader(str(upload_path)).pages) == expected_upload_pages.pop(0)
+            submitted_paths.append(upload_path)
+            return f"batch-{len(submitted_paths)}"
+
+        def wait_for_batch_results(self, batch_id, *, expected_count):
+            return [SimpleNamespace(task_id=batch_id.replace("batch", "task"), full_zip_url="https://example.com/mineru.zip")]
+
+    def fake_download(_client, result, **kwargs):
+        crop_audits.append(kwargs.get("physical_pdf_crop"))
+        return {"page_count": len(crop_audits), "output_dir": str(tmp_path / "out" / "chunk"), "status": "ok"}
+
+    def fake_merge(output_dir, *_args, **_kwargs):
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(cli, "_download_and_process_mineru_result", fake_download)
+    monkeypatch.setattr(cli, "_merge_chunk_outputs", fake_merge)
+
+    code = cli._run_chunked_mineru_pdf(
+        FakeMinerUClient(),
+        pdf,
+        chunks,
+        args=args,
+        config=config,
+        mode="mineru_hybrid",
+        doc_name="notes",
+        progress=None,
+    )
+
+    assert code == 0
+    assert expected_upload_pages == []
+    assert all(not path.exists() for path in submitted_paths)
+    assert [audit["selected_ranges"] for audit in crop_audits] == ["5-9", "10-14", "15"]
+
+
+def test_cli_chunked_paddleocr_uploads_each_cropped_chunk_without_api_range(monkeypatch, tmp_path):
+    pdf = tmp_path / "notes.pdf"
+    _write_blank_pdf(pdf, 89)
+    args = cli.parse_args(
+        [
+            "--engine-mode",
+            "paddleocr_hybrid",
+            "--input-file",
+            str(pdf),
+            "--page-ranges",
+            "5-15",
+            "--paddleocr-page-chunk-size",
+            "5",
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+    config = replace(cli.build_config(args), paddleocr_page_chunk_size=5)
+    chunks = build_page_chunks(89, "5-15", chunk_size=5)
+    expected_upload_pages = [5, 5, 1]
+    submitted_paths: list[Path] = []
+    crop_audits = []
+
+    class FakePaddleOCRClient:
+        def submit_local_file(self, path, *, page_ranges=None):
+            assert page_ranges is None
+            upload_path = Path(path)
+            assert upload_path != pdf
+            assert len(PdfReader(str(upload_path)).pages) == expected_upload_pages.pop(0)
+            submitted_paths.append(upload_path)
+            return f"job-{len(submitted_paths)}"
+
+        def wait_for_job(self, job_id):
+            return SimpleNamespace(job_id=job_id, trace_id=f"trace-{job_id}")
+
+    def fake_download(_client, status, **kwargs):
+        crop_audits.append(kwargs.get("physical_pdf_crop"))
+        return {"page_count": len(crop_audits), "output_dir": str(tmp_path / "out" / "chunk"), "status": "ok"}
+
+    def fake_merge(output_dir, *_args, **_kwargs):
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(cli, "_download_and_process_paddleocr_result", fake_download)
+    monkeypatch.setattr(cli, "_merge_paddleocr_chunk_outputs", fake_merge)
+
+    code = cli._run_chunked_paddleocr_pdf(
+        FakePaddleOCRClient(),
+        pdf,
+        chunks,
+        args=args,
+        config=config,
+        mode="paddleocr_hybrid",
+        doc_name="notes",
+        progress=None,
+    )
+
+    assert code == 0
+    assert expected_upload_pages == []
+    assert all(not path.exists() for path in submitted_paths)
+    assert [audit["selected_ranges"] for audit in crop_audits] == ["5-9", "10-14", "15"]
+
+
 def test_cli_dual_prepares_mineru_and_paddleocr_artifacts_in_parallel(monkeypatch, tmp_path):
     pdf = tmp_path / "notes.pdf"
     pdf.write_bytes(b"%PDF")
@@ -668,9 +944,10 @@ def test_cli_dual_prepares_mineru_and_paddleocr_artifacts_in_parallel(monkeypatc
     paddle_started = threading.Event()
 
     class FakeMinerUClient:
-        def submit_local_files(self, files, *, page_ranges=None):
+        def submit_local_files(self, files, *, page_ranges=None, use_config_page_ranges=True):
             assert files == [pdf]
             assert page_ranges is None
+            assert use_config_page_ranges is True
             mineru_started.set()
             if not paddle_started.wait(timeout=1):
                 raise AssertionError("PaddleOCR stage did not start while MinerU was submitting")
@@ -738,8 +1015,9 @@ def test_cli_dual_page_range_uploads_cropped_pdf_to_both_parsers(monkeypatch, tm
     crop_audits = []
 
     class FakeMinerUClient:
-        def submit_local_files(self, files, *, page_ranges=None):
+        def submit_local_files(self, files, *, page_ranges=None, use_config_page_ranges=True):
             assert page_ranges is None
+            assert use_config_page_ranges is False
             upload_path = Path(files[0])
             assert upload_path != pdf
             assert len(PdfReader(str(upload_path)).pages) == 2

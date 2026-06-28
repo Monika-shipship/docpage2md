@@ -120,6 +120,10 @@ def finalize_run_report(report: Dict[str, Any]) -> Dict[str, Any]:
             "by_status": op_audit_status_counts,
             "rejection_reasons": op_rejection_reasons,
             "contract_error_codes": contract_error_codes,
+            "true_rejections": sum(op_audit_status_counts.get(status, 0) for status in ("rejected", "hard_rejected", "soft_rejected")),
+            "noop_or_superseded": op_audit_status_counts.get("superseded_noop", 0),
+            "repair_successes": op_audit_status_counts.get("repaired_applied", 0),
+            "repair_failures": _op_audit_repair_failure_count(pages),
             "removed_spans": _op_audit_removed_span_count(pages),
             "degraded": _op_audit_degraded_count(pages),
         },
@@ -343,7 +347,7 @@ def _op_audit_degraded_count(pages: list[Dict[str, Any]]) -> int:
 def _op_audit_rejection_reasons(pages: list[Dict[str, Any]]) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for audit in _iter_op_audits(pages):
-        if audit.get("status") != "rejected":
+        if audit.get("status") not in {"rejected", "hard_rejected", "soft_rejected"}:
             continue
         reason = str(audit.get("reason") or "unknown")
         counts[reason] = counts.get(reason, 0) + 1
@@ -353,12 +357,22 @@ def _op_audit_rejection_reasons(pages: list[Dict[str, Any]]) -> Dict[str, int]:
 def _op_audit_contract_error_codes(pages: list[Dict[str, Any]]) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for audit in _iter_op_audits(pages):
-        if audit.get("status") != "rejected":
+        if audit.get("status") not in {"rejected", "hard_rejected", "soft_rejected"}:
             continue
         for error in audit.get("errors") or []:
             code = str(error or "unknown")
             counts[code] = counts.get(code, 0) + 1
     return counts
+
+
+def _op_audit_repair_failure_count(pages: list[Dict[str, Any]]) -> int:
+    total = 0
+    for audit in _iter_op_audits(pages):
+        if audit.get("status") not in {"rejected", "hard_rejected", "soft_rejected"}:
+            continue
+        if audit.get("repair_actions"):
+            total += 1
+    return total
 
 
 def _brain_discovered_count(pages: list[Dict[str, Any]]) -> int:

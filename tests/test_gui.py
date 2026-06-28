@@ -276,6 +276,35 @@ def test_gui_adds_brain_context_radius_override_args(tmp_path):
     assert argv[argv.index("--brain-context-radius") + 1] == "5"
 
 
+def test_gui_adds_brain_op_review_mode_override_args(tmp_path):
+    options = GuiRunOptions(
+        source_value="https://example.com/notes.pdf",
+        source_kind="mineru_url",
+        output_folder=str(tmp_path / "out"),
+        brain_op_review_mode="标准",
+    )
+
+    argv = build_cli_argv(options)
+
+    assert argv[argv.index("--brain-op-review-mode") + 1] == "standard"
+
+
+def test_gui_adds_vision_crop_args(tmp_path):
+    options = GuiRunOptions(
+        source_value="https://example.com/notes.pdf",
+        source_kind="mineru_url",
+        output_folder=str(tmp_path / "out"),
+        vision_crop_mode="手写公式增强",
+    )
+
+    argv = build_cli_argv(options)
+
+    assert argv[argv.index("--vision-crop-mode") + 1] == "expanded"
+    assert argv[argv.index("--vision-crop-dpi") + 1] == "0"
+    assert argv[argv.index("--vision-crop-padding-profile") + 1] == "handwritten"
+    assert argv[argv.index("--vision-crop-retry") + 1] == "true"
+
+
 def test_gui_concurrency_preset_updates_worker_entries():
     try:
         app = DocPage2MdGui()

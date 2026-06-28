@@ -36,6 +36,24 @@ def test_prepare_pdf_upload_physically_crops_selected_pages(tmp_path):
     assert not prepared.upload_path.exists()
 
 
+def test_prepare_pdf_upload_page_range_5_15_uploads_11_pages_without_api_range(tmp_path):
+    source = tmp_path / "notes.pdf"
+    _write_pdf(source, 89)
+
+    prepared = prepare_pdf_upload_for_page_ranges(source, "5-15", temp_root=tmp_path)
+    try:
+        assert prepared.was_cropped is True
+        assert prepared.upload_path != source
+        assert prepared.api_page_ranges is None
+        assert len(PdfReader(str(prepared.upload_path)).pages) == 11
+        assert prepared.physical_pdf_crop
+        assert prepared.physical_pdf_crop["selected_page_count"] == 11
+        assert prepared.physical_pdf_crop["page_map"][0] == {"uploaded_page": 1, "original_page": 5}
+        assert prepared.physical_pdf_crop["page_map"][-1] == {"uploaded_page": 11, "original_page": 15}
+    finally:
+        cleanup_prepared_pdf_upload(prepared)
+
+
 def test_prepare_pdf_upload_keeps_original_when_range_is_all_pages(tmp_path):
     source = tmp_path / "notes.pdf"
     _write_pdf(source, 3)

@@ -14,7 +14,7 @@ from typing import Iterable
 
 from .aliyun_catalog import filter_brain_models, filter_vision_models, verify_openai_chat_model, vision_recommendation_tier
 from .cli import MINERU_SUPPORTED_SUFFIXES
-from .config import AppConfig
+from .config import BRAIN_OP_REVIEW_MODES, AppConfig, normalize_brain_op_review_mode, normalize_vision_crop_dpi
 from .cost import calculate_image_tokens, estimate_deepseek_chat_tokens, estimate_price, estimate_text_cost
 from .env import set_user_env_value
 from .input_inspection import (
@@ -86,6 +86,7 @@ from .third_party_models import (
     upsert_third_party_model,
 )
 from .secrets import check_secret_exists, get_secret_value, set_secret_value
+from .versioning import DOCPAGE2MD_VERSION
 
 
 DOCUMENT_PRESETS = {
@@ -174,6 +175,13 @@ PADDLEOCR_EVIDENCE_LEVEL_LABELS = {
 }
 PADDLEOCR_EVIDENCE_LEVEL_LABEL_TO_KEY = {label: key for key, label in PADDLEOCR_EVIDENCE_LEVEL_LABELS.items()}
 
+VISION_CROP_MODE_LABELS = {
+    "original": "原始裁剪",
+    "auto": "自动扩边（推荐）",
+    "expanded": "手写公式增强",
+}
+VISION_CROP_MODE_LABEL_TO_KEY = {label: key for key, label in VISION_CROP_MODE_LABELS.items()}
+
 BRAIN_THINKING_LABELS = {
     "disabled": "快速：关闭思考（推荐）",
     "enabled": "高质量：开启思考",
@@ -188,6 +196,13 @@ BRAIN_CONTEXT_RADIUS_LABELS = {
     "custom": "自定义",
 }
 BRAIN_CONTEXT_RADIUS_LABEL_TO_KEY = {label: key for key, label in BRAIN_CONTEXT_RADIUS_LABELS.items()}
+BRAIN_OP_REVIEW_MODE_LABELS = {
+    "aggressive": "激进：尽量救回正确修改（推荐）",
+    "standard": "标准：适度修复定位",
+    "conservative": "保守：严格按模型字段审核",
+}
+BRAIN_OP_REVIEW_MODE_LABEL_TO_KEY = {label: key for key, label in BRAIN_OP_REVIEW_MODE_LABELS.items()}
+BRAIN_OP_REVIEW_MODE_LABEL_TO_KEY.update({"激进": "aggressive", "标准": "standard", "保守": "conservative"})
 
 SOURCE_LABELS = {
     "input_file": "本地单个文件",
@@ -304,6 +319,11 @@ class GuiRunOptions:
     vision_workers: int | str = AppConfig().vision_batch_workers
     brain_workers: int | str = AppConfig().brain_batch_workers
     brain_context_radius: int | str = AppConfig().brain_context_radius
+    brain_op_review_mode: str = AppConfig().brain_op_review_mode
+    vision_crop_mode: str = AppConfig().vision_crop_mode
+    vision_crop_dpi: int | str = AppConfig().vision_crop_dpi
+    vision_crop_padding_profile: str = AppConfig().vision_crop_padding_profile
+    vision_crop_retry: bool = AppConfig().vision_crop_retry
     brain_thinking: str = AppConfig().brain_thinking
     brain_reasoning_effort: str = AppConfig().brain_reasoning_effort
     vision: SelectedModel | None = None
@@ -435,6 +455,32 @@ def paddleocr_evidence_level_key(value: str) -> str:
     return PADDLEOCR_EVIDENCE_LEVEL_LABEL_TO_KEY.get(value, value)
 
 
+def vision_crop_mode_key(value: str) -> str:
+    return VISION_CROP_MODE_LABEL_TO_KEY.get(value, value)
+
+
+def vision_crop_mode_label(value: str, padding_profile: str = "auto") -> str:
+    mode = vision_crop_mode_key(value)
+    if mode == "expanded" and padding_profile == "handwritten":
+        return VISION_CROP_MODE_LABELS["expanded"]
+    return VISION_CROP_MODE_LABELS.get(mode, value)
+
+
+def vision_crop_cli_values(options: GuiRunOptions) -> tuple[str, int, str, bool]:
+    mode = vision_crop_mode_key(options.vision_crop_mode)
+    if mode not in VISION_CROP_MODE_LABELS:
+        raise ValueError(f"未知 Vision 裁剪策略: {options.vision_crop_mode}")
+    dpi = normalize_vision_crop_dpi(options.vision_crop_dpi)
+    profile = str(options.vision_crop_padding_profile or "auto").strip().lower() or "auto"
+    if mode == "expanded" and profile == "auto":
+        profile = "handwritten"
+    if mode == "original":
+        profile = "auto"
+    if profile not in {"auto", "normal", "handwritten", "aggressive"}:
+        raise ValueError(f"未知 Vision 扩边档位: {options.vision_crop_padding_profile}")
+    return mode, dpi, profile, bool(options.vision_crop_retry)
+
+
 def source_kind_key(value: str) -> str:
     return SOURCE_LABEL_TO_KEY.get(value, value)
 
@@ -481,6 +527,7 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
     paddleocr_evidence_level = paddleocr_evidence_level_key(options.paddleocr_evidence_level)
     if paddleocr_evidence_level not in PADDLEOCR_EVIDENCE_LEVEL_LABELS:
         raise ValueError(f"未知 PaddleOCR 证据保存档位: {options.paddleocr_evidence_level}")
+    vision_crop_mode, vision_crop_dpi, vision_crop_padding_profile, vision_crop_retry = vision_crop_cli_values(options)
     if source_kind not in SOURCE_LABELS:
         raise ValueError(f"未知输入来源: {options.source_kind}")
     if source_kind == "mineru_artifact_dir" and layout_engine != "mineru":
@@ -562,11 +609,26 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
             _bool_arg(options.paddleocr_table_recognition),
         ]
     )
+    argv.extend(
+        [
+            "--vision-crop-mode",
+            vision_crop_mode,
+            "--vision-crop-dpi",
+            str(vision_crop_dpi),
+            "--vision-crop-padding-profile",
+            vision_crop_padding_profile,
+            "--vision-crop-retry",
+            _bool_arg(vision_crop_retry),
+        ]
+    )
     vision_workers = _positive_worker_count(options.vision_workers, "Vision 并发数")
     brain_workers = _positive_worker_count(options.brain_workers, "Brain 并发数")
     parser_workers = _positive_worker_count(options.parser_workers, "解析并发数")
     doc_workers = _positive_worker_count(options.doc_workers, "文档并发数")
     brain_context_radius = brain_context_radius_value(options.brain_context_radius)
+    brain_op_review_mode = normalize_brain_op_review_mode(
+        BRAIN_OP_REVIEW_MODE_LABEL_TO_KEY.get(options.brain_op_review_mode, options.brain_op_review_mode)
+    )
     brain_thinking = BRAIN_THINKING_LABEL_TO_KEY.get(options.brain_thinking, options.brain_thinking or AppConfig().brain_thinking)
     if brain_thinking not in {"enabled", "disabled"}:
         raise ValueError("Brain 思考模式必须是 enabled 或 disabled。")
@@ -585,6 +647,8 @@ def build_cli_argv(options: GuiRunOptions) -> list[str]:
             str(doc_workers),
             "--brain-context-radius",
             str(brain_context_radius),
+            "--brain-op-review-mode",
+            brain_op_review_mode,
             "--brain-thinking",
             brain_thinking,
             "--brain-reasoning-effort",
@@ -865,6 +929,7 @@ def selected_config_from_options(options: GuiRunOptions, base_config: AppConfig 
     engine_mode = workflow_engine_mode(options)
     layout_engine = layout_engine_key(options.layout_engine)
     refine_mode = refine_mode_key(options.refine_mode)
+    vision_crop_mode, vision_crop_dpi, vision_crop_padding_profile, vision_crop_retry = vision_crop_cli_values(options)
     if layout_engine == "dual":
         refine_mode = "docpage2md"
     config = replace(
@@ -900,6 +965,13 @@ def selected_config_from_options(options: GuiRunOptions, base_config: AppConfig 
         vision_batch_workers=_positive_worker_count(options.vision_workers, "Vision 并发数"),
         brain_batch_workers=_positive_worker_count(options.brain_workers, "Brain 并发数"),
         brain_context_radius=brain_context_radius_value(options.brain_context_radius),
+        brain_op_review_mode=normalize_brain_op_review_mode(
+            BRAIN_OP_REVIEW_MODE_LABEL_TO_KEY.get(options.brain_op_review_mode, options.brain_op_review_mode)
+        ),
+        vision_crop_mode=vision_crop_mode,
+        vision_crop_dpi=vision_crop_dpi,
+        vision_crop_padding_profile=vision_crop_padding_profile,
+        vision_crop_retry=vision_crop_retry,
         brain_thinking=BRAIN_THINKING_LABEL_TO_KEY.get(options.brain_thinking, options.brain_thinking or AppConfig().brain_thinking),
         brain_reasoning_effort=(options.brain_reasoning_effort or AppConfig().brain_reasoning_effort).strip()
         or AppConfig().brain_reasoning_effort,
@@ -1825,6 +1897,12 @@ class DocPage2MdGui:
         self.brain_workers = tk.StringVar(value=str(self.base_config.brain_batch_workers))
         self.brain_context_radius = tk.StringVar(value=BRAIN_CONTEXT_RADIUS_LABELS[str(self.base_config.brain_context_radius)])
         self.brain_context_custom = tk.StringVar(value=str(self.base_config.brain_context_radius))
+        self.brain_op_review_mode = tk.StringVar(
+            value=BRAIN_OP_REVIEW_MODE_LABELS.get(self.base_config.brain_op_review_mode, BRAIN_OP_REVIEW_MODE_LABELS["aggressive"])
+        )
+        self.vision_crop_mode = tk.StringVar(
+            value=vision_crop_mode_label(self.base_config.vision_crop_mode, self.base_config.vision_crop_padding_profile)
+        )
         self.brain_thinking = tk.StringVar(value=BRAIN_THINKING_LABELS.get(self.base_config.brain_thinking, BRAIN_THINKING_LABELS["disabled"]))
         self.brain_reasoning_effort = tk.StringVar(value=self.base_config.brain_reasoning_effort)
         self.vision_provider = tk.StringVar(value=default_vision.provider)
@@ -1895,10 +1973,21 @@ class DocPage2MdGui:
         ttk = self.ttk
 
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(self.root, padding=(18, 12), style="Header.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(1, weight=1)
+        ttk.Label(header, text="DocPage2MD", style="HeaderTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header,
+            text=f"v{DOCPAGE2MD_VERSION} · MinerU / PaddleOCR / Vision / Brain 文档识别工作台",
+            style="HeaderSubtle.TLabel",
+        ).grid(row=0, column=1, sticky="w", padx=(14, 0))
+        ttk.Label(header, textvariable=self.status_text, style="HeaderStatus.TLabel").grid(row=0, column=2, sticky="e", padx=(12, 0))
 
         notebook = ttk.Notebook(self.root)
-        notebook.grid(row=0, column=0, sticky="nsew")
+        notebook.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
         run_tab = ttk.Frame(notebook, padding=12)
         model_tab = ttk.Frame(notebook, padding=12)
@@ -1913,11 +2002,36 @@ class DocPage2MdGui:
             style.theme_use("clam")
         except self.tk.TclError:
             pass
-        style.configure(".", font=("Microsoft YaHei UI", 10))
-        style.configure("TNotebook.Tab", padding=(16, 8))
-        style.configure("TLabelframe", padding=8)
-        style.configure("TLabelframe.Label", font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("Primary.TButton", font=("Microsoft YaHei UI", 10, "bold"))
+        bg = "#f4f7fb"
+        panel = "#ffffff"
+        muted = "#64748b"
+        text = "#0f172a"
+        border = "#d9e2ef"
+        primary = "#2563eb"
+        danger = "#b91c1c"
+        self.root.configure(background=bg)
+        style.configure(".", font=("Microsoft YaHei UI", 10), background=bg, foreground=text)
+        style.configure("TFrame", background=bg)
+        style.configure("Header.TFrame", background="#111827")
+        style.configure("HeaderTitle.TLabel", background="#111827", foreground="#ffffff", font=("Microsoft YaHei UI", 17, "bold"))
+        style.configure("HeaderSubtle.TLabel", background="#111827", foreground="#cbd5e1", font=("Microsoft YaHei UI", 10))
+        style.configure("HeaderStatus.TLabel", background="#111827", foreground="#bfdbfe", font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("TNotebook", background=bg, borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(18, 9), font=("Microsoft YaHei UI", 10, "bold"))
+        style.map("TNotebook.Tab", background=[("selected", panel)], foreground=[("selected", text)])
+        style.configure("TLabelframe", padding=10, background=panel, bordercolor=border, relief="solid")
+        style.configure("TLabelframe.Label", background=bg, foreground=text, font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("TLabel", background=panel, foreground=text)
+        style.configure("TButton", padding=(10, 5))
+        style.configure("Primary.TButton", font=("Microsoft YaHei UI", 10, "bold"), foreground="#ffffff", background=primary, bordercolor=primary)
+        style.map("Primary.TButton", background=[("active", "#1d4ed8"), ("disabled", "#93c5fd")], foreground=[("disabled", "#eef2ff")])
+        style.configure("Danger.TButton", foreground="#ffffff", background=danger, bordercolor=danger)
+        style.map("Danger.TButton", background=[("active", "#991b1b"), ("disabled", "#fca5a5")])
+        style.configure("Treeview", rowheight=27, background="#ffffff", fieldbackground="#ffffff", bordercolor=border)
+        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"), background="#eef2f7", foreground=text)
+        style.map("Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", text)])
+        style.configure("TEntry", fieldbackground="#ffffff")
+        style.configure("TCombobox", fieldbackground="#ffffff")
 
     def _build_run_tab(self, parent) -> None:
         tk = self.tk
@@ -2054,7 +2168,7 @@ class DocPage2MdGui:
         ttk.Button(toolbar, text="下移", command=lambda: self._move_selected_input(1)).grid(row=0, column=6, padx=(0, 6))
         ttk.Button(toolbar, text="预览", command=self._preview_selected_input).grid(row=0, column=7, padx=(0, 6))
         columns = ("order", "name", "type", "size", "pages", "status")
-        self.input_tree = ttk.Treeview(source, columns=columns, show="headings", height=6)
+        self.input_tree = ttk.Treeview(source, columns=columns, show="headings", height=7)
         for col, label, width in [
             ("order", "#", 36),
             ("name", "文件名", 150),
@@ -2098,8 +2212,16 @@ class DocPage2MdGui:
             state="readonly",
         ).grid(row=3, column=1, sticky="ew", pady=4)
         self._help_button(out, "output_retention").grid(row=3, column=2, padx=(8, 0), pady=4)
+        ttk.Label(out, text="Vision 裁剪").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Combobox(
+            out,
+            textvariable=self.vision_crop_mode,
+            values=[VISION_CROP_MODE_LABELS[key] for key in ("original", "auto", "expanded")],
+            state="readonly",
+        ).grid(row=4, column=1, sticky="ew", pady=4)
+        self._help_button(out, "vision_crop").grid(row=4, column=2, padx=(8, 0), pady=4)
         advanced_toggle = ttk.Frame(out)
-        advanced_toggle.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        advanced_toggle.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         advanced_toggle.columnconfigure(1, weight=1)
         ttk.Checkbutton(
             advanced_toggle,
@@ -2123,7 +2245,7 @@ class DocPage2MdGui:
         ttk.Entry(self.mineru_advanced_frame, textvariable=self.mineru_page_chunk_size, width=8).grid(row=2, column=3, sticky="w", pady=3)
 
         paddle_toggle = ttk.Frame(out)
-        paddle_toggle.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        paddle_toggle.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         paddle_toggle.columnconfigure(1, weight=1)
         ttk.Checkbutton(
             paddle_toggle,
@@ -2155,7 +2277,7 @@ class DocPage2MdGui:
         self._help_button(self.paddleocr_advanced_frame, "paddleocr_evidence").grid(row=3, column=3, sticky="w", padx=(6, 0), pady=3)
 
         concurrency = ttk.LabelFrame(out, text="并发", padding=8)
-        concurrency.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        concurrency.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         concurrency.columnconfigure(1, weight=1)
         ttk.Label(concurrency, text="档位").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Combobox(
@@ -2200,13 +2322,22 @@ class DocPage2MdGui:
         ttk.Label(concurrency, text="自定义").grid(row=4, column=2, sticky="w", padx=(14, 8), pady=3)
         ttk.Entry(concurrency, textvariable=self.brain_context_custom, width=8).grid(row=4, column=3, sticky="w", pady=3)
         self._help_button(concurrency, "brain_context").grid(row=4, column=4, padx=(6, 0), pady=3)
+        ttk.Label(concurrency, text="审核").grid(row=5, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Combobox(
+            concurrency,
+            textvariable=self.brain_op_review_mode,
+            values=list(BRAIN_OP_REVIEW_MODE_LABELS.values()),
+            state="readonly",
+            width=28,
+        ).grid(row=5, column=1, columnspan=3, sticky="w", pady=3)
+        self._help_button(concurrency, "brain_op_review").grid(row=5, column=4, padx=(6, 0), pady=3)
         self.concurrency_hint_label = ttk.Label(
             concurrency,
             text="极速 60/60 保留原来的高并发；Brain 默认读取前后2页上下文。窗口越大越利于上下文纠错，也越贵、越慢。",
             wraplength=420,
             justify="left",
         )
-        self.concurrency_hint_label.grid(row=5, column=0, columnspan=5, sticky="ew", pady=(4, 0))
+        self.concurrency_hint_label.grid(row=6, column=0, columnspan=5, sticky="ew", pady=(4, 0))
 
         def _resize_concurrency_hint(event) -> None:
             self.concurrency_hint_label.configure(wraplength=max(260, event.width - 16))
@@ -2309,7 +2440,7 @@ class DocPage2MdGui:
         ttk.Label(command_tools, text="命令预览").grid(row=0, column=0, sticky="w")
         ttk.Button(command_tools, text="复制命令", command=self._copy_command_preview).grid(row=0, column=1, padx=(8, 0))
         ttk.Button(command_tools, text="查看完整命令", command=self._open_command_preview_window).grid(row=0, column=2, padx=(6, 0))
-        self.command_preview_entry = ttk.Entry(command_preview_frame, textvariable=self.command_preview, state="readonly")
+        self.command_preview_entry = ttk.Entry(command_preview_frame, textvariable=self.command_preview, state="readonly", font=("Consolas", 9))
         self.command_preview_entry.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         command_x_scroll = ttk.Scrollbar(command_preview_frame, orient="horizontal", command=self.command_preview_entry.xview)
         command_x_scroll.grid(row=2, column=0, sticky="ew")
@@ -2325,7 +2456,19 @@ class DocPage2MdGui:
         ttk.Label(log_tools, text="中文进度日志；完整日志写入输出目录 process.log。").grid(row=0, column=0, sticky="w")
         ttk.Button(log_tools, text="放大日志", command=self._open_log_window).grid(row=0, column=1, padx=(8, 0))
         ttk.Button(log_tools, text="清空显示", command=self._clear_log).grid(row=0, column=2, padx=(8, 0))
-        self.log_text = tk.Text(log_frame, wrap="word", height=12, state="disabled", font=("Consolas", 10))
+        self.log_text = tk.Text(
+            log_frame,
+            wrap="word",
+            height=12,
+            state="disabled",
+            font=("Consolas", 10),
+            background="#0f172a",
+            foreground="#e2e8f0",
+            insertbackground="#e2e8f0",
+            relief="flat",
+            padx=10,
+            pady=8,
+        )
         self.log_text.grid(row=1, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         scroll.grid(row=1, column=1, sticky="ns")
@@ -2337,7 +2480,7 @@ class DocPage2MdGui:
         ttk.Label(bottom, textvariable=self.status_text).grid(row=0, column=0, sticky="w")
         self.run_button = ttk.Button(bottom, text="开始处理", command=self._start_process, style="Primary.TButton")
         self.run_button.grid(row=0, column=1, padx=(8, 0))
-        self.stop_button = ttk.Button(bottom, text="停止", command=self._stop_process, state="disabled")
+        self.stop_button = ttk.Button(bottom, text="停止", command=self._stop_process, state="disabled", style="Danger.TButton")
         self.stop_button.grid(row=0, column=2, padx=(8, 0))
         ttk.Button(bottom, text="打开输出目录", command=self._open_output_folder).grid(row=0, column=3, padx=(8, 0))
 
@@ -2559,6 +2702,13 @@ class DocPage2MdGui:
                 "调试：完整保留 MinerU/PaddleOCR 原始 artifact、IR 和解析缓存，最适合定位 API 返回内容，但会明显占用磁盘。\n\n"
                 "保留模式不会删除用户手动指定的 artifact 目录，也不会碰 markdown_output/已归档。"
             ),
+            "vision_crop": (
+                "Vision 裁剪策略决定公式、图示、表格送给 Vision 时使用哪张图。\n\n"
+                "原始裁剪：使用 MinerU/PaddleOCR 返回的 crop，最快，也最接近旧行为。\n"
+                "自动扩边（推荐）：优先从整页图或原 PDF 重新裁剪并扩边，失败时回退原 crop。\n"
+                "手写公式增强：使用更大的手写公式扩边策略，适合公式少截、上下行错位的手写笔记。\n\n"
+                "扩边只影响 Vision 输入证据，不改变最终 Markdown 引用的图片。精简/标准模式会清理中间裁剪缓存，调试模式保留用于排查。"
+            ),
             "brain_context": (
                 "Brain 上下文窗口决定每页审阅时能看到多少相邻页。\n\n"
                 "仅当前页：最省 token，适合页面相互独立的材料。\n"
@@ -2566,6 +2716,13 @@ class DocPage2MdGui:
                 "前后2页：默认推荐，兼顾上下文纠错和费用。\n"
                 "前后3/5页：适合术语前后呼应强、跨页推导多的手写笔记，但 prompt 更长、费用和延迟更高。\n\n"
                 "窗口不会让 Brain 自由改整页。Brain 只能提出绑定 block/span 的 op，最后仍要经过 checked ops 和 Validator。"
+            ),
+            "brain_op_review": (
+                "Brain 审核模式决定本地是否主动救回格式不完整但证据充分的修改。\n\n"
+                "激进（推荐）：会从 finding 继承缺失字段，尝试唯一定位 old_text；低置信短 span 只要唯一命中且不引入硬错误也可落地。\n"
+                "标准：只做较保守的元数据补全和精确定位修复。\n"
+                "保守：严格要求 Brain 给齐字段并精确命中，误改风险最低，但正确修改更容易被拒绝。\n\n"
+                "无论哪档，整页 Markdown 改写、API Key/Traceback/思考过程泄漏、危险文本膨胀、新增裸公式或 JSON 泄漏都会被拒绝。"
             ),
             "concurrency": (
                 "并发分成四类：解析、文档、Vision、Brain。\n\n"
@@ -2583,13 +2740,13 @@ class DocPage2MdGui:
 
     def _toggle_mineru_advanced(self) -> None:
         if self.show_mineru_advanced.get():
-            self.mineru_advanced_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(6, 6))
+            self.mineru_advanced_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 6))
         else:
             self.mineru_advanced_frame.grid_remove()
 
     def _toggle_paddleocr_advanced(self) -> None:
         if self.show_paddleocr_advanced.get():
-            self.paddleocr_advanced_frame.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(6, 6))
+            self.paddleocr_advanced_frame.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(6, 6))
         else:
             self.paddleocr_advanced_frame.grid_remove()
 
@@ -2983,6 +3140,8 @@ class DocPage2MdGui:
             self.brain_workers,
             self.brain_context_radius,
             self.brain_context_custom,
+            self.brain_op_review_mode,
+            self.vision_crop_mode,
             self.brain_thinking,
             self.brain_reasoning_effort,
             self.vision_provider,
@@ -3470,6 +3629,11 @@ class DocPage2MdGui:
                 if BRAIN_CONTEXT_RADIUS_LABEL_TO_KEY.get(self.brain_context_radius.get(), self.brain_context_radius.get()) == "custom"
                 else self.brain_context_radius.get()
             ),
+            brain_op_review_mode=self.brain_op_review_mode.get(),
+            vision_crop_mode=self.vision_crop_mode.get(),
+            vision_crop_dpi=self.base_config.vision_crop_dpi,
+            vision_crop_padding_profile=("handwritten" if vision_crop_mode_key(self.vision_crop_mode.get()) == "expanded" else "auto"),
+            vision_crop_retry=self.base_config.vision_crop_retry,
             brain_thinking=self.brain_thinking.get(),
             brain_reasoning_effort=self.brain_reasoning_effort.get(),
             vision=SelectedModel(
@@ -3553,7 +3717,7 @@ class DocPage2MdGui:
             f"{REFINE_MODE_LABELS.get(refine, refine)} / {MODEL_PROFILE_LABELS.get(profile_key, profile_key)} / {parser_model}\n"
             f"保留={self.output_retention.get()}，解析并发={self.parser_workers.get() or '?'}，文档并发={self.doc_workers.get() or '?'}，"
             f"Vision={self.vision_workers.get() or '?'}，Brain={self.brain_workers.get() or '?'}，"
-            f"Brain窗口={brain_context_text}，Brain模式={self.brain_thinking.get()}"
+            f"Vision裁剪={self.vision_crop_mode.get()}，Brain窗口={brain_context_text}，Brain模式={self.brain_thinking.get()}，审核={self.brain_op_review_mode.get()}"
         )
 
     def _refresh_cost_estimate(self, silent: bool = False) -> None:

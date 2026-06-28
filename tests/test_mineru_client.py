@@ -86,6 +86,28 @@ def test_mineru_batch_upload_payload_uses_file_level_page_ranges(monkeypatch, tm
     ]
 
 
+def test_mineru_batch_upload_can_disable_config_page_range_fallback(monkeypatch, tmp_path):
+    pdf = tmp_path / "notes.pdf"
+    pdf.write_bytes(b"pdf")
+    client = MinerUClient(AppConfig(mineru_page_ranges="5-15"), token="test-token")
+    captured = {}
+
+    def fake_post(path, payload):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {"code": 0, "msg": "ok", "data": {"batch_id": "batch-1", "file_urls": ["u1"]}}
+
+    monkeypatch.setattr(client, "_post_json", fake_post)
+
+    response = client.request_upload_urls([pdf], page_ranges=None, use_config_page_ranges=False)
+
+    assert response["data"]["batch_id"] == "batch-1"
+    assert captured["path"] == "/api/v4/file-urls/batch"
+    assert captured["payload"]["files"] == [
+        {"name": "notes.pdf", "data_id": "notes", "is_ocr": True},
+    ]
+
+
 def test_mineru_batch_results_parse_all_files(monkeypatch):
     client = MinerUClient(AppConfig(), token="test-token")
 

@@ -168,6 +168,58 @@ def test_default_fusion_formula_conflict_renders_one_formula_candidate():
     assert "[paddleocr]" not in markdown.lower()
 
 
+def test_fusion_dedupes_cross_engine_formula_artifacts_and_duplicate_tags():
+    formula = r"\Delta^{(-)}(x-x') \equiv -i\int \frac{d^3p}{(2\pi)^3 2E_p} e^{ip(x-x')} \tag{5.4}"
+    mineru_block = _block("p0084-b001", "formula_block", formula, [10, 10, 320, 80], source_page=84, confidence=0.88)
+    number_block = _block("p0084-b002", "paragraph", "(5.4)", [330, 10, 360, 80], source_page=84, confidence=0.6)
+    paddle_block = _block("p0084-b101", "formula_block", formula.replace(" ", ""), [10, 300, 330, 360], source_page=84, confidence=0.82)
+    mineru = _page(84, [mineru_block, number_block])
+    paddle = _page(84, [paddle_block])
+    groups = [
+        {
+            "group_id": "p0084-g001",
+            "page_no": 84,
+            "type_hint": "formula_block",
+            "_candidates": [_manual_candidate("mineru", mineru_block, formula)],
+        },
+        {
+            "group_id": "p0084-g002",
+            "page_no": 84,
+            "type_hint": "formula_block",
+            "_candidates": [_manual_candidate("paddleocr", paddle_block, formula.replace(" ", ""))],
+        },
+        {
+            "group_id": "p0084-g003",
+            "page_no": 84,
+            "type_hint": "paragraph",
+            "_candidates": [_manual_candidate("mineru", number_block, "(5.4)")],
+        },
+    ]
+
+    page, report = apply_fusion_ops(mineru, paddle, groups, [], page_no=84)
+    markdown = render_page_ir_to_markdown(page, 84)
+
+    assert markdown.count(r"\Delta^{(-)}") == 1
+    assert "\n(5.4)\n" not in markdown
+    assert {item["reason"] for item in report["deduped_blocks"]} == {"duplicate_formula_block", "duplicate_formula_number"}
+
+
+def _manual_candidate(source, block, text):
+    return {
+        "candidate_id": f"{source}:{block['id']}",
+        "source": source,
+        "block_id": block["id"],
+        "type": block["type"],
+        "text": text,
+        "bbox": block.get("bbox"),
+        "confidence": block.get("confidence"),
+        "image_ref": block.get("image_ref"),
+        "warnings": [],
+        "quality_score": block.get("confidence") or 0.8,
+        "block": deepcopy(block),
+    }
+
+
 def test_mark_uncertain_keeps_candidate_comparison_out_of_markdown():
     mineru = _page(1, [_block("p0001-b001", "paragraph", "第一种解释保留为正文。", [10, 10, 200, 40], confidence=0.8)])
     paddle = _page(1, [_block("p0001-b001", "paragraph", "另一份识别结果差异很大。", [10, 10, 200, 40], confidence=0.8)])

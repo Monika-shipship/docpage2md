@@ -128,6 +128,14 @@ def _strip_heading_marks(text: str) -> str:
 
 
 def _render_formula_block(block: Dict[str, Any], text: str) -> str:
+    payload = _parse_formula_payload(block.get("latex")) or _parse_formula_payload(text)
+    if payload:
+        latex = str(payload.get("latex") or "").strip()
+        if latex:
+            return format_display_math(normalize_formula_text(_strip_known_section_heading(latex)))
+        raw = str(payload.get("raw_text") or payload.get("description") or "").strip()
+        return _render_uncertain_formula(block, raw, [])
+
     stripped = _strip_known_section_heading(block.get("latex") or text)
     quality = block.get("formula_quality")
     warnings = quality.get("warnings") if isinstance(quality, dict) else block.get("warnings")
@@ -252,7 +260,7 @@ def _load_jsonish_object(text: str) -> Any:
 
 def _extract_figure_jsonish_fields(text: str) -> dict[str, Any]:
     fields: dict[str, Any] = {}
-    for key in ("figure_type", "description", "raw_text"):
+    for key in ("figure_type", "description", "raw_text", "latex"):
         match = re.search(rf'"{key}"\s*:\s*"([^"]*)"', text, flags=re.DOTALL)
         if match:
             fields[key] = match.group(1).strip()
@@ -348,11 +356,47 @@ def _render_uncertain(text: str) -> str:
 def _render_uncertain_formula(block: Dict[str, Any], text: str, warnings: list | None = None) -> str:
     image = _formula_image_reference(block)
     raw = (text or "").strip()
+    payload = _parse_formula_payload(raw)
+    if payload:
+        latex = str(payload.get("latex") or "").strip()
+        if latex:
+            return format_display_math(normalize_formula_text(latex))
+        raw = str(payload.get("raw_text") or payload.get("description") or "").strip()
     if _should_render_as_display_formula(raw):
         body = format_display_math(normalize_formula_text(raw))
     else:
         body = _normalize_user_text(raw)
     return f"{image}\n\n{body}" if image else body
+
+
+def _parse_formula_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value if any(key in value for key in ("latex", "description", "raw_text", "figure_type")) else {}
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    text = _strip_outer_display_math(text)
+    text = _strip_markdown_json_fence(text)
+    candidates = [text]
+    start = text.find("{")
+    end = text.rfind("}")
+    if 0 <= start < end:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        parsed = _load_jsonish_object(candidate)
+        if isinstance(parsed, dict) and any(key in parsed for key in ("latex", "description", "raw_text", "figure_type")):
+            return parsed
+    extracted = _extract_figure_jsonish_fields(text)
+    if extracted and any(key in extracted for key in ("latex", "description", "raw_text")):
+        return extracted
+    return {}
+
+
+def _strip_outer_display_math(text: str) -> str:
+    value = text.strip()
+    if value.startswith("$$") and value.endswith("$$"):
+        return value[2:-2].strip()
+    return value
 
 
 def _should_render_as_display_formula(text: str) -> bool:
@@ -381,7 +425,6 @@ def _has_blocking_formula_warning(warnings) -> bool:
     blocking_codes = {
         "formula_empty",
         "formula_uncertain_marker",
-        "formula_truncated",
         "formula_isolated_operator",
         "formula_reasoning_without_latex",
         "formula_brace_unbalanced",

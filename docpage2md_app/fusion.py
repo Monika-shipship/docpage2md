@@ -54,6 +54,7 @@ def fuse_document_irs(
     all_groups: list[dict[str, Any]] = []
     all_decisions: list[dict[str, Any]] = []
     all_rejected: list[dict[str, Any]] = []
+    all_deduped: list[dict[str, Any]] = []
     uncertain_items: list[dict[str, Any]] = []
 
     for page_no in page_numbers:
@@ -92,6 +93,7 @@ def fuse_document_irs(
             "candidate_groups": public_groups,
             "decisions": apply_report["decisions"],
             "rejected_ops": apply_report["rejected_ops"],
+            "deduped_blocks": apply_report.get("deduped_blocks", []),
             "uncertain_items": apply_report["uncertain_items"],
             "backend": "custom" if decision_backend else "deterministic_default",
             "backend_warnings": backend_warnings,
@@ -109,6 +111,7 @@ def fuse_document_irs(
             "candidate_groups": public_groups,
             "decisions": apply_report["decisions"],
             "rejected_ops": apply_report["rejected_ops"],
+            "deduped_blocks": apply_report.get("deduped_blocks", []),
             "uncertain_items": apply_report["uncertain_items"],
             "backend_warnings": backend_warnings,
             "backend_error": backend_error,
@@ -117,6 +120,7 @@ def fuse_document_irs(
         all_groups.extend(public_groups)
         all_decisions.extend(apply_report["decisions"])
         all_rejected.extend(apply_report["rejected_ops"])
+        all_deduped.extend(apply_report.get("deduped_blocks", []))
         uncertain_items.extend(apply_report["uncertain_items"])
 
     fused_ir = {
@@ -135,6 +139,7 @@ def fuse_document_irs(
                 "candidate_group_count": len(all_groups),
                 "decision_count": len(all_decisions),
                 "rejected_op_count": len(all_rejected),
+                "deduped_block_count": len(all_deduped),
                 "uncertain_count": len(uncertain_items),
             },
             "mineru": mineru_ir.get("metadata") or {},
@@ -150,12 +155,14 @@ def fuse_document_irs(
             "candidate_groups": len(all_groups),
             "decisions": len(all_decisions),
             "rejected_ops": len(all_rejected),
+            "deduped_blocks": len(all_deduped),
             "uncertain_items": len(uncertain_items),
         },
         "pages": page_reports,
         "candidate_groups": all_groups,
         "decisions": all_decisions,
         "rejected_ops": all_rejected,
+        "deduped_blocks": all_deduped,
         "uncertain_items": uncertain_items,
     }
     return FusionResult(fused_ir, report)
@@ -311,6 +318,7 @@ def apply_fusion_ops(
                 }
             )
 
+    blocks, deduped_blocks = _dedupe_fused_formula_artifacts(blocks)
     page_ir = _base_page(mineru_page, paddleocr_page, page_no=page_no, blocks=blocks, engine_mode=engine_mode)
     validation = validate_slide_markdown(
         render_page_ir_to_markdown(page_ir, page_no),
@@ -322,6 +330,7 @@ def apply_fusion_ops(
         "decisions": decisions,
         "rejected_ops": rejected_ops,
         "uncertain_items": uncertain_items,
+        "deduped_blocks": deduped_blocks,
         "validation": validation.to_dict(),
     }
 
@@ -912,6 +921,147 @@ def _text_similarity(left: str, right: str) -> float:
     if left_norm in right_norm or right_norm in left_norm:
         return min(len(left_norm), len(right_norm)) / max(len(left_norm), len(right_norm))
     return SequenceMatcher(None, left_norm, right_norm, autojunk=False).ratio()
+
+
+def _dedupe_fused_formula_artifacts(blocks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    formula_tags = _formula_tags_from_blocks(blocks)
+    kept: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    formula_indexes: list[int] = []
+    for block in blocks:
+        if _is_duplicate_formula_number_block(block, formula_tags):
+            removed.append(_dedupe_audit(block, "duplicate_formula_number"))
+            continue
+        if block.get("type") != "formula_block":
+            kept.append(block)
+            continue
+        norm = _normalize_formula_for_dedupe(_text_of(block))
+        if len(norm) < 32:
+            kept.append(block)
+            formula_indexes.append(len(kept) - 1)
+            continue
+        duplicate_index = _matching_formula_index(kept, formula_indexes, block, norm)
+        if duplicate_index is None:
+            kept.append(block)
+            formula_indexes.append(len(kept) - 1)
+            continue
+        existing = kept[duplicate_index]
+        if _formula_block_rank(block) > _formula_block_rank(existing):
+            kept[duplicate_index] = block
+            removed.append(_dedupe_audit(existing, "duplicate_formula_block", kept_block=block))
+        else:
+            removed.append(_dedupe_audit(block, "duplicate_formula_block", kept_block=existing))
+    return kept, removed
+
+
+def _matching_formula_index(
+    blocks: list[dict[str, Any]],
+    formula_indexes: list[int],
+    candidate_block: dict[str, Any],
+    norm: str,
+) -> int | None:
+    for index in formula_indexes:
+        other = blocks[index]
+        other_norm = _normalize_formula_for_dedupe(_text_of(other))
+        if _formula_duplicate_score(norm, other_norm) < 0.985:
+            continue
+        if not _likely_cross_engine_duplicate(other, candidate_block):
+            continue
+        return index
+    return None
+
+
+def _likely_cross_engine_duplicate(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_sources = _block_sources(left)
+    right_sources = _block_sources(right)
+    if not left_sources or not right_sources:
+        return False
+    if left_sources == right_sources:
+        return False
+    return bool((left_sources | right_sources) <= {"mineru", "paddleocr"})
+
+
+def _block_sources(block: dict[str, Any]) -> set[str]:
+    sources = set()
+    evidence = block.get("evidence") if isinstance(block.get("evidence"), dict) else {}
+    dual_parser = evidence.get("dual_parser") if isinstance(evidence.get("dual_parser"), dict) else {}
+    for source in dual_parser.get("sources") or []:
+        if source:
+            sources.add(str(source))
+    for key in ("source_engine", "origin"):
+        value = str(block.get(key) or "")
+        if "mineru" in value:
+            sources.add("mineru")
+        if "paddleocr" in value:
+            sources.add("paddleocr")
+    return sources
+
+
+def _formula_block_rank(block: dict[str, Any]) -> tuple[int, int, float, int]:
+    text = _text_of(block)
+    norm = _normalize_formula_for_dedupe(text)
+    severe = 0
+    quality = block.get("formula_quality") if isinstance(block.get("formula_quality"), dict) else {}
+    for warning in (quality.get("warnings") or []) + (block.get("warnings") or []):
+        code = warning.get("code") if isinstance(warning, dict) else str(warning)
+        if code in {
+            "formula_empty",
+            "formula_uncertain_marker",
+            "formula_isolated_operator",
+            "formula_brace_unbalanced",
+            "formula_repeated_token_artifact",
+            "latex_left_right_unbalanced",
+            "latex_frac_missing_braces",
+        }:
+            severe += 1
+    has_tag = 1 if re.search(r"\\tag\{[^{}]+\}", text) else 0
+    return (-severe, has_tag, _confidence(block), len(norm))
+
+
+def _is_duplicate_formula_number_block(block: dict[str, Any], formula_tags: set[str]) -> bool:
+    if block.get("type") not in {"paragraph", "formula_inline", "formula_block"}:
+        return False
+    text = str(block.get("text") or block.get("latex") or "").strip()
+    match = re.fullmatch(r"[（(]\s*(\d+(?:\.\d+)+)\s*[）)]", text)
+    return bool(match and match.group(1) in formula_tags)
+
+
+def _formula_tags_from_blocks(blocks: list[dict[str, Any]]) -> set[str]:
+    tags = set()
+    for block in blocks:
+        if block.get("type") not in {"formula_block", "formula_inline"}:
+            continue
+        tags.update(match.group(1).strip() for match in re.finditer(r"\\tag\{([^{}]+)\}", _text_of(block)))
+    return tags
+
+
+def _formula_duplicate_score(left: str, right: str) -> float:
+    if len(left) < 32 or len(right) < 32:
+        return 0.0
+    if left == right:
+        return 1.0
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    if shorter in longer:
+        return len(shorter) / len(longer)
+    return SequenceMatcher(None, left, right, autojunk=False).ratio()
+
+
+def _normalize_formula_for_dedupe(text: str) -> str:
+    normalized = _normalize_match_text(text)
+    normalized = re.sub(r"tag\d+(?:\.\d+)+", "", normalized)
+    return normalized
+
+
+def _dedupe_audit(block: dict[str, Any], reason: str, *, kept_block: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "reason": reason,
+        "removed_block_id": block.get("id"),
+        "removed_type": block.get("type"),
+        "removed_origin": block.get("origin"),
+        "removed_source_engine": block.get("source_engine"),
+        "kept_block_id": (kept_block or {}).get("id"),
+        "text_preview": _safe_text(_text_of(block), 220),
+    }
 
 
 def _normalize_match_text(text: str) -> str:

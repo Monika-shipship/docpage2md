@@ -3,6 +3,8 @@ import threading
 import time
 from pathlib import Path
 
+from PIL import Image
+
 from docpage2md_app.artifacts import sha256_text
 from docpage2md_app.config import AppConfig
 from docpage2md_app import hybrid_enrichment
@@ -168,6 +170,89 @@ def test_hybrid_enrichment_runs_vision_and_brain_in_parallel(tmp_path):
     assert result["summary"]["pages"]["page_count"] == 4
 
 
+def test_hybrid_enrichment_sends_expanded_crop_to_vision_backend(tmp_path):
+    output_root = tmp_path / "HybridDoc"
+    page_dir = output_root / "assets" / "pages"
+    crop_dir = output_root / "assets" / "crops"
+    page_dir.mkdir(parents=True)
+    crop_dir.mkdir(parents=True)
+    Image.new("RGB", (400, 400), "white").save(page_dir / "page-1.png")
+    Image.new("RGB", (30, 20), "white").save(crop_dir / "formula.jpg")
+    document_ir = _document_ir(
+        [_block("p0001-b001", "formula_block", "x=", crop_ref="assets/crops/formula.jpg", origin="vision_formula")]
+    )
+    page = document_ir["pages"][0]
+    page["page_image_ref"] = "assets/pages/page-1.png"
+    page["page_size"] = [100, 100]
+    page["blocks"][0]["bbox"] = [40, 40, 60, 48]
+    seen_paths: list[Path] = []
+
+    def vision_backend(page_ir, block, image_path: Path | None, config):
+        assert image_path and image_path.exists()
+        seen_paths.append(image_path)
+        assert ".vision_crop_cache" in image_path.parts
+        assert image_path.name != "formula.jpg"
+        return {"success": True, "latex": "x=1"}
+
+    result = enrich_mineru_document_ir(
+        document_ir,
+        AppConfig(engine_mode="hybrid", document_type="handwritten_notes"),
+        output_root=output_root,
+        vision_backend=vision_backend,
+        brain_backend=lambda page_ir, context_pages, config: {"success": True, "decisions": [], "new_findings": [], "op_candidates": []},
+    )
+
+    report = result["pages"][1]["vision"]["blocks"][0]
+    evidence = result["document_ir"]["pages"][0]["blocks"][0]["evidence"]["vision_enrichment"]
+    assert seen_paths
+    assert report["crop"]["crop_strategy"] == "expanded_from_page_image"
+    assert report["crop"]["padding_profile"] == "handwritten"
+    assert evidence["crop"]["expanded_bbox"]
+    assert not (output_root / ".vision_crop_cache").exists()
+
+
+def test_hybrid_enrichment_retries_formula_crop_when_vision_returns_empty_latex(tmp_path):
+    output_root = tmp_path / "HybridDoc"
+    page_dir = output_root / "assets" / "pages"
+    crop_dir = output_root / "assets" / "crops"
+    page_dir.mkdir(parents=True)
+    crop_dir.mkdir(parents=True)
+    Image.new("RGB", (500, 500), "white").save(page_dir / "page-1.png")
+    Image.new("RGB", (30, 20), "white").save(crop_dir / "formula.jpg")
+    document_ir = _document_ir(
+        [_block("p0001-b001", "formula_block", "", crop_ref="assets/crops/formula.jpg", origin="vision_formula")]
+    )
+    page = document_ir["pages"][0]
+    page["page_image_ref"] = "assets/pages/page-1.png"
+    page["page_size"] = [100, 100]
+    page["blocks"][0]["bbox"] = [35, 35, 65, 45]
+    calls: list[Path] = []
+
+    def vision_backend(page_ir, block, image_path: Path | None, config):
+        assert image_path and image_path.exists()
+        calls.append(image_path)
+        if len(calls) == 1:
+            return {"success": True, "latex": ""}
+        return {"success": True, "latex": "E=mc^2"}
+
+    result = enrich_mineru_document_ir(
+        document_ir,
+        AppConfig(engine_mode="hybrid", document_type="handwritten_notes"),
+        output_root=output_root,
+        vision_backend=vision_backend,
+        brain_backend=lambda page_ir, context_pages, config: {"success": True, "decisions": [], "new_findings": [], "op_candidates": []},
+    )
+
+    block = result["document_ir"]["pages"][0]["blocks"][0]
+    report = result["pages"][1]["vision"]["blocks"][0]
+    assert len(calls) == 2
+    assert block["latex"] == "E=mc^2"
+    assert report["retry_count"] == 1
+    assert report["crop"]["render_dpi"] == 400
+    assert report["crop"]["padding_profile"] == "aggressive"
+    assert report["crop_attempts"][1]["retry_reason"] == "formula_empty"
+
+
 def test_brain_context_window_uses_configured_radius(tmp_path):
     output_root = tmp_path / "HybridDoc"
     document_ir = _document_ir_pages(
@@ -295,7 +380,7 @@ def test_brain_audit_keeps_contract_errors_and_payload_summary():
     assert audit["new_text_preview"] == "正字"
 
 
-def test_brain_ops_reject_missing_evidence_policy_fields():
+def test_brain_ops_inherit_missing_evidence_policy_fields_in_aggressive_mode():
     page = _document_ir([_block("p0001-b001", "paragraph", "配分函教为 Z。", origin="vision_ocr")])["pages"][0]
 
     def brain_backend(page_ir, context_pages, config):
@@ -331,10 +416,14 @@ def test_brain_ops_reject_missing_evidence_policy_fields():
 
     refined, report = hybrid_enrichment._run_brain_ops(page, [page], AppConfig(engine_mode="hybrid"), brain_backend)
 
-    assert refined["blocks"][0]["text"] == "配分函教为 Z。"
-    assert report["ops_rejected"] == 1
+    assert refined["blocks"][0]["text"] == "配分函数为 Z。"
+    assert report["ops_applied"] == 1
+    assert report["ops_rejected"] == 0
+    assert report["repair_successes"] == 1
     audit = report["op_audit"][0]
-    assert audit["reason"] == "brain_op_missing_evidence_type"
+    assert audit["status"] == "repaired_applied"
+    assert audit["evidence_type"] == "context"
+    assert "inherit_evidence_type_from_finding" in audit["repair_actions"]
     assert audit["old_text_preview"] == "配分函教"
     assert audit["new_text_preview"] == "配分函数"
     assert audit["current_text_preview"] == "配分函教为 Z。"
@@ -345,6 +434,48 @@ def test_brain_ops_reject_missing_evidence_policy_fields():
     assert audit["target_block_type"] == "paragraph"
     assert audit["target_block_origin"] == "vision_ocr"
     assert audit["target_block_confidence"] == 0.75
+
+
+def test_brain_ops_conservative_mode_still_rejects_missing_evidence_policy_fields():
+    page = _document_ir([_block("p0001-b001", "paragraph", "配分函教为 Z。", origin="vision_ocr")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [
+                {
+                    "finding_id": "p0001-bf001",
+                    "page": 1,
+                    "block_id": "p0001-b001",
+                    "kind": "contextual_ocr_error",
+                    "message": "上下文显示这里应为配分函数。",
+                }
+            ],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "id": "p0001-b001",
+                    "old_text": "配分函教",
+                    "new_text": "配分函数",
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "confidence": 0.91,
+                }
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(
+        page,
+        [page],
+        AppConfig(engine_mode="hybrid", brain_op_review_mode="conservative"),
+        brain_backend,
+    )
+
+    assert refined["blocks"][0]["text"] == "配分函教为 Z。"
+    assert report["ops_rejected"] == 1
+    assert report["op_audit"][0]["status"] == "hard_rejected"
+    assert report["op_audit"][0]["reason"] == "brain_op_missing_evidence_type"
 
 
 def test_brain_audit_previews_redact_secrets_and_truncate_middle():
@@ -487,6 +618,49 @@ def test_brain_ops_accept_finding_id_alias_for_brain_discovered_op():
     assert audit["resolved_finding_id"] == "p0001-bf001"
 
 
+def test_brain_ops_repair_unknown_new_finding_alias_when_text_evidence_matches():
+    page = _document_ir([_block("p0001-b001", "paragraph", "配分函教为 Z。", origin="vision_ocr")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [
+                {
+                    "new_finding_id": "p0001-nf001",
+                    "finding_id": "p0001-bf001",
+                    "page": 1,
+                    "block_id": "p0001-b001",
+                    "kind": "contextual_ocr_error",
+                    "current_text": "配分函教",
+                    "suggested_text": "配分函数",
+                }
+            ],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "block_id": "p0001-b001",
+                    "old_text": "配分函教",
+                    "new_text": "配分函数",
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-missing",
+                    "evidence_type": "context",
+                    "confidence": 0.91,
+                }
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(page, [page], AppConfig(engine_mode="hybrid"), brain_backend)
+
+    assert refined["blocks"][0]["text"] == "配分函数为 Z。"
+    assert report["ops_applied"] == 1
+    audit = report["op_audit"][0]
+    assert audit["status"] == "repaired_applied"
+    assert "repair_unknown_new_finding_id" in audit["repair_actions"]
+    assert audit["resolved_new_finding_id"] == "p0001-nf001"
+    assert audit["resolved_finding_id"] == "p0001-bf001"
+
+
 def test_brain_ops_reject_unknown_new_finding_alias_with_detail():
     page = _document_ir([_block("p0001-b001", "paragraph", "配分函教为 Z。", origin="vision_ocr")])["pages"][0]
 
@@ -525,6 +699,203 @@ def test_brain_ops_reject_unknown_new_finding_alias_with_detail():
     assert audit["reason"] == "brain_op_unknown_new_finding_reference"
     assert audit["policy_error_detail"]["provided_new_finding_id"] == "p0001-missing"
     assert "p0001-nf001" in audit["policy_error_detail"]["known_aliases_sample"]
+
+
+def test_brain_ops_allow_low_confidence_exact_short_span_in_aggressive_mode():
+    page = _document_ir([_block("p0001-b001", "paragraph", "配分函教为 Z。", origin="vision_ocr")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [{"finding_id": "p0001-bf001", "page": 1, "block_id": "p0001-b001", "kind": "contextual_ocr_error"}],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "id": "p0001-b001",
+                    "old_text": "配分函教",
+                    "new_text": "配分函数",
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "evidence_type": "context",
+                    "confidence": 0.61,
+                }
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(page, [page], AppConfig(engine_mode="hybrid"), brain_backend)
+
+    assert refined["blocks"][0]["text"] == "配分函数为 Z。"
+    assert report["ops_applied"] == 1
+    assert report["op_audit"][0]["match_strategy"] == "exact"
+
+
+def test_brain_ops_reject_low_confidence_replace_in_conservative_mode():
+    page = _document_ir([_block("p0001-b001", "paragraph", "配分函教为 Z。", origin="vision_ocr")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [{"finding_id": "p0001-bf001", "page": 1, "block_id": "p0001-b001", "kind": "contextual_ocr_error"}],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "id": "p0001-b001",
+                    "old_text": "配分函教",
+                    "new_text": "配分函数",
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "evidence_type": "context",
+                    "confidence": 0.61,
+                }
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(
+        page,
+        [page],
+        AppConfig(engine_mode="hybrid", brain_op_review_mode="conservative"),
+        brain_backend,
+    )
+
+    assert refined["blocks"][0]["text"] == "配分函教为 Z。"
+    assert report["ops_rejected"] == 1
+    assert report["op_audit"][0]["status"] == "soft_rejected"
+    assert report["op_audit"][0]["reason"] == "brain_op_low_confidence_replace"
+
+
+def test_brain_ops_repair_old_text_whitespace_mismatch():
+    page = _document_ir([_block("p0001-b001", "paragraph", "配 分 函 数为 Z。", origin="vision_ocr")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [{"finding_id": "p0001-bf001", "page": 1, "block_id": "p0001-b001", "kind": "contextual_ocr_error"}],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "id": "p0001-b001",
+                    "old_text": "配分函数",
+                    "new_text": "配分函数",
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "evidence_type": "context",
+                    "confidence": 0.88,
+                }
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(page, [page], AppConfig(engine_mode="hybrid"), brain_backend)
+
+    assert refined["blocks"][0]["text"] == "配分函数为 Z。"
+    audit = report["op_audit"][0]
+    assert audit["status"] == "repaired_applied"
+    assert audit["match_strategy"] == "compact_whitespace"
+    assert "repair_old_text_span" in audit["repair_actions"]
+
+
+def test_brain_ops_repair_old_text_unicode_width_mismatch():
+    page = _document_ir([_block("p0001-b001", "paragraph", "ＡＢＣ 表示常数。", origin="vision_ocr")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [{"finding_id": "p0001-bf001", "page": 1, "block_id": "p0001-b001", "kind": "unicode_width"}],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "id": "p0001-b001",
+                    "old_text": "ABC",
+                    "new_text": "ABC",
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "evidence_type": "context",
+                    "confidence": 0.9,
+                }
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(page, [page], AppConfig(engine_mode="hybrid"), brain_backend)
+
+    assert refined["blocks"][0]["text"] == "ABC 表示常数。"
+    assert report["op_audit"][0]["match_strategy"] == "compact_whitespace"
+
+
+def test_brain_ops_extract_json_formula_payload_to_latex():
+    json_formula = '```json\n{"latex":"E = mc^2","description":"formula"}\n```'
+    page = _document_ir([_block("p0001-b001", "formula_block", json_formula, origin="vision_formula")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [{"finding_id": "p0001-bf001", "page": 1, "block_id": "p0001-b001", "kind": "formula_json_payload"}],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "id": "p0001-b001",
+                    "old_text": json_formula,
+                    "new_text": "E = mc^2",
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "evidence_type": "validator",
+                    "confidence": 0.96,
+                }
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(page, [page], AppConfig(engine_mode="hybrid"), brain_backend)
+
+    assert refined["blocks"][0]["text"] == "E = mc^2"
+    assert refined["blocks"][0]["latex"] == "E = mc^2"
+    assert report["ops_applied"] == 1
+    audit = report["op_audit"][0]
+    assert audit["reason"] != "brain_op_whole_markdown_rewrite"
+    assert audit["match_strategy"] == "structured_formula_payload"
+
+
+def test_brain_ops_classify_redundant_noops_as_superseded():
+    page = _document_ir([_block("p0001-b001", "paragraph", "配分函数为 Z。", origin="vision_ocr")])["pages"][0]
+
+    def brain_backend(page_ir, context_pages, config):
+        return {
+            "success": True,
+            "new_findings": [{"finding_id": "p0001-bf001", "page": 1, "block_id": "p0001-b001", "kind": "contextual_ocr_error"}],
+            "op_candidates": [
+                {
+                    "op": "replace_text_span_checked",
+                    "id": "p0001-b001",
+                    "old_text": "配分函教",
+                    "new_text": "配分函数",
+                    "field": "text",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "evidence_type": "context",
+                    "confidence": 0.9,
+                },
+                {
+                    "op": "mark_uncertain",
+                    "id": "p0001-b001",
+                    "decision": "brain_discovered",
+                    "new_finding_id": "p0001-bf001",
+                    "evidence_type": "context",
+                    "confidence": 0.9,
+                },
+            ],
+        }
+
+    refined, report = hybrid_enrichment._run_brain_ops(page, [page], AppConfig(engine_mode="hybrid"), brain_backend)
+
+    assert refined["blocks"][0]["text"] == "配分函数为 Z。"
+    assert report["ops_rejected"] == 0
+    assert report["noop_or_superseded"] == 2
+    assert report["op_audit"][0]["status"] == "superseded_noop"
+    assert report["op_audit"][0]["reason"] == "replacement_same_as_current"
+    assert report["op_audit"][1]["status"] == "superseded_noop"
+    assert report["op_audit"][1]["reason"] == "mark_uncertain_superseded_by_fix"
 
 
 def test_legacy_brain_ops_are_audited_and_rejected_without_required_schema():

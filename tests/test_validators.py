@@ -174,6 +174,67 @@ def test_repeated_formula_token_artifact_warns():
     assert "formula_repeated_token_artifact" in {issue.code for issue in result.warnings}
 
 
+def test_structured_json_payload_inside_formula_is_error():
+    result = validate_slide_markdown(
+        "# Slide 12\n\n"
+        "$$\n"
+        "```json\n"
+        '{"latex": "\\\\int f(x) dx", "description": "formula"}\n'
+        "```\n"
+        "$$\n",
+        12,
+    )
+
+    assert not result.ok
+    codes = {issue.code for issue in result.errors}
+    assert "structured_payload_inside_formula" in codes
+    assert "structured_payload_code_fence_leak" in codes
+
+
+def test_duplicate_formula_and_isolated_number_warn():
+    formula = r"\Delta^{(-)}(x-x') \equiv -i\int \frac{d^3p}{(2\pi)^3 2E_p} e^{ip(x-x')} \tag{5.4}"
+    markdown = (
+        "# Slide 84\n\n"
+        "$$\n"
+        f"{formula}\n"
+        "$$\n\n"
+        "正文。\n\n"
+        "$$\n"
+        f"{formula}\n"
+        "$$\n\n"
+        "(5.4)\n"
+    )
+
+    result = validate_slide_markdown(markdown, 84)
+
+    assert result.ok
+    codes = {issue.code for issue in result.warnings}
+    assert "duplicate_formula_block" in codes
+    assert "isolated_formula_number_duplicate" in codes
+
+
+def test_neighbor_duplicate_formula_warns_weakly():
+    formula = r"\int \frac{d^3p}{(2\pi)^3 2E_p} e^{-ipx} a_p"
+    result = validate_slide_markdown(
+        "# Slide 11\n\n"
+        "$$\n"
+        f"{formula}\n"
+        "$$\n",
+        11,
+        neighbor_markdown={
+            12: (
+                "# Slide 12\n\n"
+                "$$\n"
+                f"{formula}\n"
+                "$$\n"
+            )
+        },
+    )
+
+    assert result.ok
+    assert "neighbor_duplicate_formula_block" in {issue.code for issue in result.warnings}
+
+
 def test_chinese_figure_note_satisfies_figure_analysis():
     result = validate_slide_markdown(
         "# Slide 1\n\n<details>\n    - 说明：图中左侧是 A。\n<summary>图示识别内容</summary>\n\n</details>\n",

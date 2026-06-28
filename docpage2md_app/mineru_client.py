@@ -77,18 +77,19 @@ class MinerUClient:
         files: list[Path],
         *,
         page_ranges: str | None = None,
+        use_config_page_ranges: bool = True,
     ) -> dict[str, Any]:
         if not files:
             raise ValueError("At least one local file is required for MinerU upload.")
         if len(files) > 50:
             raise ValueError("MinerU local batch upload supports at most 50 files per request.")
+        effective_page_ranges = page_ranges if page_ranges is not None else (self.config.mineru_page_ranges if use_config_page_ranges else None)
         self._log(
             f"MinerU request upload URLs: files={len(files)}, "
-            f"page_ranges={(page_ranges or self.config.mineru_page_ranges) or 'all'}, "
+            f"page_ranges={effective_page_ranges or 'all'}, "
             f"model={self.config.mineru_model_version}"
         )
         payload = self._batch_payload(page_ranges=page_ranges)
-        effective_page_ranges = page_ranges or self.config.mineru_page_ranges
         payload["files"] = []
         for path in files:
             file_item: dict[str, Any] = {
@@ -115,15 +116,27 @@ class MinerUClient:
         except OSError as exc:
             raise MinerUApiError(f"MinerU upload failed: {_safe_error(exc)}") from exc
 
-    def submit_local_file(self, path: str | Path, *, page_ranges: str | None = None) -> str:
-        return self.submit_local_files([Path(path)], page_ranges=page_ranges)
+    def submit_local_file(
+        self,
+        path: str | Path,
+        *,
+        page_ranges: str | None = None,
+        use_config_page_ranges: bool = True,
+    ) -> str:
+        return self.submit_local_files([Path(path)], page_ranges=page_ranges, use_config_page_ranges=use_config_page_ranges)
 
-    def submit_local_files(self, files: list[str | Path], *, page_ranges: str | None = None) -> str:
+    def submit_local_files(
+        self,
+        files: list[str | Path],
+        *,
+        page_ranges: str | None = None,
+        use_config_page_ranges: bool = True,
+    ) -> str:
         file_paths = [Path(path) for path in files]
         for file_path in file_paths:
             if not file_path.exists() or not file_path.is_file():
                 raise FileNotFoundError(file_path)
-        response = self.request_upload_urls(file_paths, page_ranges=page_ranges)
+        response = self.request_upload_urls(file_paths, page_ranges=page_ranges, use_config_page_ranges=use_config_page_ranges)
         data = _data(response)
         batch_id = data.get("batch_id")
         urls = data.get("file_urls") or []

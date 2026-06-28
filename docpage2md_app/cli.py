@@ -12,10 +12,18 @@ from multiprocessing import Manager
 from pathlib import Path
 
 from .config import (
+    BRAIN_OP_REVIEW_MODES,
     OUTPUT_RETENTION_MODES,
     PADDLEOCR_EVIDENCE_LEVELS,
+    VISION_CROP_DPI_CHOICES,
+    VISION_CROP_MODES,
+    VISION_CROP_PADDING_PROFILES,
     AppConfig,
+    normalize_brain_op_review_mode,
     normalize_paddleocr_evidence_level,
+    normalize_vision_crop_dpi,
+    normalize_vision_crop_mode,
+    normalize_vision_crop_padding_profile,
     paddleocr_visualize_for_evidence_level,
 )
 from .eval import DEFAULT_EVAL_FIXTURE_DIR, DEFAULT_EVAL_OUTPUT_PATH
@@ -99,6 +107,26 @@ def parse_args(argv=None):
     parser.add_argument("--vision-model", type=str, default=None, help="非交互覆盖 Vision 模型 ID")
     parser.add_argument("--vision-base-url", type=str, default=None, help="非交互覆盖 Vision Base URL")
     parser.add_argument("--vision-api-key-env", type=str, default=None, help="非交互覆盖 Vision API Key 环境变量名")
+    parser.add_argument(
+        "--vision-crop-mode",
+        choices=list(VISION_CROP_MODES),
+        default=AppConfig().vision_crop_mode,
+        help="Vision 裁剪策略：original=原始裁剪，expanded=从整页/PDF重裁扩边，auto=优先扩边失败回退",
+    )
+    parser.add_argument(
+        "--vision-crop-dpi",
+        type=int,
+        choices=list(VISION_CROP_DPI_CHOICES),
+        default=AppConfig().vision_crop_dpi,
+        help="Vision 从 PDF 重裁时的渲染 DPI；0=按文档类型自动，普通 200，手写/复杂公式 300",
+    )
+    parser.add_argument(
+        "--vision-crop-padding-profile",
+        choices=list(VISION_CROP_PADDING_PROFILES),
+        default=AppConfig().vision_crop_padding_profile,
+        help="Vision 扩边档位：auto / normal / handwritten / aggressive",
+    )
+    parser.add_argument("--vision-crop-retry", type=_parse_bool, default=AppConfig().vision_crop_retry, help="Vision 公式裁剪失败时是否自动提高扩边/DPI 重试")
     parser.add_argument("--brain-provider", type=str, default=None, help="非交互覆盖 Brain provider")
     parser.add_argument("--brain-model", type=str, default=None, help="非交互覆盖 Brain 模型 ID")
     parser.add_argument("--brain-base-url", type=str, default=None, help="非交互覆盖 Brain Base URL")
@@ -112,6 +140,12 @@ def parse_args(argv=None):
         type=int,
         default=None,
         help="Brain 审阅上下文窗口半径；N 表示当前页前后各 N 页，默认 2，可设 0 仅审阅当前页",
+    )
+    parser.add_argument(
+        "--brain-op-review-mode",
+        choices=list(BRAIN_OP_REVIEW_MODES),
+        default=AppConfig().brain_op_review_mode,
+        help="Brain op 本地审核策略：conservative=保守，standard=标准，aggressive=更主动修复定位和元数据",
     )
     parser.add_argument(
         "--brain-thinking",
@@ -219,6 +253,7 @@ def ensure_dependencies():
         ("rich", "rich"),
         ("PIL", "Pillow"),
         ("dashscope", "dashscope"),
+        ("fitz", "PyMuPDF"),
     ]
     for module_name, package_name in required:
         try:
@@ -286,6 +321,11 @@ def build_config(args):
         parser_workers=parser_workers,
         max_docpage_workers=doc_workers,
         brain_context_radius=brain_context_radius,
+        brain_op_review_mode=normalize_brain_op_review_mode(args.brain_op_review_mode),
+        vision_crop_mode=normalize_vision_crop_mode(args.vision_crop_mode),
+        vision_crop_dpi=normalize_vision_crop_dpi(args.vision_crop_dpi),
+        vision_crop_padding_profile=normalize_vision_crop_padding_profile(args.vision_crop_padding_profile),
+        vision_crop_retry=bool(args.vision_crop_retry),
         brain_thinking=args.brain_thinking or AppConfig().brain_thinking,
         brain_reasoning_effort=args.brain_reasoning_effort or AppConfig().brain_reasoning_effort,
         list_models=args.list_models,
@@ -1251,7 +1291,11 @@ def _prepare_dual_artifacts_for_source(
 
     def _mineru_stage() -> Path:
         safe_progress(progress, f"Dual MinerU submit: {source_path.name}")
-        batch_id = mineru_client.submit_local_files([prepared.upload_path], page_ranges=prepared.api_page_ranges)
+        batch_id = mineru_client.submit_local_files(
+            [prepared.upload_path],
+            page_ranges=prepared.api_page_ranges,
+            use_config_page_ranges=not prepared.was_cropped,
+        )
         safe_progress(progress, f"Dual MinerU batch submitted: batch_id={batch_id}")
         mineru_result = mineru_client.wait_for_batch_results(batch_id, expected_count=1)[0]
         return _download_mineru_artifact_only(
@@ -1331,7 +1375,8 @@ def _prepare_local_pdf_upload(source: Path, args, *, progress=None, label: str =
             progress,
             (
                 f"{label} upload PDF physically cropped: source={source.name}, "
-                f"page_ranges={audit.get('requested_page_ranges')}, pages={audit.get('selected_page_count')}, "
+                f"original_page_ranges={audit.get('requested_page_ranges')}, "
+                f"upload_pages={audit.get('selected_page_count')}, api_page_ranges={prepared.api_page_ranges or 'all'}, "
                 f"original_bytes={audit.get('original_size_bytes')}, upload_bytes={audit.get('cropped_size_bytes')}"
             ),
         )
@@ -1910,7 +1955,11 @@ def _run_mixed_mineru_local_files(
                 progress,
                 f"Submitting one local file to MinerU: {source.name} upload={prepared.upload_path.name} ({prepared.upload_path.stat().st_size} bytes)",
             )
-            batch_id = client.submit_local_files([prepared.upload_path], page_ranges=prepared.api_page_ranges)
+            batch_id = client.submit_local_files(
+                [prepared.upload_path],
+                page_ranges=prepared.api_page_ranges,
+                use_config_page_ranges=not prepared.was_cropped,
+            )
             safe_progress(progress, f"MinerU batch submitted: batch_id={batch_id}, files=1")
             results = client.wait_for_batch_results(batch_id, expected_count=1)
             result = results[0]
@@ -1971,7 +2020,11 @@ def _run_chunked_mineru_pdf(
         )
         prepared = _prepare_local_pdf_upload(source, chunk_args, progress=progress, label="MinerU chunk")
         try:
-            batch_id = client.submit_local_files([prepared.upload_path], page_ranges=prepared.api_page_ranges)
+            batch_id = client.submit_local_files(
+                [prepared.upload_path],
+                page_ranges=prepared.api_page_ranges,
+                use_config_page_ranges=not prepared.was_cropped,
+            )
             safe_progress(progress, f"MinerU chunk batch submitted: chunk={chunk.index}, batch_id={batch_id}")
             results = client.wait_for_batch_results(batch_id, expected_count=1)
             result = results[0]

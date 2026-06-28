@@ -211,12 +211,21 @@ def translate_progress_message(message: str) -> str:
     if match := re.search(r"Dual parser artifacts ready: source=([^,]+), mineru=([^,]+), paddleocr=(.+)", message):
         return f"双引擎解析结果已就绪：文件={match.group(1)}，MinerU={match.group(2)}，PaddleOCR={match.group(3)}"
     if match := re.search(
+        r"(.+?) upload PDF physically cropped: source=([^,]+), original_page_ranges=([^,]+), upload_pages=(\d+), api_page_ranges=([^,]+), original_bytes=(\d+), upload_bytes=(\d+)",
+        message,
+    ):
+        return (
+            f"{_upload_label(match.group(1))}上传 PDF 已物理裁剪：源文件={match.group(2)}，原始页码={match.group(3)}，"
+            f"上传页数={match.group(4)}，API页码={_page_range_label(match.group(5))}，"
+            f"原始大小={_format_bytes(int(match.group(6)))}，上传大小={_format_bytes(int(match.group(7)))}"
+        )
+    if match := re.search(
         r"(.+?) upload PDF physically cropped: source=([^,]+), page_ranges=([^,]+), pages=(\d+), original_bytes=(\d+), upload_bytes=(\d+)",
         message,
     ):
         return (
-            f"{_upload_label(match.group(1))}上传 PDF 已物理裁剪：源文件={match.group(2)}，页码={match.group(3)}，"
-            f"上传页数={match.group(4)}，原始大小={_format_bytes(int(match.group(5)))}，"
+            f"{_upload_label(match.group(1))}上传 PDF 已物理裁剪：源文件={match.group(2)}，原始页码={match.group(3)}，"
+            f"上传页数={match.group(4)}，API页码=全量，原始大小={_format_bytes(int(match.group(5)))}，"
             f"上传大小={_format_bytes(int(match.group(6)))}"
         )
     if match := re.search(r"Dual document processing start: source=(.+)", message):
@@ -594,6 +603,11 @@ def _upload_label(value: str) -> str:
         "PaddleOCR chunk": "PaddleOCR 分段",
     }
     return labels.get(value, value)
+
+
+def _page_range_label(value: str) -> str:
+    text = str(value or "").strip()
+    return "全量" if text == "all" else text
 
 
 def _translate_fields(value: str) -> str:
